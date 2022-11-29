@@ -14,7 +14,7 @@ import math
 import torch
 from torch import nn
 from typing import List
-from ..structures.nested_tensor import NestedTensor
+from ..structures.image_list import ImageList
 
 
 class PositionEmbeddingSine(nn.Module):
