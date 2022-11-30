@@ -73,6 +73,8 @@ class Instances(object):
         The length of `value` must be the number of instances,
         and must agree with other existing fields in this object.
         """
+        """
+        NOTE disabled to save more annos
         data_len = len(value)
         if len(self._fields):
             assert (
@@ -80,6 +82,7 @@ class Instances(object):
             ), "Adding a field of length {} to a Instances of length {}".format(
                 data_len, len(self)
             )
+        """
         self._fields[name] = value
 
     def has(self, name: str) -> bool:

@@ -10,7 +10,9 @@ import numbers
 import warnings
 
 import math
-import numpy.random as npr
+from psd2.structures.instances import Instances
+from psd2.structures.boxes import Boxes
+import torch
 
 
 class SearchMapper(object):
@@ -49,90 +51,16 @@ class SearchMapper(object):
                 tT.Normalize(mean=img_mean, std=img_std),
             ]
         )
-
-    def __call__(self, img_dict):
-        if "query" in img_dict.keys():
-            return img_dict
+        if cfg.INPUT.REA.ENABLED:
+            self.rea = RandomInstanceErasingNormTensor(
+                pix_mean=img_mean, pix_std=img_std
+            )
         else:
-            return self._common_map(img_dict)
+            self.rea = trivial_rea
 
-    def _common_map(self, img_dict):
-        # TODO use standared structure
-        img_path = img_dict["file_name"]
-        img_arr = read_image(img_path, self.in_fmt)
-        boxes = []
-        ids = []
-        for ann in img_dict["annotations"]:
-            boxes.append(ann["bbox"])
-            ids.append(ann["person_id"])
-        org_boxes = np.array(boxes, dtype=np.float32)
-        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
-        transforms = self.augs(aug_input)
-        aug_img = aug_input.image
-        h, w = aug_img.shape[:2]
-        aug_boxes = aug_input.boxes
-        # aug_boxes = aug_boxes / np.array([w - 1, h - 1, w - 1, h - 1], dtype=np.float32)  # in [0,1)
-        # aug_boxes = torch.tensor(aug_boxes)
-        # ids = torch.tensor(ids)
-
-        return {
-            "file_name": img_path,
-            "image_id": img_dict["image_id"],
-            "image": self.totensor_norm(aug_img.copy()),
-            "width": aug_img.shape[1],
-            "height": aug_img.shape[0],
-            "boxes": aug_boxes,
-            "ids": ids,
-            "org_width": img_arr.shape[1],
-            "org_height": img_arr.shape[0],
-            "org_boxes": org_boxes,
-        }
-
-
-class SearchMapperRE(SearchMapper):
-    def __init__(self, cfg, is_train) -> None:
-        super().__init__(cfg, is_train)
-        self.re = RandomInstanceErasing()  # before to_tensor
-
-    def _common_map(self, img_dict):
-        # TODO use standared structure
-        img_path = img_dict["file_name"]
-        img_arr = read_image(img_path, self.in_fmt)
-        boxes = []
-        ids = []
-        for ann in img_dict["annotations"]:
-            boxes.append(ann["bbox"])
-            ids.append(ann["person_id"])
-        org_boxes = np.array(boxes, dtype=np.float32)
-        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
-        transforms = self.augs(aug_input)
-        aug_img = aug_input.image
-        h, w = aug_img.shape[:2]
-        aug_boxes = aug_input.boxes
-        # aug_boxes = aug_boxes / np.array([w - 1, h - 1, w - 1, h - 1], dtype=np.float32)  # in [0,1)
-        # aug_boxes = torch.tensor(aug_boxes)
-        # ids = torch.tensor(ids)
-        if self.is_train:
-            aug_img = aug_img.copy()
-            self.re(aug_img, aug_boxes)
-        return {
-            "file_name": img_path,
-            "image_id": img_dict["image_id"],
-            "image": self.totensor_norm(aug_img.copy()),
-            "width": aug_img.shape[1],
-            "height": aug_img.shape[0],
-            "boxes": aug_boxes,
-            "ids": ids,
-            "org_width": img_arr.shape[1],
-            "org_height": img_arr.shape[0],
-            "org_boxes": org_boxes,
-        }
-
-
-class SearchMapperInfQuery(SearchMapper):
     def __call__(self, img_dict):
         """
-        For query, return
+        For query, img_dict is
         {
             "query":
                 {
@@ -168,20 +96,55 @@ class SearchMapperInfQuery(SearchMapper):
                 ]
         }
         """
-        # For compatibility
         if "query" in img_dict.keys():
-            q_img_dict = img_dict["query"]
-            mapped_img_dict = self._common_map(q_img_dict)
-            org_dict = deepcopy(img_dict)
-            q_dict = org_dict["query"]
-            mapped_img_dict["annotations"] = q_dict["annotations"]
-            org_dict["query"] = mapped_img_dict
-            return org_dict
+            rst = {}
+            rst["query"] = self._transform_annotations(img_dict["query"])
+            if "gallery" in img_dict:
+                rst["gallery"] = []
+                for gann in img_dict["gallery"]:
+                    g_instance = Instances(
+                        image_size=None,
+                        file_name=gann["file_name"],
+                        image_id=gann["image_id"],
+                        gt_boxes=Boxes(gann["bbox"]),
+                    )
+                    rst["gallery"].append(g_instance)
+            return rst
         else:
-            return self._common_map(img_dict)
+            return self._transform_annotations(img_dict)
+
+    def _transform_annotations(self, img_dict):
+        img_path = img_dict["file_name"]
+        img_arr = read_image(img_path, self.in_fmt)
+        boxes = []
+        ids = []
+        for ann in img_dict["annotations"]:
+            boxes.append(ann["bbox"])
+            ids.append(ann["person_id"])
+        org_boxes = np.array(boxes, dtype=np.float32)
+        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
+        transforms = self.augs(aug_input)
+        aug_img = aug_input.image
+        h, w = aug_img.shape[:2]
+        aug_boxes = aug_input.boxes
+        img_t = self.totensor_norm(aug_img.copy())
+        self.rea(img_t)
+        return {
+            "image": img_t,
+            "instances": Instances(
+                (h, w),
+                file_name=img_path,
+                image_id=img_dict["image_id"],
+                gt_boxes=Boxes(aug_boxes),
+                gt_pids=torch.tensor(ids, dtype=torch.int),
+                gt_classes=torch.zeros(len(ids), dtype=torch.int),
+                org_img_size=(img_arr.shape[0], img_arr.shape[1]),
+                org_gt_boxes=Boxes(org_boxes),
+            ),
+        }
 
 
-class RandomInstanceErasing:
+class RandomInstanceErasingNormTensor:
     """Randomly selects a rectangle region in a person and erases its pixels.
     This transform does not support PIL Image.
     'Random Erasing Data Augmentation' by Zhong et al. See https://arxiv.org/abs/1708.04896
@@ -202,10 +165,12 @@ class RandomInstanceErasing:
 
     def __init__(
         self,
+        pix_mean,
+        pix_std,
         p=0.5,
         scale=(0.02, 0.33),
         ratio=(0.3, 3.3),
-        value=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+        value=[0.485, 0.456, 0.406],
     ):
         if not isinstance(value, (numbers.Number, str, tuple, list)):
             raise TypeError(
@@ -223,29 +188,28 @@ class RandomInstanceErasing:
             raise ValueError("Scale should be between 0 and 1")
         if p < 0 or p > 1:
             raise ValueError("Random erasing probability should be between 0 and 1")
-
         self.p = p
-        self.scale = scale
-        self.ratio = ratio
-        self.value = value
-        # cast self.value to script acceptable type
-        if isinstance(self.value, (int, float)):
-            self.value = [
-                self.value,
-            ]
-        elif isinstance(self.value, tuple):
-            self.value = list(self.value)
+        self.scale = torch.as_tensor(scale)
+        self.ratio = torch.as_tensor(ratio)
+        self.value = (
+            torch.as_tensor(value) - torch.as_tensor(pix_mean)
+        ) / torch.as_tensor(pix_std)
 
     def get_params(self, box, channels, scale, ratio, value=None):
         """Get parameters for ``erase`` for a random erasing."""
-        box = np.round(box).astype(np.int32)
+        box = torch.round(box).astype(torch.int32)
         img_c, img_h, img_w = channels, box[3] - box[1], box[2] - box[0]
         area = img_h * img_w
 
-        log_ratio = np.log(ratio)
+        log_ratio = torch.log(ratio)
         for _ in range(10):
-            erase_area = area * npr.uniform(scale[0], scale[1])
-            aspect_ratio = np.exp(npr.uniform(log_ratio[0], log_ratio[1]))
+
+            erase_area = (
+                area * (torch.rand(1) * (scale[1] - scale[0]) + scale[0]).item()
+            )
+            aspect_ratio = torch.exp(
+                (torch.rand(1) * (log_ratio[1] - log_ratio[0]) + log_ratio[0])
+            ).item()
 
             h = int(round(math.sqrt(erase_area * aspect_ratio)))
             w = int(round(math.sqrt(erase_area / aspect_ratio)))
@@ -253,19 +217,19 @@ class RandomInstanceErasing:
                 continue
 
             if value is None:
-                v = npr.normal(size=(h, w, img_c))
+                v = torch.normal(0.0, 1.0, size=(img_c, h, w))
             else:
-                v = np.expand_dims(np.array(value), axis=(0, 1))
+                v = value.view(img_c, 1, 1)
 
-            i = npr.randint(0, img_w - w + 1)
-            j = npr.randint(0, img_h - h + 1)
-            return i + box[0], j + box[1], h, w, v
+            i = torch.randint(0, img_w - w + 1, size=1).item()
+            j = torch.randint(0, img_h - h + 1, size=1).item()
+            return i + box[0].item(), j + box[1].item(), h, w, v
 
         # Return original image
-        return box[0], box[1], 0, 0, 0
+        return box[0].item(), box[1].item(), 0, 0, 0
 
     def __call__(self, img, boxes):
-        vals = np.random.rand(boxes.shape[0])
+        vals = torch.rand(boxes.shape[0])
         for i in range(boxes.shape[0]):
             if vals[i] < self.p:
                 x, y, h, w, v = self.get_params(
@@ -277,3 +241,6 @@ class RandomInstanceErasing:
 
         img[j : j + h, i : i + w] = v
 
+
+def trivial_rea(img, ins_boxes):
+    pass
