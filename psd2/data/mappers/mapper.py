@@ -18,13 +18,6 @@ class SearchMapper(object):
     def __init__(self, cfg, is_train) -> None:
         self.is_train = is_train
         self.in_fmt = cfg.INPUT.FORMAT
-        img_mean = cfg.MODEL.PIXEL_MEAN
-        img_std = cfg.MODEL.PIXEL_STD
-        if max(img_mean) > 1:  # deal with mean and std, to_tensor makes div(255)
-            img_mean = np.array(img_mean) / 255.0
-            img_mean = img_mean.tolist()
-            img_std = np.array(img_std) / 255.0
-            img_std = img_std.tolist()
         if self.is_train:
             self.augs = dT.AugmentationList(
                 [
@@ -44,16 +37,11 @@ class SearchMapper(object):
                 size_divisibility=cfg.INPUT.SIZE_DIVISIBILITY,
                 sample_style="choice",
             )
-        self.totensor_norm = tT.Compose(
-            [
-                tT.ToTensor(),
-                tT.Normalize(mean=img_mean, std=img_std),
-            ]
-        )
+        self.totensor = (
+            tT.ToTensor()
+        )  # tT.Normalize(mean=img_mean, std=img_std) is moved to model: preprocess_input
         if cfg.INPUT.REA.ENABLED:
-            self.rea = RandomInstanceErasingNormTensor(
-                pix_mean=img_mean, pix_std=img_std
-            )
+            self.rea = RandomInstanceErasingTensor()
         else:
             self.rea = trivial_rea
 
@@ -126,7 +114,7 @@ class SearchMapper(object):
         aug_img = aug_input.image
         h, w = aug_img.shape[:2]
         aug_boxes = aug_input.boxes
-        img_t = self.totensor_norm(aug_img.copy())
+        img_t = self.totensor(aug_img.copy())
         self.rea(img_t)
         return {
             "image": img_t,
@@ -143,7 +131,7 @@ class SearchMapper(object):
         }
 
 
-class RandomInstanceErasingNormTensor:
+class RandomInstanceErasingTensor:
     """Randomly selects a rectangle region in a person and erases its pixels.
     This transform does not support PIL Image.
     'Random Erasing Data Augmentation' by Zhong et al. See https://arxiv.org/abs/1708.04896
@@ -164,8 +152,6 @@ class RandomInstanceErasingNormTensor:
 
     def __init__(
         self,
-        pix_mean,
-        pix_std,
         p=0.5,
         scale=(0.02, 0.33),
         ratio=(0.3, 3.3),
@@ -190,9 +176,7 @@ class RandomInstanceErasingNormTensor:
         self.p = p
         self.scale = torch.as_tensor(scale)
         self.ratio = torch.as_tensor(ratio)
-        self.value = (
-            torch.as_tensor(value) - torch.as_tensor(pix_mean)
-        ) / torch.as_tensor(pix_std)
+        self.value = torch.as_tensor(value)
 
     def get_params(self, box, channels, scale, ratio, value=None):
         """Get parameters for ``erase`` for a random erasing."""
