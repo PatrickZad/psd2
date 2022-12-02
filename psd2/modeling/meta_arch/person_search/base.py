@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from ...backbone import build_backbone
 from ..build import META_ARCH_REGISTRY
-from psd2.structures.nested_tensor import nested_collate_fn, NestedTensor
+from psd2.structures import ImageList, Instances, Boxes
 from psd2.utils.events import get_event_storage
 from psd2.utils.visualizer import pca_feat, Visualizer
 from psd2.structures.boxes import box_cxcywh_to_xyxy

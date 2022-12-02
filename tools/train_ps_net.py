@@ -49,7 +49,7 @@ from psd2.evaluation import (
 import re
 from psd2.modeling import GeneralizedRCNNWithTTA
 
-
+# TODO evaluator catalog
 def build_evaluator(cfg, dataset_name, output_folder=None):
     """
     Create evaluator(s) for a given dataset.

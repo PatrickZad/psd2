@@ -4,14 +4,13 @@ import torchvision.transforms as tT
 import numpy as np
 
 from ..detection_utils import read_image
-from copy import deepcopy
+
 
 import numbers
 import warnings
 
 import math
-from psd2.structures.instances import Instances
-from psd2.structures.boxes import Boxes
+from psd2.structures import Instances, Boxes, BoxMode
 import torch
 
 
@@ -135,11 +134,11 @@ class SearchMapper(object):
                 (h, w),
                 file_name=img_path,
                 image_id=img_dict["image_id"],
-                gt_boxes=Boxes(aug_boxes),
+                gt_boxes=Boxes(aug_boxes, BoxMode.XYWH_ABS),
                 gt_pids=torch.tensor(ids, dtype=torch.int),
                 gt_classes=torch.zeros(len(ids), dtype=torch.int),
                 org_img_size=(img_arr.shape[0], img_arr.shape[1]),
-                org_gt_boxes=Boxes(org_boxes),
+                org_gt_boxes=Boxes(org_boxes, BoxMode.XYWH_ABS),
             ),
         }
 

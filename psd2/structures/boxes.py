@@ -36,18 +36,24 @@ class BoxMode(IntEnum):
     """
     XYXY_REL = 2
     """
-    Not yet supported!
     (x0, y0, x1, y1) in range [0, 1]. They are relative to the size of the image.
     """
     XYWH_REL = 3
     """
-    Not yet supported!
     (x0, y0, w, h) in range [0, 1]. They are relative to the size of the image.
     """
     XYWHA_ABS = 4
     """
     (xc, yc, w, h, a) in absolute floating points coordinates.
     (xc, yc) is the center of the rotated box, and the angle a is in degrees ccw.
+    """
+    CCWH_ABS = 5
+    """
+    (xc, yc, w, h) in absolute floating points coordinates.
+    """
+    CCWH_REL = 6
+    """
+    (xc, yc, w, h) in range [0, 1]. They are relative to the size of the image.
     """
 
     @staticmethod
@@ -81,14 +87,6 @@ class BoxMode(IntEnum):
             else:
                 arr = box.clone()
 
-        assert to_mode not in [
-            BoxMode.XYXY_REL,
-            BoxMode.XYWH_REL,
-        ] and from_mode not in [
-            BoxMode.XYXY_REL,
-            BoxMode.XYWH_REL,
-        ], "Relative mode not yet supported!"
-
         if from_mode == BoxMode.XYWHA_ABS and to_mode == BoxMode.XYXY_ABS:
             assert (
                 arr.shape[-1] == 5
@@ -121,12 +119,26 @@ class BoxMode(IntEnum):
             angles = torch.zeros((arr.shape[0], 1), dtype=arr.dtype)
             arr = torch.cat((arr, angles), axis=1).to(dtype=original_dtype)
         else:
-            if to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.XYWH_ABS:
+            if (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.XYWH_ABS) or (
+                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.XYWH_REL
+            ):
                 arr[:, 2] += arr[:, 0]
                 arr[:, 3] += arr[:, 1]
-            elif from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.XYWH_ABS:
+            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.XYWH_ABS) or (
+                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.XYWH_REL
+            ):
                 arr[:, 2] -= arr[:, 0]
                 arr[:, 3] -= arr[:, 1]
+            elif (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.CCWH_ABS) or (
+                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.CCWH_REL
+            ):
+                arr[:, :2] = arr[:, :2] - arr[:, 2:] / 2
+                arr[:, 2:] = arr[:, :2] + arr[:, 2:]
+            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.CCWH_ABS) or (
+                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.CCWH_REL
+            ):
+                arr[:, 2:] = arr[:, 2:] - arr[:, :2]
+                arr[:, :2] = arr[:, :2] + arr[:, 2:] / 2
             else:
                 raise NotImplementedError(
                     "Conversion from BoxMode {} to {} is not supported yet".format(
@@ -154,7 +166,7 @@ class Boxes:
         tensor (torch.Tensor): float matrix of Nx4. Each row is (x1, y1, x2, y2).
     """
 
-    def __init__(self, tensor: torch.Tensor):
+    def __init__(self, tensor: torch.Tensor, box_mode=BoxMode.XYXY_ABS):
         """
         Args:
             tensor (Tensor[float]): a Nx4 matrix.  Each row is (x1, y1, x2, y2).
@@ -170,6 +182,7 @@ class Boxes:
         assert tensor.dim() == 2 and tensor.size(-1) == 4, tensor.size()
 
         self.tensor = tensor
+        self.box_mode = box_mode
 
     def clone(self) -> "Boxes":
         """
@@ -179,6 +192,10 @@ class Boxes:
             Boxes
         """
         return Boxes(self.tensor.clone())
+
+    def convert_mode(self, to_mode):
+        box_t = BoxMode.convert(self.tensor, self.box_mode, to_mode)
+        return Boxes(box_t, to_mode)
 
     @_maybe_jit_unused
     def to(self, device: torch.device):
@@ -446,39 +463,6 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     return iou
 
 
-def get_iou(pred_box, gt_box):
-    """
-    pred_box : the coordinate for predict bounding box
-    gt_box :   the coordinate for ground truth bounding box
-    return :   the iou score
-    the  left-down coordinate of  pred_box:(pred_box[0], pred_box[1])
-    the  right-up coordinate of  pred_box:(pred_box[2], pred_box[3])
-    """
-    # 1.get the coordinate of inters
-    ixmin = max(pred_box[0], gt_box[0])
-    ixmax = min(pred_box[2], gt_box[2])
-    iymin = max(pred_box[1], gt_box[1])
-    iymax = min(pred_box[3], gt_box[3])
-
-    iw = np.maximum(ixmax - ixmin + 1.0, 0.0)
-    ih = np.maximum(iymax - iymin + 1.0, 0.0)
-
-    # 2. calculate the area of inters
-    inters = iw * ih
-
-    # 3. calculate the area of union
-    uni = (
-        (pred_box[2] - pred_box[0] + 1.0) * (pred_box[3] - pred_box[1] + 1.0)
-        + (gt_box[2] - gt_box[0] + 1.0) * (gt_box[3] - gt_box[1] + 1.0)
-        - inters
-    )
-
-    # 4. calculate the overlaps between pred_box and gt_box
-    iou = inters / uni
-
-    return iou
-
-
 # ------------------------------------------------------------------------
 # Deformable DETR
 # Copyright (c) 2020 SenseTime. All Rights Reserved.
@@ -587,30 +571,3 @@ def pairwise_generalized_box_iou(boxes1, boxes2):
     area = wh[:, :, 0] * wh[:, :, 1]
 
     return iou - (area - union) / area
-
-
-def masks_to_boxes(masks):
-    """Compute the bounding boxes around the provided masks
-
-    The masks should be in format [N, H, W] where N is the number of masks, (H, W) are the spatial dimensions.
-
-    Returns a [N, 4] tensors, with the boxes in xyxy format
-    """
-    if masks.numel() == 0:
-        return torch.zeros((0, 4), device=masks.device)
-
-    h, w = masks.shape[-2:]
-
-    y = torch.arange(0, h, dtype=torch.float)
-    x = torch.arange(0, w, dtype=torch.float)
-    y, x = torch.meshgrid(y, x)
-
-    x_mask = masks * x.unsqueeze(0)
-    x_max = x_mask.flatten(1).max(-1)[0]
-    x_min = x_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
-
-    y_mask = masks * y.unsqueeze(0)
-    y_max = y_mask.flatten(1).max(-1)[0]
-    y_min = y_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
-
-    return torch.stack([x_min, y_min, x_max, y_max], 1)

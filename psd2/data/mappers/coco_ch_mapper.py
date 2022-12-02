@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
+# TODO refactor
 class COCOCHMapper(object):
     def __init__(self, cfg, is_train) -> None:
         self.is_train = is_train

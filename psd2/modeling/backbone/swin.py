@@ -731,3 +731,6 @@ class SwinTransformer(Backbone):
                 outs["p{}".format(i)] = out
 
         return
+
+
+# TODO swin builder

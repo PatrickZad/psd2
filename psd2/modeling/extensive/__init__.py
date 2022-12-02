@@ -1,2 +1,0 @@
-from .deformable import DeformableTransformer, PromptDeformableTransformer
-from .fp_deformable import FPDeformableEncTransformer
