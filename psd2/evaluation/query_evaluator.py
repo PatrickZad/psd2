@@ -1,10 +1,8 @@
 from copy import copy
-import enum
-from math import inf
-from typing import Dict, List, OrderedDict
+from typing import List, OrderedDict
 
 from PIL import Image
-from matplotlib.pyplot import box
+
 import psd2.utils.comm as comm
 
 import torch
@@ -16,13 +14,13 @@ import itertools
 import os
 import numpy as np
 from torchvision.ops.boxes import box_iou
-from sklearn.metrics import average_precision_score
+
 import copy
-import torch.nn.functional as F
+
 import random
 import logging
 from os.path import join as opj
-from tqdm import tqdm
+
 import math
 import psd2.utils.comm as comm
 import random
@@ -73,12 +71,6 @@ class QueryEvaluator(DatasetEvaluator):
         vis_dir = opj(self._output_dir, "vis", "search")
         self.svis_dirs = {}
         lrk = comm.get_local_rank()
-        """if lrk == 0:
-            if os.path.exists(vis_dir):
-                try:
-                    shutil.rmtree(vis_dir)
-                except Exception as e:
-                    logger.info(str(e) + " occures when deleting files !")"""
         for scr in s_threds:
             svis_dir = opj(vis_dir, str(scr))
             if lrk == 0:
@@ -429,142 +421,3 @@ class QueryEvaluator(DatasetEvaluator):
 
 def _trivial_vis(*args, **kw):
     pass
-
-
-def search_performance_calc(
-    query_set,
-    query_feats,
-    gallery_sets,
-    gallery_dets,
-    gallery_feats,
-    det_thresh=0.5,
-    topks=[1, 5, 10],
-):
-    """
-    Args:
-        query_set: list of query images
-            [
-                {
-                    "file_name": full file path,
-                    "image_id": unique id,
-                    "box": (4,) tesnor,
-                    "id": (1,) tensor
-                },
-                ...
-            ]
-        query_feats:
-            {
-                query idx in query_set: (c,) tensor, reid feat,
-                ...
-            }
-        gallery_sets: list of gallery images for each query, must contain the same person with query
-            {
-                query idx in query_set:
-                {
-                    "file_name": full file path,
-                    "image_id": unique id,
-                    "boxes": k x 4 tesnor,
-                    "ids": (k,) tensor
-                },
-                ...
-            }
-
-        gallery_dets: detection results
-            {
-                image_id: k1 x 5 tensor, boxes and ids,
-                ...
-            }
-        gallery_feats:
-            {
-                image_id: k1 x c tensor, reid feats,
-                ...
-            }
-
-        det_thresh: score threshold
-    """
-
-    assert len(gallery_sets) == len(query_set)
-    assert len(gallery_dets) == len(gallery_feats)
-    assert len(query_set) == len(query_feats)
-
-    aps = []
-    accs = []
-    for qi, q_dict in enumerate(query_set):
-        y_true, y_score = [], []
-        imgs, rois = [], []
-        count_gt, count_tp = 0, 0
-
-        feat_q = query_feats[qi]
-
-        # Find all occurence of this probe
-        gallery_imgs = gallery_sets[qi]
-        query_gts = {}
-        for item in gallery_imgs:
-            query_gts[item["image_id"]] = item["boxes"][item["ids"] == q_dict["id"]]
-
-        # # 1. Go through all gallery samples
-        # for item in testset.targets_db:
-        # Gothrough the selected gallery
-        for item in gallery_imgs:
-            gallery_imname = item["image_id"]
-            # some contain the probe (gt not empty), some not
-            count_gt += gallery_imname in query_gts
-            # compute distance between probe and gallery dets
-            if (
-                gallery_imname not in gallery_dets
-                or gallery_imname not in gallery_feats
-            ):
-                continue
-            dets_g, feats_g = (
-                gallery_dets[gallery_imname],
-                gallery_feats[gallery_imname],
-            )  # n x 5, n x c
-            # compute cosine similarities
-            sims = torch.mm(feats_g, feat_q[:, None]).squeeze(1)  # n x 1 -> n
-            # assign label for each det
-            label = torch.zeros(len(sims), dtype=np.int32)
-            if gallery_imname in query_gts:
-                gt_box = query_gts[gallery_imname]  # xyxy_abs
-                w, h = gt_box[2] - gt_box[0], gt_box[3] - gt_box[1]
-                iou_thresh = min(0.5, (w * h * 1.0) / ((w + 10) * (h + 10)))
-                # iou_thresh = min(0.3, (w * h * 1.0) /
-                #                    ((w + 10) * (h + 10)))
-                inds = torch.argsort(sims)[::-1]
-                sims = sims[inds]
-                dets = dets_g[inds]  # xyxy_abs
-                # only set the first matched det as true positive
-                for j, roi in enumerate(dets[:, :4]):
-                    if (
-                        box_iou(roi[None, :], gt_box[None, :]).squeeze().item()
-                        >= iou_thresh
-                    ):
-                        label[j] = 1
-                        count_tp += 1
-                        break
-            y_true.extend(label.tolist())
-            y_score.extend(sims.tolist())
-            imgs.extend([gallery_imname] * sims.shape[0])
-            rois.extend(dets.tolist())
-
-        # 2. Compute AP for this probe (need to scale by recall rate)
-        y_score = np.asarray(y_score)
-        y_true = np.asarray(y_true)
-        assert count_tp <= count_gt
-        recall_rate = count_tp * 1.0 / count_gt
-        ap = (
-            0
-            if count_tp == 0
-            else average_precision_score(y_true, y_score) * recall_rate
-        )
-        aps.append(ap)
-        inds = np.argsort(y_score)[::-1]
-        y_score = y_score[inds]
-        y_true = y_true[inds]
-        accs.append([min(1, sum(y_true[:k])) for k in topks])
-
-    search_result = OrderedDict()
-    mAP = np.mean(aps)
-    search_result["search"] = {"mAP": mAP}
-    accs = np.mean(accs, axis=0)
-    for i, k in enumerate(topks):
-        search_result["search"]["top{:2d}".format(k) : accs[i]]

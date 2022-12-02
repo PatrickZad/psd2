@@ -18,6 +18,7 @@ You may want to write your own script with your datasets and other customization
 import sys
 
 sys.path.append("./")
+sys.path.append("./assign_cost_cuda")
 import logging
 import os
 from collections import OrderedDict
@@ -36,13 +37,16 @@ from psd2.engine import (
 )
 from psd2.evaluation import (
     InfDetEvaluator,
-    QueryEvaluator,
     PrwQueryEvaluator,
     CuhkQueryEvaluator,
     CdpsQueryEvaluator,
     DatasetEvaluators,
     verify_results,
+    PrwQueryEvaluatorP,
+    CuhkQueryEvaluatorP,
+    Ptk21QueryEvaluator,
 )
+import re
 from psd2.modeling import GeneralizedRCNNWithTTA
 
 
@@ -55,65 +59,84 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
     """
     if output_folder is None:
         output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-    vis = cfg.TEST.VIS
-    hist_only = cfg.TEST.VIS_HIST_ONLY
+    vis_eval = cfg.TEST.VIS
+    if vis_eval:
+        output_folder = os.path.join(output_folder, "visualize_eval")
+    single_gpu = comm.get_world_size() > 1
     evaluator_list = []
     evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
     if evaluator_type is "det":
         evaluator_list.append(
             InfDetEvaluator(
                 dataset_name,
-                distributed=True,
+                distributed=not single_gpu,
                 output_dir=output_folder,
-                s_threds=[0.5],
-                vis=cfg.TEST.VIS_DET,
+                s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                topk=cfg.TEST.DETECTIONS_PER_IMAGE,
+                vis=vis_eval,
             )
         )
     elif evaluator_type is "query":
         if "CUHK-SYSU" in dataset_name:
             evaluator_list.append(
-                CuhkQueryEvaluator(
+                CuhkQueryEvaluatorP(
+                    dataset_name,
+                    distributed=False,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                )
+                if single_gpu
+                else CuhkQueryEvaluator(
                     dataset_name,
                     distributed=True,
                     output_dir=output_folder,
-                    s_threds=[0.5],
-                    vis=vis,
-                    hist_only=hist_only,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "PRW" in dataset_name:
             evaluator_list.append(
-                PrwQueryEvaluator(
+                PrwQueryEvaluatorP(
+                    dataset_name,
+                    distributed=False,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                )
+                if single_gpu
+                else PrwQueryEvaluator(
                     dataset_name,
                     distributed=True,
                     output_dir=output_folder,
-                    s_threds=[0.5],
-                    vis=vis,
-                    hist_only=hist_only,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "CDPS" in dataset_name:
             evaluator_list.append(
                 CdpsQueryEvaluator(
                     dataset_name,
-                    distributed=True,
+                    distributed=not single_gpu,
                     output_dir=output_folder,
-                    s_threds=[0.5],
-                    vis=vis,
-                    hist_only=hist_only,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
+                )
+            )
+        elif "Ptk21" in dataset_name:
+            evaluator_list.append(
+                Ptk21QueryEvaluator(
+                    dataset_name,
+                    distributed=not single_gpu,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         else:
-            evaluator_list.append(
-                QueryEvaluator(
-                    dataset_name,
-                    distributed=True,
-                    output_dir=output_folder,
-                    s_threds=[0.5],
-                    vis=vis,
-                    hist_only=hist_only,
-                ),
-            )
+            raise ValueError("Unknown dataset {}".format(dataset_name))
     if len(evaluator_list) == 0:
         raise NotImplementedError(
             "no Evaluator for the dataset {} with the type {}".format(
@@ -139,6 +162,7 @@ class Trainer(DefaultTrainer):
 
     @classmethod
     def test_with_TTA(cls, cfg, model):
+        # NOTE not tested
         logger = logging.getLogger("psd2.trainer")
         # In the end of training, run an evaluation with TTA
         # Only support some R-CNN models.
@@ -158,9 +182,50 @@ class Trainer(DefaultTrainer):
     def build_train_loader(cls, cfg):
         from psd2.data.catalog import MapperCatalog
         from psd2.data.build import build_detection_train_loader
+        from psd2.data.build import build_batch_data_loader, get_detection_dataset_dicts
+        from psd2.data.samplers.apk_sampler_cuda import APKSampler
+        from psd2.utils.logger import _log_api_usage
+        from psd2.data.common import DatasetFromList, MapDataset
 
         mapper = MapperCatalog.get(cfg.DATASETS.TRAIN[0])(cfg, is_train=True)
-        return build_detection_train_loader(cfg, mapper=mapper)
+        if cfg.DATALOADER.SAMPLER_TRAIN == "APKSampler":
+            assert torch.cuda.is_available(), "cuda is required"
+            dataset = get_detection_dataset_dicts(
+                cfg.DATASETS.TRAIN,
+                filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
+                min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
+                if cfg.MODEL.KEYPOINT_ON
+                else 0,
+                proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN
+                if cfg.MODEL.LOAD_PROPOSALS
+                else None,
+            )
+            _log_api_usage("dataset." + cfg.DATASETS.TRAIN[0])
+            ap = cfg.DATALOADER.APK_SAMPLER.AP
+            ak = cfg.DATALOADER.APK_SAMPLER.AK
+            drop_last = cfg.DATALOADER.APK_SAMPLER.DROP_LAST
+            logger = logging.getLogger(__name__)
+            logger.info("Using training sampler APKSampler")
+            sampler = APKSampler(
+                cfg.SOLVER.IMS_PER_BATCH,
+                dataset,
+                ap,
+                ak,
+                shuffle=True,
+                drop_last=drop_last,
+            )
+            if isinstance(dataset, list):
+                dataset = DatasetFromList(dataset, copy=False)
+            dataset = MapDataset(dataset, mapper)
+            return build_batch_data_loader(
+                dataset,
+                sampler,
+                cfg.SOLVER.IMS_PER_BATCH,
+                aspect_ratio_grouping=cfg.DATALOADER.ASPECT_RATIO_GROUPING,
+                num_workers=cfg.DATALOADER.NUM_WORKERS,
+            )
+        else:
+            return build_detection_train_loader(cfg, mapper=mapper)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
@@ -203,46 +268,61 @@ class Trainer(DefaultTrainer):
         from psd2.solver.build import maybe_add_gradient_clipping
 
         logger = logging.getLogger("psd2.trainer")
-        freeze_keys = cfg.SOLVER.FREEZE_KEYS
-        freeze_excepts = cfg.SOLVER.FREEZE_EXCEPTS
-
-        def key_in(keys, excepts, p_name):
-            def n_expt(expts, p_name):
-                n_expt = True
-                if isinstance(expts, str):
-                    expts = expts
-                for ept in expts:
-                    if ept in p_name:
-                        n_expt = False
-                        break
-                return n_expt
-
-            is_in = False
-            for k, expts in zip(keys, excepts):
-                if k in p_name and n_expt(expts, p_name):
-                    is_in = True
-                    break
-            return is_in
-
-        learnable_p_names = []
-
-        def dumm_save_name(n, p):
-            learnable_p_names.append(n)
-            return p
-
-        params = [
-            dumm_save_name(n, p)
-            for n, p in model.named_parameters()
-            if not key_in(freeze_keys, freeze_excepts, n) and p.requires_grad
+        frozen_params = []
+        learn_param_keys = []
+        param_groups = [{"params": [], "lr": cfg.SOLVER.BASE_LR}] + [
+            {"params": [], "lr": cfg.SOLVER.BASE_LR * lf}
+            for lf in cfg.SOLVER.LR_FACTORS
         ]
-        logger.info("Training parameters:\n{}".format("\n".join(learnable_p_names)))
-        return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(
-            params,
-            lr=cfg.SOLVER.BASE_LR,
-            momentum=cfg.SOLVER.MOMENTUM,
-            nesterov=cfg.SOLVER.NESTEROV,
-            weight_decay=cfg.SOLVER.WEIGHT_DECAY,
-        )
+        freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
+        lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
+
+        def _find_match(pkey, prob_regs):
+            match_idx = -1
+            for mi, mreg in enumerate(prob_regs):
+                if re.match(mreg, pkey):
+                    assert match_idx == -1, "Ambiguous matching of {}".format(pkey)
+                    match_idx = mi
+            return match_idx
+
+        for key, value in model.named_parameters(recurse=True):
+            match_freeze = _find_match(key, freeze_regex)
+            if match_freeze > 0:
+                value.requires_grad = False
+            if not value.requires_grad:
+                frozen_params.append(key)
+                continue
+            match_learn = _find_match(key, lr_group_regex)
+            if match_learn > 0:
+                param_groups[match_learn]["params"].append(value)
+            else:
+                param_groups[0]["params"].append(value)
+            learn_param_keys.append(key)
+        logger.info("Frozen parameters:\n{}".format("\n".join(frozen_params)))
+        logger.info("Training parameters:\n{}".format("\n".join(learn_param_keys)))
+        optim = cfg.SOLVER.OPTIM
+        if optim == "SGD":
+            return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(
+                param_groups,
+                lr=cfg.SOLVER.BASE_LR,
+                momentum=cfg.SOLVER.MOMENTUM,
+                nesterov=cfg.SOLVER.NESTEROV,
+                weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+            )
+        elif optim == "Adam":
+            return maybe_add_gradient_clipping(cfg, torch.optim.Adam)(
+                param_groups,
+                lr=cfg.SOLVER.BASE_LR,
+                weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+            )
+        elif optim == "AdamW":
+            return maybe_add_gradient_clipping(cfg, torch.optim.AdamW)(
+                param_groups,
+                lr=cfg.SOLVER.BASE_LR,
+                weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+            )
+        else:
+            raise ValueError("Unsupported optimizer {}".format(optim))
 
 
 def setup(args):
@@ -289,8 +369,8 @@ def main(args):
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
-    re = True
-    while re:
+    re_launch = True
+    while re_launch:
         try:
             launch(
                 main,
@@ -300,6 +380,6 @@ if __name__ == "__main__":
                 dist_url=args.dist_url,
                 args=(args,),
             )
-            re = False
+            re_launch = False
         except Exception as e:
             print(e)

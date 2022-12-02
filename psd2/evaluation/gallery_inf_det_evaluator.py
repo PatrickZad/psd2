@@ -1,4 +1,3 @@
-from turtle import ycor
 from PIL import Image
 import psd2.utils.comm as comm
 
@@ -30,6 +29,7 @@ class InfDetEvaluator(DatasetEvaluator):
         dataset_name,
         distributed,
         output_dir,
+        topk=100,
         s_threds=[0.05, 0.1, 0.2],
         vis=False,
     ) -> None:
@@ -41,7 +41,7 @@ class InfDetEvaluator(DatasetEvaluator):
         self._logger = logging.getLogger(__name__)
         self.threshs = s_threds
         self.iou_threshs = [0.5, 0.7]
-        self.topk = 100
+        self.topk = topk
         # (image name,torch concatenated [boxes, scores, reid features])
         self.inf_results = {}
         # (image name,torch concatenated [boxes, ids])
@@ -66,7 +66,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 self.svis_dirs[iou_t][scr] = svis_dir
         if not vis:
             self._vis_samp = _trivial_vis
-            self._vis_domain = _trivial_vis
             return
 
         lrk = comm.get_local_rank()
@@ -126,10 +125,6 @@ class InfDetEvaluator(DatasetEvaluator):
                     "reid_feats": reid features tensor
                 } for one image, but batch_size dim still exists
         """
-        if "pred_scores_domain" in outputs:
-            self.det_scores_per_domain.append(
-                [scores.reshape(-1).cpu() for scores in outputs["pred_scores_domain"]]
-            )
 
         for bi, in_dict in enumerate(inputs):
             # save gt info
@@ -162,153 +157,82 @@ class InfDetEvaluator(DatasetEvaluator):
             self._det_proc(inputs, outputs, st)
 
     def _det_proc(self, inputs, outputs, sthred):
-        if "pred_scores_domain" in outputs:
-            for bi, in_dict in enumerate(inputs):
-                scores_domain = [
-                    scores[bi].cpu().reshape(-1)
-                    for scores in outputs["pred_scores_domain"]
-                ]
-                out_dict = {
-                    k: v[bi] for k, v in outputs.items() if k != "pred_scores_domain"
-                }  # one dict for each image
-                gt_boxes = torch.tensor(in_dict["org_boxes"])
-                gt_pids = torch.tensor(in_dict["ids"], dtype=torch.long)
-                det_boxes = out_dict["pred_boxes"].cpu()
-                det_boxes_full = out_dict["pred_boxes"].cpu()
-                det_scores = out_dict["pred_scores"].cpu()
-                num_gts = gt_boxes.shape[0]
-                num_lb_gts = (gt_pids > -1).sum().item()
-                if det_boxes.shape[0] > 0:
-                    if det_boxes.shape[0] > self.topk:
-                        topk_scores, topk_idxs = torch.topk(det_scores[:, 0], self.topk)
-                        topk_det_boxes = det_boxes[topk_idxs]
-                        det_scores = topk_scores[topk_scores >= sthred]
-                        det_boxes = topk_det_boxes[topk_scores >= sthred]
-                        num_dets = det_boxes.shape[0]
-                    else:
-                        det_scores_mask = det_scores[:, 0] >= sthred
-                        det_boxes = det_boxes[det_scores_mask]
-                        num_dets = det_boxes.shape[0]
+
+        for bi, in_dict in enumerate(inputs):
+            out_dict = {k: v[bi] for k, v in outputs.items()}  # one dict for each image
+            gt_boxes = torch.tensor(in_dict["org_boxes"])
+            gt_pids = torch.tensor(in_dict["ids"], dtype=torch.long)
+            det_boxes = out_dict["pred_boxes"].cpu()
+            det_scores = out_dict["pred_scores"].cpu()
+            num_gts = gt_boxes.shape[0]
+            num_lb_gts = (gt_pids > -1).sum().item()
+            if det_boxes.shape[0] > 0:
+                if det_boxes.shape[0] > self.topk:
+                    topk_scores, topk_idxs = torch.topk(det_scores[:, 0], self.topk)
+                    topk_det_boxes = det_boxes[topk_idxs]
+                    det_scores = topk_scores[topk_scores >= sthred]
+                    det_boxes = topk_det_boxes[topk_scores >= sthred]
+                    num_dets = det_boxes.shape[0]
                 else:
-                    num_dets = 0
-                if num_dets == 0:
-                    for iou_t in self.iou_threshs:
-                        self.count_gt[iou_t][sthred] += num_gts
-                        self.count_gt_lb[iou_t][sthred] += num_lb_gts
-                    continue
-                ious = box_iou(gt_boxes, det_boxes)
+                    det_scores_mask = det_scores[:, 0] >= sthred
+                    det_boxes = det_boxes[det_scores_mask]
+                    num_dets = det_boxes.shape[0]
+            else:
+                num_dets = 0
+            if num_dets == 0:
                 for iou_t in self.iou_threshs:
-                    tfmat = ious >= iou_t
-                    # for each det, keep only the largest iou of all the gt
-                    for j in range(num_dets):
-                        largest_ind = torch.argmax(ious[:, j])
-                        for i in range(num_gts):
-                            if i != largest_ind:
-                                tfmat[i, j] = False
-                    # for each gt, keep only the largest iou of all the det
-                    for i in range(num_gts):
-                        largest_ind = np.argmax(ious[i, :])
-                        for j in range(num_dets):
-                            if j != largest_ind:
-                                tfmat[i, j] = False
-                    for j in range(num_dets):
-                        self.y_scores[iou_t][sthred].append(det_scores[j].item())
-                        self.y_trues[iou_t][sthred].append(tfmat[:, j].any())
-                    self.count_tp[iou_t][sthred] += tfmat.sum().item()
                     self.count_gt[iou_t][sthred] += num_gts
-                    tfmat_lb = tfmat[gt_pids > -1, :]
-                    self.count_tp_lb[iou_t][sthred] += tfmat_lb.sum().item()
                     self.count_gt_lb[iou_t][sthred] += num_lb_gts
-                    s_recall = tfmat.sum().item() / num_gts
-                    s_precision = tfmat.sum().item() / num_dets
-                    if s_recall < 1 or s_precision < 1:
-                        self._vis_domain(
-                            in_dict["file_name"],
-                            gt_boxes,
-                            torch.tensor(in_dict["ids"]),
-                            det_boxes_full,
-                            scores_domain,
-                            opj(self.svis_dirs[iou_t][sthred], "scores"),
-                        )
+                    self._vis_samp(
+                        in_dict["file_name"],
+                        gt_boxes,
+                        torch.tensor(in_dict["ids"]),
+                        out_dict["pred_boxes"].cpu(),
+                        out_dict["pred_scores"].cpu(),
+                        iou_t,
+                        sthred,
+                    )
+                continue
 
-        else:
-            for bi, in_dict in enumerate(inputs):
-                out_dict = {
-                    k: v[bi] for k, v in outputs.items()
-                }  # one dict for each image
-                gt_boxes = torch.tensor(in_dict["org_boxes"])
-                gt_pids = torch.tensor(in_dict["ids"], dtype=torch.long)
-                det_boxes = out_dict["pred_boxes"].cpu()
-                det_scores = out_dict["pred_scores"].cpu()
-                num_gts = gt_boxes.shape[0]
-                num_lb_gts = (gt_pids > -1).sum().item()
-                if det_boxes.shape[0] > 0:
-                    if det_boxes.shape[0] > self.topk:
-                        topk_scores, topk_idxs = torch.topk(det_scores[:, 0], self.topk)
-                        topk_det_boxes = det_boxes[topk_idxs]
-                        det_scores = topk_scores[topk_scores >= sthred]
-                        det_boxes = topk_det_boxes[topk_scores >= sthred]
-                        num_dets = det_boxes.shape[0]
-                    else:
-                        det_scores_mask = det_scores[:, 0] >= sthred
-                        det_boxes = det_boxes[det_scores_mask]
-                        num_dets = det_boxes.shape[0]
-                else:
-                    num_dets = 0
-                if num_dets == 0:
-                    for iou_t in self.iou_threshs:
-                        self.count_gt[iou_t][sthred] += num_gts
-                        self.count_gt_lb[iou_t][sthred] += num_lb_gts
-                        self._vis_samp(
-                            in_dict["file_name"],
-                            gt_boxes,
-                            torch.tensor(in_dict["ids"]),
-                            out_dict["pred_boxes"].cpu(),
-                            out_dict["pred_scores"].cpu(),
-                            iou_t,
-                            sthred,
-                        )
-                    continue
-
-                """ious = torch.zeros((num_gts, num_dets), dtype=torch.float32)
+            """ious = torch.zeros((num_gts, num_dets), dtype=torch.float32)
                 for i in range(num_gts):
                     for j in range(num_dets):
                         ious[i, j] = get_iou(gt_boxes[i], det_boxes[j])"""
-                ious = box_iou(gt_boxes, det_boxes)
-                for iou_t in self.iou_threshs:
-                    tfmat = ious >= iou_t
-                    # for each det, keep only the largest iou of all the gt
-                    for j in range(num_dets):
-                        largest_ind = torch.argmax(ious[:, j])
-                        for i in range(num_gts):
-                            if i != largest_ind:
-                                tfmat[i, j] = False
-                    # for each gt, keep only the largest iou of all the det
+            ious = box_iou(gt_boxes, det_boxes)
+            for iou_t in self.iou_threshs:
+                tfmat = ious >= iou_t
+                # for each det, keep only the largest iou of all the gt
+                for j in range(num_dets):
+                    largest_ind = torch.argmax(ious[:, j])
                     for i in range(num_gts):
-                        largest_ind = np.argmax(ious[i, :])
-                        for j in range(num_dets):
-                            if j != largest_ind:
-                                tfmat[i, j] = False
+                        if i != largest_ind:
+                            tfmat[i, j] = False
+                # for each gt, keep only the largest iou of all the det
+                for i in range(num_gts):
+                    largest_ind = np.argmax(ious[i, :])
                     for j in range(num_dets):
-                        self.y_scores[iou_t][sthred].append(det_scores[j].item())
-                        self.y_trues[iou_t][sthred].append(tfmat[:, j].any())
-                    self.count_tp[iou_t][sthred] += tfmat.sum().item()
-                    self.count_gt[iou_t][sthred] += num_gts
-                    tfmat_lb = tfmat[gt_pids > -1, :]
-                    self.count_tp_lb[iou_t][sthred] += tfmat_lb.sum().item()
-                    self.count_gt_lb[iou_t][sthred] += num_lb_gts
-                    s_recall = tfmat.sum().item() / num_gts
-                    s_precision = tfmat.sum().item() / num_dets
-                    if s_recall < 1 or s_precision < 1:
-                        self._vis_samp(
-                            in_dict["file_name"],
-                            gt_boxes,
-                            torch.tensor(in_dict["ids"]),
-                            out_dict["pred_boxes"].cpu(),
-                            out_dict["pred_scores"].cpu(),
-                            iou_t,
-                            sthred,
-                        )
+                        if j != largest_ind:
+                            tfmat[i, j] = False
+                for j in range(num_dets):
+                    self.y_scores[iou_t][sthred].append(det_scores[j].item())
+                    self.y_trues[iou_t][sthred].append(tfmat[:, j].any())
+                self.count_tp[iou_t][sthred] += tfmat.sum().item()
+                self.count_gt[iou_t][sthred] += num_gts
+                tfmat_lb = tfmat[gt_pids > -1, :]
+                self.count_tp_lb[iou_t][sthred] += tfmat_lb.sum().item()
+                self.count_gt_lb[iou_t][sthred] += num_lb_gts
+                s_recall = tfmat.sum().item() / num_gts
+                s_precision = tfmat.sum().item() / num_dets
+                if s_recall < 1 or s_precision < 1:
+                    self._vis_samp(
+                        in_dict["file_name"],
+                        gt_boxes,
+                        torch.tensor(in_dict["ids"]),
+                        out_dict["pred_boxes"].cpu(),
+                        out_dict["pred_scores"].cpu(),
+                        iou_t,
+                        sthred,
+                    )
 
     def evaluate(self):
         if self._distributed:
@@ -382,8 +306,6 @@ class InfDetEvaluator(DatasetEvaluator):
             count_gts_lb = self.count_gt_lb
             count_tps_lb = self.count_tp_lb
             det_scores_per_domain = self.det_scores_per_domain
-        """save_gts = {k: v.to(self._cpu_device) for k, v in save_gts.items()}
-        save_rts = {k: v.to(self._cpu_device) for k, v in save_rts.items()}"""
         save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
         save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt")
         if not os.path.exists(self._output_dir):
@@ -516,80 +438,6 @@ class InfDetEvaluator(DatasetEvaluator):
         img_all = vis_all.get_output().get_image()
         img_vis = np.concatenate([img_org, img_all, img_det], axis=1)
         VisImage(img_vis).save(opj(self.svis_dirs[iou_t][sthred], fname))
-
-    def _vis_domain(
-        self,
-        org_path,
-        tgt_boxes,
-        tgt_ids,
-        det_boxes,
-        scores_domain,
-        save_dir,
-        sthred_low=0.01,
-        sthred_mid=0.2,
-    ):
-        COLORS = ["r", "g", "b", "y", "c", "m"]
-        T_COLORS_BG = {
-            "r": "white",
-            "g": "white",
-            "b": "white",
-            "y": "black",
-            "c": "black",
-            "m": "white",
-        }
-
-        from psd2.utils.visualizer import VisImage
-        import operator
-
-        num_domains = len(scores_domain)
-        domain_idxs = list(
-            itertools.accumulate([len(dvals) for dvals in scores_domain], operator.add)
-        )
-        fname = os.path.split(org_path)[-1]
-        img = Image.open(org_path)
-        vis_org = Visualizer(img.copy())
-        vis_det_low = [Visualizer(img.copy()) for _ in range(num_domains)]
-        vis_det_high = [Visualizer(img.copy()) for _ in range(num_domains)]
-        det_boxes = det_boxes.cpu().numpy()
-        det_boxes = np.split(det_boxes, domain_idxs, axis=0)
-        tgt_boxes = tgt_boxes.cpu().numpy()
-        tgt_ids = tgt_ids.cpu().numpy().tolist()
-        for bi, box in enumerate(tgt_boxes):
-            vis_org.draw_box(box)
-            id_pos = box[:2]
-            vis_org.draw_text(
-                str(tgt_ids[bi]), id_pos, horizontal_alignment="left", color="w"
-            )
-        img_org = vis_org.get_output().get_image()
-        for di in range(num_domains):
-            for i, score in enumerate(scores_domain[di]):
-                b_clr = COLORS[i % len(COLORS)]
-                t_clr = T_COLORS_BG[b_clr]
-                if score >= sthred_low and score < sthred_mid:
-                    vis_det_low[di].draw_box(det_boxes[di][i], edge_color=b_clr)
-                    vis_det_low[di].draw_text(
-                        "%.2f" % score,
-                        det_boxes[di][i][:2],
-                        horizontal_alignment="left",
-                        color=t_clr,
-                        bg_color=b_clr,
-                    )
-                elif score >= sthred_mid:
-                    vis_det_high[di].draw_box(det_boxes[di][i], edge_color=b_clr)
-                    vis_det_high[di].draw_text(
-                        "%.2f" % score,
-                        det_boxes[di][i][:2],
-                        horizontal_alignment="left",
-                        color=t_clr,
-                        bg_color=b_clr,
-                    )
-            img_det_low = vis_det_low[di].get_output().get_image()
-            img_det_high = vis_det_high[di].get_output().get_image()
-            img_vis = np.concatenate([img_det_low, img_org, img_det_high], axis=1)
-            dir_save = opj(save_dir, "d{}".format(di))
-            if not os.path.exists(dir_save):
-                os.makedirs(dir_save)
-            VisImage(img_vis).save(opj(dir_save, fname))
 
 
 def _trivial_vis(*args, **kw):

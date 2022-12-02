@@ -217,8 +217,4 @@ class EvaluatorDataset(Dataset):
                 rst_accs[dst].append(
                     [min(1, sum(y_true[:k])) for k in self.eval_ref.topks]
                 )
-                # 3. Save vis
-                self.eval_ref._vis_search(
-                    q_imgid, q_box, q_pid, g_img_ids, name2sim, dst
-                )
         return rst_aps, rst_accs

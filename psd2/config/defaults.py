@@ -118,7 +118,7 @@ _C.DATALOADER.NUM_WORKERS = 4
 # is compatible. This groups portrait images together, and landscape images
 # are not batched with portrait images.
 _C.DATALOADER.ASPECT_RATIO_GROUPING = True
-# Options: TrainingSampler, RepeatFactorTrainingSampler, APKSampler, APKSamplerPrec
+# Options: TrainingSampler, RepeatFactorTrainingSampler, APKSampler
 _C.DATALOADER.SAMPLER_TRAIN = "TrainingSampler"
 # Repeat threshold for RepeatFactorTrainingSampler
 _C.DATALOADER.REPEAT_THRESHOLD = 0.0
@@ -534,11 +534,10 @@ _C.PERSON_SEARCH.REID.CWS = False
 _C.INPUT.REA = CN({"ENABLED": False})
 _C.INPUT.REA.PROB = 0.5
 _C.INPUT.REA.VALUE = [0.485 * 255, 0.456 * 255, 0.406 * 255]
+_C.DATALOADER.APK_SAMPLER = CN()
 _C.DATALOADER.APK_SAMPLER.AP = 4
 _C.DATALOADER.APK_SAMPLER.AK = 6
 _C.DATALOADER.APK_SAMPLER.DROP_LAST = True
-_C.DATALOADER.APK_SAMPLER.PRE_TIMES = 128
-_C.DATALOADER.APK_SAMPLER.SAVE_PATH = ""
 # ---------------------------------------------------------------------------- #
 # Solver
 # ---------------------------------------------------------------------------- #
@@ -607,8 +606,8 @@ _C.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0
 _C.SOLVER.CLIP_GRADIENTS.NORM_TYPE = 2.0
 
 # custom lr factors
-_C.SOLVER.LR_FACTORS = [1.0]
-_C.SOLVER.LR_PARAM_REGEX = [r".*"]
+_C.SOLVER.LR_FACTORS = []
+_C.SOLVER.LR_GROUP_REGEX = []
 # custom freeze
 _C.SOLVER.FREEZE_PARAM_REGEX = []
 
@@ -636,6 +635,7 @@ _C.TEST.KEYPOINT_OKS_SIGMAS = []
 # Maximum number of detections to return per image during inference (100 is
 # based on the limit established for the COCO dataset).
 _C.TEST.DETECTIONS_PER_IMAGE = 100
+_C.TEST.DETECTION_SCORE_TS = [0.5]
 
 _C.TEST.AUG = CN({"ENABLED": False})
 _C.TEST.AUG.MIN_SIZES = (400, 500, 600, 700, 800, 900, 1000, 1100, 1200)
@@ -645,8 +645,7 @@ _C.TEST.AUG.FLIP = True
 _C.TEST.PRECISE_BN = CN({"ENABLED": False})
 _C.TEST.PRECISE_BN.NUM_ITER = 200
 _C.TEST.VIS = False
-_C.TEST.VIS_DET = False
-_C.TEST.VIS_HIST_ONLY = True
+_C.TEST.VIS_SIM_ONLY = False
 # speed up evaluation
 _C.TEST.IMS_PER_PROC = 4
 # ---------------------------------------------------------------------------- #
