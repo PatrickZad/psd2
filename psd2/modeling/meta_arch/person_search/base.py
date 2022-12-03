@@ -68,6 +68,7 @@ class SearchBase(nn.Module):
             pred_boxes: Boxes in augmentation range (resizing/cropping/flipping/...)
             pred_scores: tensor
             assign_ids: assigned person identities (during training only)
+            reid_feats: tensor
         """
         if "query" in input_list[0].keys():
             q_img_list = self.preprocess_input([qi["query"] for qi in input_list])

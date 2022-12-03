@@ -19,10 +19,11 @@ from torchvision.ops import box_iou
 import shutil
 from psd2.utils.visualizer import domain_hist_img
 import time
+from psd2.structures import Boxes, pairwise_iou
 
 logger = logging.getLogger(__name__)
 
-
+# NOTE evaluation in augmented box range
 class InfDetEvaluator(DatasetEvaluator):
     def __init__(
         self,
@@ -100,83 +101,85 @@ class InfDetEvaluator(DatasetEvaluator):
         self.count_tp_lb = {
             iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
         }
-        self.det_scores_per_domain = []
 
     def process(self, inputs, outputs):
         """
         Args:
             inputs:
-                a list of
+                a batch of
                 {
-                    "file_name": image paths,
-                    "image_id": image name,
-                    "image": image tensor,
-                    "width": image width,
-                    "height": image height,
-                    "boxes": boxes array,
-                    "ids": person ids list,
-                    "org_width": original width,
-                    "org_height": original height
+                    "image": augmented image tensor
+                    "instances": an Instances object with attrs
+                        {
+                            image_size: hw (int, int)
+                            file_name: full path string
+                            image_id: filename string
+                            gt_boxes: Boxes
+                            gt_classes: tensor full with 0s
+                            gt_pids: person identity tensor in [-1, max_id]
+                            org_img_size: hw before augmentation (int, int)
+                            org_gt_boxes: Boxes before augmentation
+                        }
                 }
             outputs:
+                a batch of instances with attrs
                 {
-                    "pred_boxes": abs cx_cy_w_h boxes tensor with coordinates in org range
-                    "pred_scores": scores tensor,B x N x 1
-                    "reid_feats": reid features tensor
-                } for one image, but batch_size dim still exists
+                    pred_boxes: Boxes in augmentation range (resizing/cropping/flipping/...)
+                    pred_scores: tensor
+                    assign_ids: assigned person identities (during training only)
+                    reid_feats: tensor
+                }
         """
 
         for bi, in_dict in enumerate(inputs):
+            gt_instances = in_dict["instances"].to(self._cpu_device)
+            pred_instances = outputs[bi].to(self._cpu_device)
             # save gt info
-            out_dict = {
-                k: v[bi] for k, v in outputs.items() if k != "pred_scores_domain"
-            }  # one dict for each image
-            gt_img_name = in_dict["image_id"]
-            box_t, ids_t = torch.tensor(in_dict["org_boxes"]), torch.tensor(
-                in_dict["ids"], dtype=torch.float32
-            ).unsqueeze(
-                1
-            )  # box xyxy_abs
-            gt_label = torch.cat([box_t, ids_t], dim=-1)
-            self.gallery_gts[gt_img_name] = gt_label
-            self.gallery_fnames[gt_img_name] = in_dict["file_name"]
+            gt_img_name = gt_instances.image_id
+            gt_boxes = gt_instances.gt_boxes
+            gt_pids = gt_instances.gt_pids
+            gt_label_t = torch.cat([gt_boxes.tensor, gt_pids.view(-1, 1)], dim=-1)
+            self.gallery_gts[gt_img_name] = gt_label_t
+            self.gallery_fnames[gt_img_name] = gt_instances.file_name
             # save inf results
-            # TODO check if topk needed
-            scores_t = out_dict["pred_scores"].squeeze(1)
+            scores_t = pred_instances.pred_scores.view(-1)
             if scores_t.shape[0] > self.topk:
                 _, idx = torch.topk(scores_t, self.topk)
                 scores_t = scores_t[idx]
-                out_boxes = out_dict["pred_boxes"][idx]
-                out_feats = out_dict["reid_feats"][idx]
+                out_boxes = pred_instances.pred_boxes[idx]
+                out_feats_t = pred_instances.reid_feats[idx]
             else:
-                out_boxes = out_dict["pred_boxes"]
-                out_feats = out_dict["reid_feats"]
-            inf_rt = torch.cat([out_boxes, scores_t[:, None], out_feats], dim=-1)
-            self.inf_results[gt_img_name] = inf_rt.to(self._cpu_device)
+                out_boxes = pred_instances.pred_boxes
+                out_feats_t = pred_instances.reid_feats
+            inf_rt = torch.cat(
+                [out_boxes.tensor, scores_t.view(-1, 1), out_feats_t], dim=-1
+            )
+            self.inf_results[gt_img_name] = inf_rt
         for st in self.threshs:
             self._det_proc(inputs, outputs, st)
 
     def _det_proc(self, inputs, outputs, sthred):
 
         for bi, in_dict in enumerate(inputs):
-            out_dict = {k: v[bi] for k, v in outputs.items()}  # one dict for each image
-            gt_boxes = torch.tensor(in_dict["org_boxes"])
-            gt_pids = torch.tensor(in_dict["ids"], dtype=torch.long)
-            det_boxes = out_dict["pred_boxes"].cpu()
-            det_scores = out_dict["pred_scores"].cpu()
-            num_gts = gt_boxes.shape[0]
-            num_lb_gts = (gt_pids > -1).sum().item()
-            if det_boxes.shape[0] > 0:
-                if det_boxes.shape[0] > self.topk:
-                    topk_scores, topk_idxs = torch.topk(det_scores[:, 0], self.topk)
+            gt_instances = in_dict["instances"].to(self._cpu_device)
+            pred_instances = outputs[bi].to(self._cpu_device)
+            gt_boxes = gt_instances.gt_boxes
+            gt_pids_t = gt_instances.gt_pids
+            det_boxes = pred_instances.pred_boxes
+            det_scores_t = pred_instances.pred_scores.view(-1)
+            num_gts = len(gt_boxes)
+            num_lb_gts = (gt_pids_t > -1).sum().item()
+            if len(det_boxes) > 0:
+                if len(det_boxes) > self.topk:
+                    topk_scores, topk_idxs = torch.topk(det_scores_t, self.topk)
                     topk_det_boxes = det_boxes[topk_idxs]
-                    det_scores = topk_scores[topk_scores >= sthred]
+                    det_scores_t = topk_scores[topk_scores >= sthred]
                     det_boxes = topk_det_boxes[topk_scores >= sthred]
-                    num_dets = det_boxes.shape[0]
+                    num_dets = len(det_boxes)
                 else:
-                    det_scores_mask = det_scores[:, 0] >= sthred
+                    det_scores_mask = det_scores_t >= sthred
                     det_boxes = det_boxes[det_scores_mask]
-                    num_dets = det_boxes.shape[0]
+                    num_dets = len(det_boxes)
             else:
                 num_dets = 0
             if num_dets == 0:
@@ -184,21 +187,17 @@ class InfDetEvaluator(DatasetEvaluator):
                     self.count_gt[iou_t][sthred] += num_gts
                     self.count_gt_lb[iou_t][sthred] += num_lb_gts
                     self._vis_samp(
-                        in_dict["file_name"],
-                        gt_boxes,
-                        torch.tensor(in_dict["ids"]),
-                        out_dict["pred_boxes"].cpu(),
-                        out_dict["pred_scores"].cpu(),
+                        gt_instances.file_name,
+                        gt_boxes.tensor,
+                        gt_pids_t,
+                        pred_instances.pred_boxes.tensor,
+                        pred_instances.pred_scores.view(-1),
                         iou_t,
                         sthred,
                     )
                 continue
 
-            """ious = torch.zeros((num_gts, num_dets), dtype=torch.float32)
-                for i in range(num_gts):
-                    for j in range(num_dets):
-                        ious[i, j] = get_iou(gt_boxes[i], det_boxes[j])"""
-            ious = box_iou(gt_boxes, det_boxes)
+            ious = pairwise_iou(gt_boxes, det_boxes)
             for iou_t in self.iou_threshs:
                 tfmat = ious >= iou_t
                 # for each det, keep only the largest iou of all the gt
@@ -214,22 +213,22 @@ class InfDetEvaluator(DatasetEvaluator):
                         if j != largest_ind:
                             tfmat[i, j] = False
                 for j in range(num_dets):
-                    self.y_scores[iou_t][sthred].append(det_scores[j].item())
+                    self.y_scores[iou_t][sthred].append(det_scores_t[j].item())
                     self.y_trues[iou_t][sthred].append(tfmat[:, j].any())
                 self.count_tp[iou_t][sthred] += tfmat.sum().item()
                 self.count_gt[iou_t][sthred] += num_gts
-                tfmat_lb = tfmat[gt_pids > -1, :]
+                tfmat_lb = tfmat[gt_pids_t > -1, :]
                 self.count_tp_lb[iou_t][sthred] += tfmat_lb.sum().item()
                 self.count_gt_lb[iou_t][sthred] += num_lb_gts
                 s_recall = tfmat.sum().item() / num_gts
                 s_precision = tfmat.sum().item() / num_dets
                 if s_recall < 1 or s_precision < 1:
                     self._vis_samp(
-                        in_dict["file_name"],
-                        gt_boxes,
-                        torch.tensor(in_dict["ids"]),
-                        out_dict["pred_boxes"].cpu(),
-                        out_dict["pred_scores"].cpu(),
+                        gt_instances.file_name,
+                        gt_boxes.tensor,
+                        gt_pids_t,
+                        pred_instances.pred_boxes.tensor,
+                        pred_instances.pred_scores.view(-1),
                         iou_t,
                         sthred,
                     )
@@ -257,8 +256,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 if len(f_gts) > 0:
                     for fs in f_gts:
                         save_gtfs.update(fs)
-            det_scores_per_domain = comm.gather(self.det_scores_per_domain, dst=0)
-            det_scores_per_domain = list(itertools.chain(*det_scores_per_domain))
             y_true_rs = comm.gather(self.y_trues, dst=0)
             y_score_rs = comm.gather(self.y_scores, dst=0)
             count_gt_rs = comm.gather(self.count_gt, dst=0)
@@ -305,7 +302,6 @@ class InfDetEvaluator(DatasetEvaluator):
             count_tps = self.count_tp
             count_gts_lb = self.count_gt_lb
             count_tps_lb = self.count_tp_lb
-            det_scores_per_domain = self.det_scores_per_domain
         save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
         save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt")
         if not os.path.exists(self._output_dir):
@@ -342,21 +338,6 @@ class InfDetEvaluator(DatasetEvaluator):
                         "RecallLb_iou{}_score{}".format(iou_t, st): det_rate_lb,
                     }
                 )
-        if len(det_scores_per_domain) > 0:
-            num_domains = len(det_scores_per_domain[0])
-            domain_scores = []
-            for di in range(num_domains):
-                domain_scores.append(
-                    torch.cat(
-                        [vals[di] for vals in det_scores_per_domain], dim=0
-                    ).numpy()
-                )
-            hist_rgb = domain_hist_img(domain_scores, 10)  # rgb hwc 255
-            img_name = str(time.time()) + ".png"
-            scrs_dir = opj(self._output_dir, self.dataset_name, "vis", "det")
-            if not os.path.exists(scrs_dir):
-                os.makedirs(scrs_dir)
-            Image.fromarray(hist_rgb).save(opj(scrs_dir, img_name))
         return copy.deepcopy(det_result)
 
     def _vis_samp(
@@ -375,12 +356,12 @@ class InfDetEvaluator(DatasetEvaluator):
         from psd2.utils.visualizer import VisImage
 
         if all_det_boxes.shape[0] > self.topk:
-            topk_scores, topk_idxs = torch.topk(all_det_scores[:, 0], self.topk)
+            topk_scores, topk_idxs = torch.topk(all_det_scores, self.topk)
             topk_det_boxes = all_det_boxes[topk_idxs]
             det_scores = topk_scores[topk_scores >= sthred]
             det_boxes = topk_det_boxes[topk_scores >= sthred]
         else:
-            det_scores_mask = all_det_scores[:, 0] >= sthred
+            det_scores_mask = all_det_scores >= sthred
             det_boxes = all_det_boxes[det_scores_mask]
             det_scores = all_det_scores[all_det_scores >= sthred]
 
@@ -416,7 +397,7 @@ class InfDetEvaluator(DatasetEvaluator):
         tgt_idxs = torch.arange(0, ious.shape[0], device=ious.device)
         max_iou_idxs = torch.argmax(ious, dim=1)
         select_scores[(tgt_idxs, max_iou_idxs)] = 1.0
-        select_scores *= all_det_scores[:, 0][None]
+        select_scores *= all_det_scores[None]
         best_matches = torch.argmax(select_scores, dim=1)
         vis_all = Visualizer(img.copy())
         for bi, box_idx in enumerate(best_matches):

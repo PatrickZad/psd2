@@ -19,41 +19,30 @@ else:
         return x
 
 
+# NOTE abs or rel is considered by the model
 @unique
 class BoxMode(IntEnum):
     """
     Enum of different ways to represent a box.
     """
 
-    XYXY_ABS = 0
+    XYXY = 0
     """
-    (x0, y0, x1, y1) in absolute floating points coordinates.
+    (x0, y0, x1, y1) in floating points coordinates.
     The coordinates in range [0, width or height].
     """
-    XYWH_ABS = 1
+    XYWH = 1
     """
-    (x0, y0, w, h) in absolute floating points coordinates.
+    (x0, y0, w, h) in floating points coordinates.
     """
-    XYXY_REL = 2
-    """
-    (x0, y0, x1, y1) in range [0, 1]. They are relative to the size of the image.
-    """
-    XYWH_REL = 3
-    """
-    (x0, y0, w, h) in range [0, 1]. They are relative to the size of the image.
-    """
-    XYWHA_ABS = 4
+    XYWHA = 4
     """
     (xc, yc, w, h, a) in absolute floating points coordinates.
     (xc, yc) is the center of the rotated box, and the angle a is in degrees ccw.
     """
-    CCWH_ABS = 5
+    CCWH = 5
     """
-    (xc, yc, w, h) in absolute floating points coordinates.
-    """
-    CCWH_REL = 6
-    """
-    (xc, yc, w, h) in range [0, 1]. They are relative to the size of the image.
+    (xc, yc, w, h) in floating points coordinates.
     """
 
     @staticmethod
@@ -87,7 +76,7 @@ class BoxMode(IntEnum):
             else:
                 arr = box.clone()
 
-        if from_mode == BoxMode.XYWHA_ABS and to_mode == BoxMode.XYXY_ABS:
+        if from_mode == BoxMode.XYWHA and to_mode == BoxMode.XYXY:
             assert (
                 arr.shape[-1] == 5
             ), "The last dimension of input shape must be 5 for XYWHA format"
@@ -111,7 +100,7 @@ class BoxMode(IntEnum):
             arr[:, 3] = arr[:, 1] + new_h
 
             arr = arr[:, :4].to(dtype=original_dtype)
-        elif from_mode == BoxMode.XYWH_ABS and to_mode == BoxMode.XYWHA_ABS:
+        elif from_mode == BoxMode.XYWH and to_mode == BoxMode.XYWHA:
             original_dtype = arr.dtype
             arr = arr.double()
             arr[:, 0] += arr[:, 2] / 2.0
@@ -119,24 +108,16 @@ class BoxMode(IntEnum):
             angles = torch.zeros((arr.shape[0], 1), dtype=arr.dtype)
             arr = torch.cat((arr, angles), axis=1).to(dtype=original_dtype)
         else:
-            if (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.XYWH_ABS) or (
-                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.XYWH_REL
-            ):
+            if to_mode == BoxMode.XYXY and from_mode == BoxMode.XYWH:
                 arr[:, 2] += arr[:, 0]
                 arr[:, 3] += arr[:, 1]
-            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.XYWH_ABS) or (
-                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.XYWH_REL
-            ):
+            elif from_mode == BoxMode.XYXY and to_mode == BoxMode.XYWH:
                 arr[:, 2] -= arr[:, 0]
                 arr[:, 3] -= arr[:, 1]
-            elif (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.CCWH_ABS) or (
-                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.CCWH_REL
-            ):
+            elif to_mode == BoxMode.XYXY and from_mode == BoxMode.CCWH:
                 arr[:, :2] = arr[:, :2] - arr[:, 2:] / 2
                 arr[:, 2:] = arr[:, :2] + arr[:, 2:]
-            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.CCWH_ABS) or (
-                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.CCWH_REL
-            ):
+            elif from_mode == BoxMode.XYXY and to_mode == BoxMode.CCWH:
                 arr[:, 2:] = arr[:, 2:] - arr[:, :2]
                 arr[:, :2] = arr[:, :2] + arr[:, 2:] / 2
             else:
@@ -166,7 +147,7 @@ class Boxes:
         tensor (torch.Tensor): float matrix of Nx4. Each row is (x1, y1, x2, y2).
     """
 
-    def __init__(self, tensor: torch.Tensor, box_mode=BoxMode.XYXY_ABS):
+    def __init__(self, tensor: torch.Tensor, box_mode=BoxMode.XYXY):
         """
         Args:
             tensor (Tensor[float]): a Nx4 matrix.  Each row is (x1, y1, x2, y2).
@@ -175,6 +156,8 @@ class Boxes:
             tensor.device if isinstance(tensor, torch.Tensor) else torch.device("cpu")
         )
         tensor = torch.as_tensor(tensor, dtype=torch.float32, device=device)
+        if tensor.dim() == 1:
+            tensor = tensor[None]
         if tensor.numel() == 0:
             # Use reshape, so we don't end up creating a new tensor that does not depend on
             # the inputs (and consequently confuses jit)
@@ -209,7 +192,10 @@ class Boxes:
         Returns:
             torch.Tensor: a vector with areas of each box.
         """
-        box = self.tensor
+        if self.box_mode != BoxMode.XYXY:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        else:
+            box = self.tensor
         area = (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1])
         return area
 
@@ -223,11 +209,19 @@ class Boxes:
         """
         assert torch.isfinite(self.tensor).all(), "Box tensor contains infinite or NaN!"
         h, w = box_size
-        x1 = self.tensor[:, 0].clamp(min=0, max=w)
-        y1 = self.tensor[:, 1].clamp(min=0, max=h)
-        x2 = self.tensor[:, 2].clamp(min=0, max=w)
-        y2 = self.tensor[:, 3].clamp(min=0, max=h)
-        self.tensor = torch.stack((x1, y1, x2, y2), dim=-1)
+        if self.box_mode != BoxMode.XYXY:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        else:
+            box = self.tensor
+        x1 = box[:, 0].clamp(min=0, max=w)
+        y1 = box[:, 1].clamp(min=0, max=h)
+        x2 = box[:, 2].clamp(min=0, max=w)
+        y2 = box[:, 3].clamp(min=0, max=h)
+        box = torch.stack((x1, y1, x2, y2), dim=-1)
+        if self.box_mode != BoxMode.XYXY:
+            box = BoxMode.convert(self.tensor, BoxMode.XYXY, self.box_mode)
+
+        self.tensor = box
 
     def nonempty(self, threshold: float = 0.0) -> torch.Tensor:
         """
@@ -239,7 +233,10 @@ class Boxes:
                 a binary vector which represents whether each box is empty
                 (False) or non-empty (True).
         """
-        box = self.tensor
+        if self.box_mode != BoxMode.XYXY:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        else:
+            box = self.tensor
         widths = box[:, 2] - box[:, 0]
         heights = box[:, 3] - box[:, 1]
         keep = (widths > threshold) & (heights > threshold)
@@ -289,12 +286,16 @@ class Boxes:
         Returns:
             a binary vector, indicating whether each box is inside the reference box.
         """
+        if self.box_mode != BoxMode.XYXY:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        else:
+            box = self.tensor
         height, width = box_size
         inds_inside = (
-            (self.tensor[..., 0] >= -boundary_threshold)
-            & (self.tensor[..., 1] >= -boundary_threshold)
-            & (self.tensor[..., 2] < width + boundary_threshold)
-            & (self.tensor[..., 3] < height + boundary_threshold)
+            (box[..., 0] >= -boundary_threshold)
+            & (box[..., 1] >= -boundary_threshold)
+            & (box[..., 2] < width + boundary_threshold)
+            & (box[..., 3] < height + boundary_threshold)
         )
         return inds_inside
 
@@ -303,7 +304,18 @@ class Boxes:
         Returns:
             The box centers in a Nx2 array of (x, y).
         """
-        return (self.tensor[:, :2] + self.tensor[:, 2:]) / 2
+        if self.box_mode != BoxMode.CCWH:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH)
+        else:
+            box = self.tensor
+        return box[:, :2]
+
+    def get_sizes(self) -> torch.Tensor:
+        if self.box_mode != BoxMode.CCWH:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH)
+        else:
+            box = self.tensor
+        return torch.cat(box[:, -1:], box[:, -2:-1], dim=-1)
 
     def scale(self, scale_x: float, scale_y: float) -> None:
         """
@@ -359,7 +371,9 @@ def pairwise_intersection(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: intersection, sized [N,M].
     """
-    boxes1, boxes2 = boxes1.tensor, boxes2.tensor
+    boxes1, boxes2 = BoxMode.convert(
+        boxes1.tensor, boxes1.box_mode, BoxMode.XYXY
+    ), BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY)
     width_height = torch.min(boxes1[:, None, 2:], boxes2[:, 2:]) - torch.max(
         boxes1[:, None, :2], boxes2[:, :2]
     )  # [N,M,2]
@@ -383,6 +397,8 @@ def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: IoU, sized [N,M].
     """
+    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
+    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)
@@ -406,6 +422,8 @@ def pairwise_ioa(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: IoA, sized [N,M].
     """
+    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
+    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)
 
@@ -431,7 +449,8 @@ def pairwise_point_box_distance(points: torch.Tensor, boxes: Boxes):
             the point to the left, top, right, bottom of the box.
     """
     x, y = points.unsqueeze(dim=2).unbind(dim=1)  # (N, 1)
-    x0, y0, x1, y1 = boxes.tensor.unsqueeze(dim=0).unbind(dim=2)  # (1, M)
+    boxes_t = BoxMode.convert(boxes.box_mode, BoxMode.XYXY)
+    x0, y0, x1, y1 = boxes_t.unsqueeze(dim=0).unbind(dim=2)  # (1, M)
     return torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
 
 
@@ -452,6 +471,8 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     ), "boxlists should have the same" "number of entries, got {}, {}".format(
         len(boxes1), len(boxes2)
     )
+    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
+    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [N]
     box1, box2 = boxes1.tensor, boxes2.tensor
@@ -463,111 +484,22 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     return iou
 
 
-# ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-# ------------------------------------------------------------------------
-# Modified from DETR (https://github.com/facebookresearch/detr)
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-# ------------------------------------------------------------------------
-
-"""
-Utilities for bounding box manipulation and GIoU.
-"""
-import torch
-from torchvision.ops.boxes import box_area
-
-
-def box_cxcywh_to_xyxy(x):
-    x_c, y_c, w, h = x.unbind(-1)
-    b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    return torch.stack(b, dim=-1)
-
-
-def box_xyxy_to_cxcywh(x):
-    x0, y0, x1, y1 = x.unbind(-1)
-    b = [(x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0), (y1 - y0)]
-    return torch.stack(b, dim=-1)
-
-
-# modified from torchvision to also return the union
-def box_iou(boxes1, boxes2):
-    area1 = box_area(boxes1)
-    area2 = box_area(boxes2)
-
-    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
-    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
-
-    wh = (rb - lt).clamp(min=0)  # [N,M,2]
-    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
-
+def pairwise_giou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
+    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
+    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
+    area1 = boxes1.area()  # [N]
+    area2 = boxes2.area()  # [M]
+    inter = pairwise_intersection(boxes1, boxes2)
     union = area1[:, None] + area2 - inter
+    iou = torch.where(
+        inter > 0,
+        inter / union,
+        torch.zeros(1, dtype=inter.dtype, device=inter.device),
+    )
 
-    iou = inter / union
-    return iou, union
-
-
-def generalized_box_iou(boxes1, boxes2):
-    """
-    Generalized IoU from https://giou.stanford.edu/
-
-    The boxes should be in [x0, y0, x1, y1] format
-
-    Returns a [N, M] pairwise matrix, where N = len(boxes1)
-    and M = len(boxes2)
-    """
-    # degenerate boxes gives inf / nan results
-    # so do an early check
-    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
-    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
-    iou, union = box_iou(boxes1, boxes2)
-
-    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
-    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
+    lt = torch.min(boxes1.tensor[:, None, :2], boxes2.tensor[:, :2])
+    rb = torch.max(boxes1.tensor[:, None, 2:], boxes2.tensor[:, 2:])
 
     wh = (rb - lt).clamp(min=0)  # [N,M,2]
-    area = wh[:, :, 0] * wh[:, :, 1]
-
-    return iou - (area - union) / area
-
-
-# modified from torchvision to also return the union
-def pairwise_box_iou(boxes1, boxes2):
-    area1 = box_area(boxes1)
-    area2 = box_area(boxes2)
-
-    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
-    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
-
-    wh = (rb - lt).clamp(min=0)  # [N,M,2]
-    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
-
-    union = area1[:, None] + area2 - inter
-
-    iou = inter / union
-    return iou, union
-
-
-def pairwise_generalized_box_iou(boxes1, boxes2):
-    """
-    Generalized IoU from https://giou.stanford.edu/
-
-    The boxes should be in [x0, y0, x1, y1] format
-
-    Returns a [N, M] pairwise matrix, where N = len(boxes1)
-    and M = len(boxes2)
-    """
-    # degenerate boxes gives inf / nan results
-    # so do an early check
-    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
-    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
-    iou, union = pairwise_box_iou(boxes1, boxes2)
-
-    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
-    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
-
-    wh = (rb - lt).clamp(min=0)  # [N,M,2]
-    area = wh[:, :, 0] * wh[:, :, 1]
-
-    return iou - (area - union) / area
+    area_c = wh[:, :, 0] * wh[:, :, 1]
+    return iou - (area_c - union) / area_c

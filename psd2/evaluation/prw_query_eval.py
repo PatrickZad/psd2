@@ -1,21 +1,15 @@
 from .query_evaluator import QueryEvaluator
 from copy import copy
-import enum
-from math import inf
-from typing import OrderedDict
 import psd2.utils.comm as comm
-
 import torch
 import logging
-from .evaluator import DatasetEvaluator
 import itertools
-import os
 import numpy as np
 from torchvision.ops.boxes import box_iou
 from sklearn.metrics import average_precision_score
 import copy
-import torch.nn.functional as F
 import re
+from psd2.structures import Boxes, BoxMode, pairwise_iou
 
 logger = logging.getLogger(__name__)
 
@@ -49,35 +43,40 @@ class PrwQueryEvaluator(QueryEvaluator):
 
     def process(self, inputs, outputs):
         """
-        inputs:
-            [
+        Args:
+            inputs:
+                a batch of
+                { "query":
+                    {
+                        "image": augmented image tensor
+                        "instances": an Instances object with attrs
+                            {
+                                image_size: hw (int, int)
+                                file_name: full path string
+                                image_id: filename string
+                                gt_boxes: Boxes (1 , 4)
+                                gt_classes: tensor full with 0s
+                                gt_pids: person identity tensor (1,)
+                                org_img_size: hw before augmentation (int, int)
+                                org_gt_boxes: Boxes before augmentation
+                            }
+                    }
+                }
+            outputs:
+                a batch of instances with attrs
                 {
-                    "query":
-                        {
-                            "file_name": image paths,
-                            "image_id": image name,
-                            "annotations":
-                                [
-                                    {
-                                        "bbox": person xyxy_abs box,
-                                        "bbox_mode": format of bbox
-                                        "person_id":  person id
-                                    }
-                                ],
-                            ...(other optional items)
-                        },
-                },
-                ...
-            ]
-        outputs:
-            dummy inputs
+                    reid_feats: tensor (1,pfeat_dim)
+                }
+                or
+                a batch of empty instances
         """
+
         for bi, in_dict in enumerate(inputs):
             query_dict = in_dict["query"]
-            q_imgid = query_dict["image_id"]
-            q_pid = query_dict["annotations"][0]["person_id"]
-            q_box = query_dict["annotations"][0]["bbox"]
-            q_box = torch.tensor(q_box)
+            q_instances = query_dict["instances"].to(self._cpu_device)
+            q_imgid = q_instances.image_id
+            q_pid = q_instances.gt_pids
+            q_box = q_instances.gt_boxes
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.det_score_thresh}
             y_scores = {dst: [] for dst in self.det_score_thresh}
@@ -93,61 +92,44 @@ class PrwQueryEvaluator(QueryEvaluator):
             query_gts = {}
             for gt_img_id, gt_img_label in self.gts.items():
                 if gt_img_id != q_imgid:
-                    gt_boxes = gt_img_label[:, :4]
+                    gt_boxes_t = gt_img_label[:, :4]
                     gt_ids = gt_img_label[:, 4].long()
                     gallery_imgs.append(
                         {
                             "image_id": gt_img_id,
-                            "boxes": gt_boxes,
+                            "boxes_t": gt_boxes_t,
                             "ids": gt_ids,
                         }
                     )
                     if q_pid in gt_ids.tolist():
-                        query_gts[gt_img_id] = gt_boxes[gt_ids == q_pid].squeeze(0)
+                        query_gts[gt_img_id] = gt_boxes_t[gt_ids == q_pid].squeeze(0)
 
             for dst in self.det_score_thresh:
-                if "feat" in query_dict:
-                    feat_q = query_dict["feat"].to(self._cpu_device)
+                pred_instances = outputs[bi].to(self._cpu_device)
+                if pred_instances.has("reid_feats"):
+                    feat_q = pred_instances.reid_feats
                 else:
-                    query_img_boxes, query_img_feats = self._get_gallery_dets(
+                    query_img_boxes_t, query_img_feats = self._get_gallery_dets(
                         q_imgid, dst
                     )[:, :4], self._get_gallery_feats(q_imgid, dst)
-                    if query_img_boxes.shape[0] == 0:
+                    if query_img_boxes_t.shape[0] == 0:
                         # no detection in this query image
-
+                        logger.warning(
+                            "Undetected query person in {} !".format(q_imgid)
+                        )
                         continue
-                        """
-                        for item in gallery_imgs:
-                            gallery_imname = item["image_id"]
-                            g_cid = _get_img_cid(gallery_imname)
-                            # some contain the query (gt not empty), some not
-                            count_gts[dst] += gallery_imname in query_gts
-                            if g_cid != q_cid:
-                                # some contain the query (gt not empty), some not
-                                count_gts_mlv[dst] += gallery_imname in query_gts
-                            # compute distance between query and gallery dets
-                            if gallery_imname not in self.infs:
-                                continue
-                            det, feat_g = self._get_gallery_dets(
-                                gallery_imname, dst
-                            ), self._get_gallery_feats(gallery_imname, dst)
-                            # no detection in this gallery, skip it
-                            if det.shape[0] == 0:
-                                continue
-                            label = torch.zeros(feat_g.shape[0], dtype=torch.int)
-                            sim = torch.zeros(feat_g.shape[0], dtype=torch.float)
-                            y_trues[dst].extend(label.tolist())
-                            y_scores[dst].extend(sim.tolist())
-                            # multi view
-                            if g_cid != q_cid:
-                                y_trues_mlv[dst].extend(label.tolist())
-                                y_scores_mlv[dst].extend(sim.tolist())
-                        continue
-                        """
-
-                    ious = box_iou(q_box[None, :], query_img_boxes)
-                    max_iou, nmax = torch.max(ious, dim=1)
-                    feat_q = query_img_feats[nmax.item()]
+                    else:
+                        ious = pairwise_iou(
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                        )
+                        max_iou, nmax = torch.max(ious, dim=1)
+                        if max_iou < 0.4:
+                            logger.warning(
+                                "Low-quality {} query person detected in {} !".format(
+                                    max_iou.item(), q_imgid
+                                )
+                            )
+                        feat_q = query_img_feats[nmax.item()]
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm
                 name2sim = {}
@@ -174,7 +156,9 @@ class PrwQueryEvaluator(QueryEvaluator):
                     # get L2-normalized feature matrix NxD
                     # feat_g = F.normalize(feat_g)  # NOTE keep post norm
                     # compute cosine similarities
-                    sim = torch.mm(feat_g, feat_q[:, None]).squeeze(1)  # n x 1 -> n
+                    sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
+                        1
+                    )  # n x 1 -> n
 
                     if gallery_imname in name2sim:
                         continue

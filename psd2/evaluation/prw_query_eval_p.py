@@ -1,21 +1,14 @@
 from .query_evaluator import QueryEvaluator
-from copy import copy
-
-import psd2.utils.comm as comm
-
+from psd2.structures import Boxes, BoxMode, pairwise_iou
 import torch
 import logging
-
-import itertools
-
 import numpy as np
 from torchvision.ops.boxes import box_iou
 from sklearn.metrics import average_precision_score
 import copy
-
 import re
 from torch.utils.data import Dataset, DataLoader
-
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +29,7 @@ class PrwQueryEvaluatorP(QueryEvaluator):
         vis=False,
         hist_only=False,
     ):
+        assert not distributed
         super().__init__(
             dataset_name, distributed, output_dir, s_threds, vis, hist_only
         )
@@ -50,35 +44,40 @@ class PrwQueryEvaluatorP(QueryEvaluator):
 
     def process(self, inputs, outputs):
         """
-        inputs:
-            [
+        Args:
+            inputs:
+                a batch of
+                { "query":
+                    {
+                        "image": augmented image tensor
+                        "instances": an Instances object with attrs
+                            {
+                                image_size: hw (int, int)
+                                file_name: full path string
+                                image_id: filename string
+                                gt_boxes: Boxes (1 , 4)
+                                gt_classes: tensor full with 0s
+                                gt_pids: person identity tensor (1,)
+                                org_img_size: hw before augmentation (int, int)
+                                org_gt_boxes: Boxes before augmentation
+                            }
+                    }
+                }
+            outputs:
+                a batch of instances with attrs
                 {
-                    "query":
-                        {
-                            "file_name": image paths,
-                            "image_id": image name,
-                            "annotations":
-                                [
-                                    {
-                                        "bbox": person xyxy_abs box,
-                                        "bbox_mode": format of bbox
-                                        "person_id":  person id
-                                    }
-                                ],
-                            ...(other optional items)
-                        },
-                },
-                ...
-            ]
-        outputs:
-            dummy inputs
+                    reid_feats: tensor (1,pfeat_dim)
+                }
+                or
+                a batch of empty instances
         """
-        for item in inputs:
-            q_dict = item["query"]
-            q_dict.pop("image")
-            if "feat" in q_dict:
-                q_dict["feat"] = q_dict["feat"].to(self._cpu_device)
-        self.inf_results.append(inputs)
+        # NOTE save pairs (query gt instances, query pred instances)
+        save_inputs = []
+        for item_in, inst_pred in zip(inputs, outputs):
+            q_gt_instances = item_in["instances"].to(self._cpu_device)
+            q_pred_instances = inst_pred.to(self._cpu_device)
+            save_inputs.append((q_gt_instances, q_pred_instances))
+        self.inf_results.append(save_inputs)
 
     def evaluate(self):
         eval_dataset = EvaluatorDataset(self.inf_results, self)
@@ -89,29 +88,19 @@ class PrwQueryEvaluatorP(QueryEvaluator):
             num_workers=8,
             collate_fn=lambda x: x,
         )
-        print("Parallel evaluating")
-        for b_rst in eval_worker:
-            rst_aps, rst_accs, rst_aps_mlv, rst_accs_mlv = b_rst[0]
-            for st in self.det_score_thresh:
-                self.aps[st].extend(rst_aps[st])
-                self.accs[st].extend(rst_accs[st])
-                self.aps_mlv[st].extend(rst_aps_mlv[st])
-                self.accs_mlv[st].extend(rst_accs_mlv[st])
+        logger.info("Parallel evaluating on {}:".format(self.dataset_name))
+        with tqdm(total=len(eval_worker)) as pbar:
+            for b_rst in eval_worker:
+                rst_aps, rst_accs, rst_aps_mlv, rst_accs_mlv = b_rst[0]
+                for st in self.det_score_thresh:
+                    self.aps[st].extend(rst_aps[st])
+                    self.accs[st].extend(rst_accs[st])
+                    self.aps_mlv[st].extend(rst_aps_mlv[st])
+                    self.accs_mlv[st].extend(rst_accs_mlv[st])
+                pbar.update(1)
         mix_eval_results = super().evaluate()
-        if self._distributed:
-            comm.synchronize()
-            aps_all = comm.gather(self.aps_mlv, dst=0)
-            accs_all = comm.gather(self.accs_mlv, dst=0)
-            if not comm.is_main_process():
-                return {}
-            aps = {}
-            accs = {}
-            for dst in self.det_score_thresh:
-                aps[dst] = list(itertools.chain(*[ap[dst] for ap in aps_all]))
-                accs[dst] = list(itertools.chain(*[acc[dst] for acc in accs_all]))
-        else:
-            aps = self.aps_mlv
-            accs = self.accs_mlv
+        aps = self.aps_mlv
+        accs = self.accs_mlv
 
         for dst in self.det_score_thresh:
             logger.info(
@@ -147,11 +136,10 @@ class EvaluatorDataset(Dataset):
         rst_aps = {st: [] for st in self.eval_ref.det_score_thresh}
         rst_accs = {st: [] for st in self.eval_ref.det_score_thresh}
         for bi, in_dict in enumerate(inputs):
-            query_dict = in_dict["query"]
-            q_imgid = query_dict["image_id"]
-            q_pid = query_dict["annotations"][0]["person_id"]
-            q_box = query_dict["annotations"][0]["bbox"]
-            q_box = torch.tensor(q_box)
+            q_gt_instances, q_pred_instances = in_dict
+            q_imgid = q_gt_instances.image_id
+            q_pid = q_gt_instances.gt_pids
+            q_box = q_gt_instances.gt_boxes
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
@@ -167,31 +155,43 @@ class EvaluatorDataset(Dataset):
             query_gts = {}
             for gt_img_id, gt_img_label in self.eval_ref.gts.items():
                 if gt_img_id != q_imgid:
-                    gt_boxes = gt_img_label[:, :4]
+                    gt_boxes_t = gt_img_label[:, :4]
                     gt_ids = gt_img_label[:, 4].long()
                     gallery_imgs.append(
                         {
                             "image_id": gt_img_id,
-                            "boxes": gt_boxes,
+                            "boxes_t": gt_boxes_t,
                             "ids": gt_ids,
                         }
                     )
                     if q_pid in gt_ids.tolist():
-                        query_gts[gt_img_id] = gt_boxes[gt_ids == q_pid].squeeze(0)
+                        query_gts[gt_img_id] = gt_boxes_t[gt_ids == q_pid].squeeze(0)
 
             for dst in self.eval_ref.det_score_thresh:
-                if "feat" in query_dict:
-                    feat_q = query_dict["feat"]
+                if q_pred_instances.has("reid_feats"):
+                    feat_q = q_pred_instances.reid_feats
                 else:
-                    query_img_boxes, query_img_feats = self.eval_ref._get_gallery_dets(
+                    query_img_boxes_t, query_img_feats = self._get_gallery_dets(
                         q_imgid, dst
-                    )[:, :4], self.eval_ref._get_gallery_feats(q_imgid, dst)
-                    if query_img_boxes.shape[0] == 0:
+                    )[:, :4], self._get_gallery_feats(q_imgid, dst)
+                    if query_img_boxes_t.shape[0] == 0:
                         # no detection in this query image
+                        logger.warning(
+                            "Undetected query person in {} !".format(q_imgid)
+                        )
                         continue
-                    ious = box_iou(q_box[None, :], query_img_boxes)
-                    max_iou, nmax = torch.max(ious, dim=1)
-                    feat_q = query_img_feats[nmax.item()]
+                    else:
+                        ious = pairwise_iou(
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                        )
+                        max_iou, nmax = torch.max(ious, dim=1)
+                        if max_iou < 0.4:
+                            logger.warning(
+                                "Low-quality {} query person detected in {} !".format(
+                                    max_iou.item(), q_imgid
+                                )
+                            )
+                        feat_q = query_img_feats[nmax.item()]
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm
                 name2sim = {}
@@ -218,7 +218,9 @@ class EvaluatorDataset(Dataset):
                     # get L2-normalized feature matrix NxD
                     # feat_g = F.normalize(feat_g)  # NOTE keep post norm
                     # compute cosine similarities
-                    sim = torch.mm(feat_g, feat_q[:, None]).squeeze(1)  # n x 1 -> n
+                    sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
+                        1
+                    )  # n x 1 -> n
 
                     if gallery_imname in name2sim:
                         continue

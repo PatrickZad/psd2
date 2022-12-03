@@ -89,7 +89,7 @@ def load_prw(dataset_dir, subset=subsets[0]):
                                 "annotations": [
                                     {
                                         "bbox": box,
-                                        "bbox_mode": BoxMode.XYXY_ABS,
+                                        "bbox_mode": BoxMode.XYXY,
                                         "person_id": get_resort_id(pid),
                                     }
                                 ],
@@ -144,7 +144,7 @@ def _load_subset_full_anno(dataset_dir, subset_name):
                     "annotations": [
                         {
                             "bbox": boxes[i],
-                            "bbox_mode": BoxMode.XYXY_ABS,
+                            "bbox_mode": BoxMode.XYXY,
                             "person_id": get_resort_id(ids[i]),
                         }
                         for i in range(boxes.shape[0])

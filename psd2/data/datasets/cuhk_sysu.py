@@ -35,24 +35,6 @@ def _set_box_pid(boxes, box, pids, pid):
     logging.warning("Person: %s, box: %s cannot find in images." % (pid, box))
 
 
-def _get_box_pid(boxes, box, pids):
-    for i in range(boxes.shape[0]):
-        if np.all(boxes[i] == box):
-            return pids[i]
-    logging.warning("Box: %s cannot find in images." % (box))
-
-
-def _get_map_id(org_id):
-    global id_map_dict
-    global next_id
-    if org_id in id_map_dict:
-        return id_map_dict[org_id]
-    else:
-        id_map_dict[org_id] = next_id
-        next_id += 1
-        return id_map_dict[org_id]
-
-
 def load_cuhk_sysu(dataset_dir, subset="Train"):
     """
     Returns:
@@ -166,7 +148,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                     "annotations": [
                         {
                             "bbox": boxes[i],
-                            "bbox_mode": BoxMode.XYXY_ABS,
+                            "bbox_mode": BoxMode.XYXY,
                             "person_id": ids[i],
                         }
                         for i in range(boxes.shape[0])
@@ -217,7 +199,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                                 "annotations": [
                                     {
                                         "bbox": np.array([], dtype=np.float32),
-                                        "bbox_mode": BoxMode.XYXY_ABS,
+                                        "bbox_mode": BoxMode.XYXY,
                                         "person_id": None,
                                     }
                                 ],
@@ -240,7 +222,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": gbox_xyxy,
-                                    "bbox_mode": BoxMode.XYXY_ABS,
+                                    "bbox_mode": BoxMode.XYXY,
                                     "person_id": index + max_train_id + 1,
                                 }
                             ],
@@ -257,7 +239,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": box,
-                                    "bbox_mode": BoxMode.XYXY_ABS,
+                                    "bbox_mode": BoxMode.XYXY,
                                     "person_id": index + max_train_id + 1,
                                 }
                             ],
@@ -294,7 +276,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": boxes[i],
-                                    "bbox_mode": BoxMode.XYXY_ABS,
+                                    "bbox_mode": BoxMode.XYXY,
                                     "person_id": ids[i],
                                 }
                                 for i in range(boxes.shape[0])

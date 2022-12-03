@@ -87,15 +87,16 @@ class SearchMapper(object):
             rst = {}
             rst["query"] = self._transform_annotations(img_dict["query"])
             if "gallery" in img_dict:
-                rst["gallery"] = []
+                rst["gallery"] = {"instances_list": []}
                 for gann in img_dict["gallery"]:
                     g_instance = Instances(
                         image_size=None,
                         file_name=gann["file_name"],
                         image_id=gann["image_id"],
                         gt_boxes=Boxes(gann["bbox"]),
+                        gt_pids=[gann["person_id"]],
                     )
-                    rst["gallery"].append(g_instance)
+                    rst["gallery"]["instances_list"].append(g_instance)
             return rst
         else:
             return self._transform_annotations(img_dict)
