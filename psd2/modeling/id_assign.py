@@ -2,24 +2,28 @@ from typing import Iterable
 import torch
 from abc import ABCMeta, abstractmethod
 import torchvision
+from psd2.config.config import configurable
 
-id_assigners = {}
 
-
-class IdAssigner:
+class IdAssigner(metaclass=ABCMeta):
     """Base assigner that assigns boxes to ground truth boxes."""
 
+    @abstractmethod
     def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         """Assign boxes to either a ground truth boxes or a negative boxes."""
-        raise NotImplementedError
 
 
 class IouIDAssigner(IdAssigner):
-    def __init__(self, iou_t, score_t=0) -> None:
+    @configurable()
+    def __init__(self, iou_t=0.7, score_t=0.5) -> None:
         self.iou_t = iou_t
         self.score_t = score_t
 
-    def assign(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
+    @classmethod
+    def from_config(cls, ids_cfg):
+        return {"iou_t": ids_cfg.POS_IOU, "score_t": ids_cfg.POS_SCORE}
+
+    def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         """
         boxes: xyxy
         """
@@ -48,22 +52,25 @@ class IouIDAssigner(IdAssigner):
 
 
 class DetIDAssigner(IdAssigner):
-    def assign(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
-        match_indices = kws["match_indices"]
+    def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
+        match_indices = kws["match_indices"]  # a batch of ( idxs_pred, idxs_gt )
         pass
 
 
 class FoveaIDAssigner(IdAssigner):
-    def assign(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
+    def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         ref_pts = kws["ref_pts"]
-        return super().assign(det_bboxes, det_scores, gt_bboxes, gt_labels, **kws)
 
 
-class FoveaIDAssigner(IdAssigner):
-    def assign(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
+class CenterIDAssigner(IdAssigner):
+    def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         ref_pts = kws["ref_pts"]
-        return super().assign(det_bboxes, det_scores, gt_bboxes, gt_labels, **kws)
 
 
 def build_id_assigner(ids_cfg):
-    pass
+    return {
+        "iou": IouIDAssigner,
+        "det": DetIDAssigner,
+        "fovea": FoveaIDAssigner,
+        "center": CenterIDAssigner,
+    }[ids_cfg.NAME](ids_cfg)

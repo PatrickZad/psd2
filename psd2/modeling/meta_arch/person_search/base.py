@@ -1,18 +1,13 @@
-import os
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
 from ...backbone import build_backbone
 from ..build import META_ARCH_REGISTRY
-from psd2.structures import ImageList, Instances, Boxes, BoxMode
+from psd2.structures import ImageList, BoxMode
 from psd2.utils.events import get_event_storage
-from psd2.utils.visualizer import pca_feat, Visualizer
-from psd2.structures.boxes import box_cxcywh_to_xyxy
 import torchvision.transforms.functional as tvF
-from PIL import Image
 from psd2.utils.visualizer import Visualizer, mlvl_pca_feat
+from psd2.config.config import configurable
 
 COLORS = ["r", "g", "b", "y", "c", "m"]
 T_COLORS_BG = {
@@ -27,25 +22,31 @@ T_COLORS_BG = {
 
 @META_ARCH_REGISTRY.register()
 class SearchBase(nn.Module):
-    def __init__(self, cfg):
+    @configurable()
+    def __init__(self, backbone, pix_mean, pix_std, vis_period):
         super().__init__()
-        self.cfg = cfg
-        self.backbone = build_backbone(cfg)
+        self.backbone = backbone
 
-        self.register_buffer(
-            "pixel_mean", torch.Tensor(cfg.MODEL.PIXEL_MEAN).view(-1, 1, 1)
-        )
-        self.register_buffer(
-            "pixel_std", torch.Tensor(cfg.MODEL.PIXEL_STD).view(-1, 1, 1)
-        )
+        self.register_buffer("pixel_mean", torch.Tensor(pix_mean).view(-1, 1, 1))
+        self.register_buffer("pixel_std", torch.Tensor(pix_std).view(-1, 1, 1))
         assert (
             self.pixel_mean.shape == self.pixel_std.shape
         ), f"{self.pixel_mean} and {self.pixel_std} have different shapes!"
-        self.vis_period = cfg.VIS_PERIOD
+        self.vis_period = vis_period
 
     @property
     def device(self):
         return self.pixel_mean.device
+
+    @classmethod
+    def from_config(cls, cfg):
+        backbone = build_backbone(cfg)
+        return {
+            "backbone": backbone,
+            "pixel_mean": cfg.MODEL.PIXEL_MEAN,
+            "pixel_std": cfg.MODEL.PIXEL_STD,
+            "vis_period": cfg.VIS_PERIOD,
+        }
 
     def preprocess_input(self, input_list):
         images = [x["image"].to(self.device) for x in input_list]
