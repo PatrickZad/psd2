@@ -37,29 +37,29 @@ class ImageList(object):
         self,
         tensor: torch.Tensor,
         image_sizes: List[Tuple[int, int]],
-        masks: Optional[Tensor],
+        mask: Optional[Tensor] = None,
     ):
         """
         Arguments:
             tensor (Tensor): of shape (N, H, W) or (N, C_1, ..., C_K, H, W) where K >= 1
             image_sizes (list[tuple[int, int]]): Each tuple is (h, w). It can
                 be smaller than (H, W) due to padding.
-            masks: indicating padding area (True for padding)
+            mask: indicating padding area (True for padding)
         """
-        assert image_sizes is not None or masks is not None
+        assert image_sizes is not None or mask is not None
         self.tensor = tensor
         if image_sizes is None:
-            self.masks = masks
-            inv_masks = 1 - masks.int()
+            self.mask = mask
+            inv_mask = 1 - mask.int()
             self.image_sizes = torch.stack(
-                [inv_masks.sum(dim=1)[:, 0], inv_masks.sum(dim=2)[:, 0]], dim=-1
+                [inv_mask.sum(dim=1)[:, 0], inv_mask.sum(dim=2)[:, 0]], dim=-1
             ).tolist()  # B x 2 hw
-        elif masks is None:
+        elif mask is None:
             self.image_sizes = image_sizes  # unpadded image sizes
-            masks = torch.ones_like(tensor)
-            for bi in range(tensor.shape(0)):
-                masks[bi, : image_sizes[bi][0], : image_sizes[bi][1]] = 0
-            self.masks = masks.bool()
+            mask = torch.ones_like(tensor)
+            for bi in range(tensor.shape[0]):
+                mask[bi, : image_sizes[bi][0], : image_sizes[bi][1]] = 0
+            self.mask = mask.bool()
 
     def __len__(self) -> int:
         return len(self.image_sizes)
@@ -80,16 +80,16 @@ class ImageList(object):
     @torch.jit.unused
     def to(self, *args: Any, **kwargs: Any) -> "ImageList":
         cast_tensor = self.tensor.to(*args, **kwargs)
-        masks = self.masks
-        cast_masks = masks.to(device)
-        return ImageList(cast_tensor, self.image_sizes, cast_masks)
+        mask = self.mask
+        cast_mask = mask.to(device)
+        return ImageList(cast_tensor, self.image_sizes, cast_mask)
 
     @property
     def device(self) -> device:
         return self.tensor.device
 
     def decompose(self):
-        return self.tensors, self.masks
+        return self.tensors, self.mask
 
     @staticmethod
     def from_tensors(

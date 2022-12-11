@@ -148,7 +148,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                     "annotations": [
                         {
                             "bbox": boxes[i],
-                            "bbox_mode": BoxMode.XYXY,
+                            "bbox_mode": BoxMode.XYXY_ABS,
                             "person_id": ids[i],
                         }
                         for i in range(boxes.shape[0])
@@ -199,7 +199,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                                 "annotations": [
                                     {
                                         "bbox": np.array([], dtype=np.float32),
-                                        "bbox_mode": BoxMode.XYXY,
+                                        "bbox_mode": BoxMode.XYXY_ABS,
                                         "person_id": None,
                                     }
                                 ],
@@ -222,7 +222,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": gbox_xyxy,
-                                    "bbox_mode": BoxMode.XYXY,
+                                    "bbox_mode": BoxMode.XYXY_ABS,
                                     "person_id": index + max_train_id + 1,
                                 }
                             ],
@@ -239,7 +239,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": box,
-                                    "bbox_mode": BoxMode.XYXY,
+                                    "bbox_mode": BoxMode.XYXY_ABS,
                                     "person_id": index + max_train_id + 1,
                                 }
                             ],
@@ -276,7 +276,7 @@ def load_cuhk_sysu(dataset_dir, subset="Train"):
                             "annotations": [
                                 {
                                     "bbox": boxes[i],
-                                    "bbox_mode": BoxMode.XYXY,
+                                    "bbox_mode": BoxMode.XYXY_ABS,
                                     "person_id": ids[i],
                                 }
                                 for i in range(boxes.shape[0])

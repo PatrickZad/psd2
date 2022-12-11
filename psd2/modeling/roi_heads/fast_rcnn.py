@@ -306,8 +306,6 @@ class FastRCNNOutputLayers(nn.Module):
             if len(proposals)
             else torch.empty(0)
         )
-        # NOTE for person det only
-        gt_classes[gt_classes > 1] = 0
 
         _log_classification_stats(scores, gt_classes)
 
@@ -493,85 +491,3 @@ class FastRCNNOutputLayers(nn.Module):
         num_inst_per_image = [len(p) for p in proposals]
         probs = F.softmax(scores, dim=-1)
         return probs.split(num_inst_per_image, dim=0)
-
-
-class FastRCNNOutputLayersNorm(FastRCNNOutputLayers):
-    @configurable
-    def __init__(
-        self,
-        input_shape: ShapeSpec,
-        *,
-        box2box_transform,
-        num_classes: int,
-        test_score_thresh: float = 0.0,
-        test_nms_thresh: float = 0.5,
-        test_topk_per_image: int = 100,
-        cls_agnostic_bbox_reg: bool = False,
-        smooth_l1_beta: float = 0.0,
-        box_reg_loss_type: str = "smooth_l1",
-        loss_weight: Union[float, Dict[str, float]] = 1.0,
-        box_norm: str = "BN",
-    ):
-        """
-        NOTE: this interface is experimental.
-
-        Args:
-            input_shape (ShapeSpec): shape of the input feature to this module
-            box2box_transform (Box2BoxTransform or Box2BoxTransformRotated):
-            num_classes (int): number of foreground classes
-            test_score_thresh (float): threshold to filter predictions results.
-            test_nms_thresh (float): NMS threshold for prediction results.
-            test_topk_per_image (int): number of top predictions to produce per image.
-            cls_agnostic_bbox_reg (bool): whether to use class agnostic for bbox regression
-            smooth_l1_beta (float): transition point from L1 to L2 loss. Only used if
-                `box_reg_loss_type` is "smooth_l1"
-            box_reg_loss_type (str): Box regression loss type. One of: "smooth_l1", "giou"
-            loss_weight (float|dict): weights to use for losses. Can be single float for weighting
-                all losses, or a dict of individual weightings. Valid dict keys are:
-                    * "loss_cls": applied to classification loss
-                    * "loss_box_reg": applied to box regression loss
-        """
-        super().__init__(
-            input_shape,
-            box2box_transform=box2box_transform,
-            num_classes=num_classes,
-            test_score_thresh=test_score_thresh,
-            test_nms_thresh=test_nms_thresh,
-            test_topk_per_image=test_topk_per_image,
-            cls_agnostic_bbox_reg=cls_agnostic_bbox_reg,
-            smooth_l1_beta=smooth_l1_beta,
-            box_reg_loss_type=box_reg_loss_type,
-            loss_weight=loss_weight,
-        )
-        box_out_size = self.bbox_pred.weight.shape[0]
-        self.bbox_pred = nn.Sequential(
-            self.bbox_pred, get_norm1d(box_norm, box_out_size)
-        )
-
-    @classmethod
-    def from_config(cls, cfg, input_shape):
-        return {
-            "input_shape": input_shape,
-            "box2box_transform": Box2BoxTransform(
-                weights=cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_WEIGHTS
-            ),
-            # fmt: off
-            "num_classes"           : cfg.MODEL.ROI_HEADS.NUM_CLASSES,
-            "cls_agnostic_bbox_reg" : cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG,
-            "smooth_l1_beta"        : cfg.MODEL.ROI_BOX_HEAD.SMOOTH_L1_BETA,
-            "test_score_thresh"     : cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST,
-            "test_nms_thresh"       : cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST,
-            "test_topk_per_image"   : cfg.TEST.DETECTIONS_PER_IMAGE,
-            "box_reg_loss_type"     : cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_LOSS_TYPE,
-            "loss_weight"           : {"loss_box_reg": cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_LOSS_WEIGHT},
-            "box_norm"              : cfg.MODEL.ROI_BOX_HEAD.BOX_NORM,
-            # fmt: on
-        }
-
-
-class FastRCNNOutputLayersNormRegOnly(FastRCNNOutputLayersNorm):
-    @configurable()
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # disable cls layer for simplicity
-        self.cls_score.requires_grad_(requires_grad=False)

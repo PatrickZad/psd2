@@ -71,7 +71,7 @@ class CuhkQueryEvaluator(QueryEvaluator):
             g_instances_list = in_dict["gallery"]["instances_list"]
             q_imgid = q_instances.image_id
             q_pid = q_instances.gt_pids
-            q_box = q_instances.gt_boxes
+            q_box = q_instances.org_gt_boxes
             y_trues = {dst: [] for dst in self.det_score_thresh}
             y_scores = {dst: [] for dst in self.det_score_thresh}
             count_gts = {dst: 0 for dst in self.det_score_thresh}

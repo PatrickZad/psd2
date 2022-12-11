@@ -18,7 +18,7 @@ from ..poolers import ROIPooler
 from ..proposal_generator.proposal_utils import add_ground_truth_to_proposals
 from ..sampling import subsample_labels
 from .box_head import build_box_head
-from .fast_rcnn import FastRCNNOutputLayers, FastRCNNOutputLayersNorm
+from .fast_rcnn import FastRCNNOutputLayers
 from .keypoint_head import build_keypoint_head
 from .mask_head import build_mask_head
 
@@ -526,140 +526,12 @@ class Res5ROIHeads(ROIHeads):
                 mask_features = box_features[torch.cat(fg_selection_masks, dim=0)]
                 del box_features
                 losses.update(self.mask_head(mask_features, proposals))
-            with torch.no_grad():
-                # for vis onnly
-                self.box_predictor.eval()
-                cur_pred, _ = self.box_predictor.inference(predictions, proposals)
-                # cur_pred = self.forward_with_given_boxes(features, cur_pred)
-                self.box_predictor.train()
-            del features
-            return cur_pred, losses
+
+            return [], losses
         else:
             pred_instances, _ = self.box_predictor.inference(predictions, proposals)
             pred_instances = self.forward_with_given_boxes(features, pred_instances)
             return pred_instances, {}
-
-    def forward_labeling(
-        self,
-        images: ImageList,
-        features: Dict[str, torch.Tensor],
-        proposals: List[Instances],
-        targets: Optional[List[Instances]] = None,
-        do_nms=False,
-        append_gt=False,
-    ) -> Tuple[List[Instances], Dict[str, torch.Tensor]]:
-        del images
-
-        assert targets
-        org_cfg = self.proposal_append_gt
-        self.proposal_append_gt = append_gt
-        proposals = self.label_and_sample_proposals(proposals, targets)
-        self.proposal_append_gt = org_cfg
-        del targets
-
-        proposal_boxes = [x.proposal_boxes for x in proposals]
-        box_features = self._shared_roi_transform(
-            [features[f] for f in self.in_features], proposal_boxes
-        )
-        predictions = self.box_predictor(box_features.mean(dim=[2, 3]))
-        # box predictor infer
-        boxes = self.box_predictor.predict_boxes(predictions, proposals)
-        scores = self.box_predictor.predict_probs(predictions, proposals)
-        image_shapes = [x.image_size for x in proposals]
-        # from fast_rcnn_inference_single_image
-        result_per_image = []
-        for scores_i, boxes_i, image_shape, proposals_i in zip(
-            scores, boxes, image_shapes, proposals
-        ):
-            valid_mask = torch.isfinite(boxes_i).all(dim=1) & torch.isfinite(
-                scores_i
-            ).all(dim=1)
-            if not valid_mask.all():
-                boxes_i = boxes_i[valid_mask]
-                scores_i = scores_i[valid_mask]
-
-            scores_i = scores_i[:, :-1]
-            match_ids = proposals_i.gt_classes.unsqueeze(1).expand(
-                -1, scores_i.shape[1]
-            )
-            num_bbox_reg_classes = boxes_i.shape[1] // 4
-            # Convert to Boxes to use the `clip` function ...
-            boxes_i = Boxes(boxes_i.reshape(-1, 4))
-            boxes_i.clip(image_shape)
-            boxes_i = boxes_i.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
-            filter_mask = torch.ones_like(scores_i, dtype=torch.bool)
-            filter_inds = filter_mask.nonzero()
-            if num_bbox_reg_classes == 1:
-                boxes_i = boxes_i[filter_inds[:, 0], 0]
-            else:
-                boxes_i = boxes_i[filter_mask]
-            scores_i = scores_i[filter_mask]
-            match_ids = match_ids[filter_mask]
-            if do_nms:
-                keep = batched_nms(
-                    boxes, scores, filter_inds[:, 1], self.box_predictor.test_nms_thresh
-                )
-                boxes_i, scores_i, filter_inds, match_ids = (
-                    boxes_i[keep],
-                    scores_i[keep],
-                    filter_inds[keep],
-                    match_ids[keep],
-                )
-            result_i = Instances(image_shape)
-            result_i.pred_boxes = Boxes(boxes_i)
-            result_i.scores = scores_i
-            result_i.pred_classes = match_ids
-            result_per_image.append(result_i)
-        return result_per_image
-
-    def inference_without_nms(
-        self,
-        images: ImageList,
-        features: Dict[str, torch.Tensor],
-        proposals: List[Instances],
-        targets: Optional[List[Instances]] = None,
-    ):
-        del images
-        del targets
-
-        proposal_boxes = [x.proposal_boxes for x in proposals]
-        box_features = self._shared_roi_transform(
-            [features[f] for f in self.in_features], proposal_boxes
-        )
-        predictions = self.box_predictor(box_features.mean(dim=[2, 3]))
-        # box predictor infer
-        boxes = self.box_predictor.predict_boxes(predictions, proposals)
-        scores = self.box_predictor.predict_probs(predictions, proposals)
-        image_shapes = [x.image_size for x in proposals]
-        # from fast_rcnn_inference_single_image
-        result_per_image = []
-        for scores_i, boxes_i, image_shape in zip(scores, boxes, image_shapes):
-            valid_mask = torch.isfinite(boxes_i).all(dim=1) & torch.isfinite(
-                scores_i
-            ).all(dim=1)
-            if not valid_mask.all():
-                boxes_i = boxes_i[valid_mask]
-                scores_i = scores_i[valid_mask]
-
-            scores_i = scores_i[:, :-1]
-            num_bbox_reg_classes = boxes_i.shape[1] // 4
-            # Convert to Boxes to use the `clip` function ...
-            boxes_i = Boxes(boxes_i.reshape(-1, 4))
-            boxes_i.clip(image_shape)
-            boxes_i = boxes_i.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
-            filter_mask = torch.ones_like(scores_i, dtype=torch.bool)
-            filter_inds = filter_mask.nonzero()
-            if num_bbox_reg_classes == 1:
-                boxes_i = boxes_i[filter_inds[:, 0], 0]
-            else:
-                boxes_i = boxes_i[filter_mask]
-            scores_i = scores_i[filter_mask]
-            result_i = Instances(image_shape)
-            result_i.pred_boxes = Boxes(boxes_i)
-            result_i.scores = scores_i
-            result_i.pred_classes = filter_inds[:, 1]
-            result_per_image.append(result_i)
-        return result_per_image
 
     def forward_with_given_boxes(
         self, features: Dict[str, torch.Tensor], instances: List[Instances]

@@ -76,7 +76,7 @@ class PrwQueryEvaluator(QueryEvaluator):
             q_instances = query_dict["instances"].to(self._cpu_device)
             q_imgid = q_instances.image_id
             q_pid = q_instances.gt_pids
-            q_box = q_instances.gt_boxes
+            q_box = q_instances.org_gt_boxes
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.det_score_thresh}
             y_scores = {dst: [] for dst in self.det_score_thresh}
@@ -120,7 +120,7 @@ class PrwQueryEvaluator(QueryEvaluator):
                         continue
                     else:
                         ious = pairwise_iou(
-                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY_abs)
                         )
                         max_iou, nmax = torch.max(ious, dim=1)
                         if max_iou < 0.4:

@@ -67,7 +67,7 @@ class CuhkQueryEvaluatorP(QueryEvaluator):
         save_inputs = []
         for item_in, inst_pred in zip(inputs, outputs):
             q_gt_instances = item_in["query"]["instances"].to(self._cpu_device)
-            g_gt_instances = item_in["gallery"]["instances_list"].to(self._cpu_device)
+            g_gt_instances = [inst.to(self._cpu_device) for inst in item_in["gallery"]]
             q_pred_instances = inst_pred.to(self._cpu_device)
             save_inputs.append((q_gt_instances, g_gt_instances, q_pred_instances))
         self.inf_results.append(save_inputs)
@@ -108,7 +108,7 @@ class EvaluatorDataset(Dataset):
             q_gt_instances, g_gt_instances_list, q_pred_instances = in_dict
             q_imgid = q_gt_instances.image_id
             q_pid = q_gt_instances.gt_pids
-            q_box = q_gt_instances.gt_boxes
+            q_box = q_gt_instances.org_gt_boxes
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts = {dst: 0 for dst in self.eval_ref.det_score_thresh}
@@ -147,7 +147,7 @@ class EvaluatorDataset(Dataset):
                 for item in g_gt_instances_list:
                     gallery_imname = item.image_id
                     # some contain the query (gt not empty), some not
-                    gt_boxes = item.gt_boxes
+                    gt_boxes = item.org_gt_boxes
                     count_gts[dst] += len(gt_boxes) > 0
                     # compute distance between query and gallery dets
                     if gallery_imname not in self.eval_ref.infs:

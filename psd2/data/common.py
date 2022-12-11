@@ -243,7 +243,10 @@ class AspectRatioGroupedDataset(data.IterableDataset):
 
     def __iter__(self):
         for d in self.dataset:
-            w, h = d["width"], d["height"]
+            if "image" in d:
+                h, w = d["image"].shape[:2]
+            else:
+                w, h = d["width"], d["height"]
             bucket_id = 0 if w > h else 1
             bucket = self._buckets[bucket_id]
             bucket.append(d)

@@ -56,15 +56,15 @@ class Instances(object):
 
     def __setattr__(self, name: str, val: Any) -> None:
         if name.startswith("_"):
-            # super().__setattr__(name, val)
-            self.__dict__[name] = val
+            super().__setattr__(name, val)
         else:
             self.set(name, val)
 
     def __getattr__(self, name: str) -> Any:
         if name == "_fields" or name not in self._fields:
-            return self.__dict__[name]
-            # raise AttributeError("Cannot find field '{}' in the given Instances!".format(name))
+            raise AttributeError(
+                "Cannot find field '{}' in the given Instances!".format(name)
+            )
         return self._fields[name]
 
     def set(self, name: str, value: Any) -> None:
@@ -124,9 +124,6 @@ class Instances(object):
             if hasattr(v, "to"):
                 v = v.to(*args, **kwargs)
             ret.set(k, v)
-        for k, v in self.__dict__.items():
-            if k not in ret.__dict__:
-                ret.__setattr__(k, v)
         return ret
 
     def __getitem__(self, item: Union[int, slice, torch.BoolTensor]) -> "Instances":
@@ -151,8 +148,9 @@ class Instances(object):
 
     def __len__(self) -> int:
         for v in self._fields.values():
-            # use __len__ because len() has to be int and is not friendly to tracing
-            return v.__len__()
+            if isinstance(v, torch.Tensor):
+                # use __len__ because len() has to be int and is not friendly to tracing
+                return v.__len__()
         raise NotImplementedError("Empty Instances does not support __len__!")
 
     def __iter__(self):

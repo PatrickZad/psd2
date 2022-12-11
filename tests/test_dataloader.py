@@ -14,7 +14,7 @@ from PIL import Image
 import os
 import torch
 import torchvision.transforms.functional as tvF
-from psd2.structures.boxes import BoxMode
+from psd2.structures.boxes import BoxMode, Boxes
 
 
 def setup_cfg(config_file):
@@ -75,8 +75,12 @@ def vis_data_dict(data_dicts, cfg):
         ids = [ann["person_id"] for ann in ddict["annotations"]]
         for box, box_mode, pid in zip(boxes, box_modes, ids):
             imgw, imgh = img.size
-            if box_mode == BoxMode.XYXY_REL:
-                box = box * np.array([imgw, imgh] * 2)
+            box = (
+                Boxes(box, box_mode)
+                .convert_mode(BoxMode.XYXY_ABS, [imgh, imgw])
+                .tensor[0]
+                .numpy()
+            )
             img_vis.draw_box(box)
             id_pos = box[:2]
             img_vis.draw_text(str(pid), id_pos, horizontal_alignment="left", color="w")
@@ -84,36 +88,23 @@ def vis_data_dict(data_dicts, cfg):
 
 
 def vis_map_data(map_dicts, cfg):
-    img_mean = torch.tensor(cfg.MODEL.PIXEL_MEAN).view(-1, 1, 1)
-    img_std = torch.tensor(cfg.MODEL.PIXEL_STD).view(-1, 1, 1)
-    inverse_norm = lambda img_t: (img_t * img_std + img_mean) * 255
     save_dir = cfg.OUTPUT_DIR
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     if "query" in map_dicts[0].keys():
         data_dicts = []
         for ddict in map_dicts:
-            data = ddict["query"]
-            imgt = tvF.to_tensor(Image.open(data["file_name"]))
-            imgt = tvF.normalize(
-                imgt, mean=cfg.MODEL.PIXEL_MEAN, std=cfg.MODEL.PIXEL_STD
-            )
-            data_dicts.append(
-                {
-                    "file_name": data["file_name"],
-                    "image_id": data["image_id"],
-                    "image": imgt,
-                    "boxes": np.array([ann["bbox"] for ann in data["annotations"]]),
-                    "ids": [ann["person_id"] for ann in data["annotations"]],
-                }
-            )
+            data_dicts.append(ddict["query"])
     else:
         data_dicts = map_dicts
     for ddict in data_dicts:
-        img = inverse_norm(ddict["image"]).numpy().transpose(1, 2, 0)
-        img_name = os.path.split(ddict["file_name"])[-1]
+        img = ddict["image"].numpy().transpose(1, 2, 0) * 255
+        gt_instances = ddict["instances"]
+        img_name = os.path.split(gt_instances.file_name)[-1]
         img_vis = Visualizer(img)
-        for box, pid in zip(ddict["boxes"].tolist(), ddict["ids"]):
+        for box, pid in zip(
+            gt_instances.gt_boxes.tensor.tolist(), gt_instances.gt_pids.tolist()
+        ):
             img_vis.draw_box(box)
             id_pos = box[:2]
             img_vis.draw_text(str(pid), id_pos, horizontal_alignment="left", color="w")

@@ -126,7 +126,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 {
                     pred_boxes: Boxes in augmentation range (resizing/cropping/flipping/...)
                     pred_scores: tensor
-                    assign_ids: assigned person identities (during training only)
                     reid_feats: tensor
                 }
         """
@@ -136,10 +135,12 @@ class InfDetEvaluator(DatasetEvaluator):
             pred_instances = outputs[bi].to(self._cpu_device)
             # save gt info
             gt_img_name = gt_instances.image_id
-            gt_boxes = gt_instances.gt_boxes
+            org_gt_boxes = gt_instances.org_gt_boxes
             gt_pids = gt_instances.gt_pids
-            gt_label_t = torch.cat([gt_boxes.tensor, gt_pids.view(-1, 1)], dim=-1)
-            self.gallery_gts[gt_img_name] = gt_label_t
+            org_gt_label_t = torch.cat(
+                [org_gt_boxes.tensor, gt_pids.view(-1, 1)], dim=-1
+            )
+            self.gallery_gts[gt_img_name] = org_gt_label_t
             self.gallery_fnames[gt_img_name] = gt_instances.file_name
             # save inf results
             scores_t = pred_instances.pred_scores.view(-1)
@@ -163,7 +164,7 @@ class InfDetEvaluator(DatasetEvaluator):
         for bi, in_dict in enumerate(inputs):
             gt_instances = in_dict["instances"].to(self._cpu_device)
             pred_instances = outputs[bi].to(self._cpu_device)
-            gt_boxes = gt_instances.gt_boxes
+            gt_boxes = gt_instances.org_gt_boxes
             gt_pids_t = gt_instances.gt_pids
             det_boxes = pred_instances.pred_boxes
             det_scores_t = pred_instances.pred_scores.view(-1)
@@ -296,8 +297,8 @@ class InfDetEvaluator(DatasetEvaluator):
             save_rts = self.inf_results
             save_gts = self.gallery_gts
             save_gtfs = self.gallery_fnames
-            y_true = self.y_trues
-            y_score = self.y_scores
+            y_trues = self.y_trues
+            y_scores = self.y_scores
             count_gts = self.count_gt
             count_tps = self.count_tp
             count_gts_lb = self.count_gt_lb

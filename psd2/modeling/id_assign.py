@@ -52,22 +52,43 @@ class IouIDAssigner(IdAssigner):
 
 
 class DetIDAssigner(IdAssigner):
+    def __init__(self, *args, **kws) -> None:
+        super().__init__()
+
     def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
-        match_indices = kws["match_indices"]  # a batch of ( idxs_pred, idxs_gt )
-        pass
+        match_indices = kws["match_indices"]
+        assign_ids = []
+        for det_bboxes_i, gt_labels_i, (src_idxs, tgt_idxs) in zip(
+            det_bboxes, gt_labels, match_indices
+        ):
+            ids_i = (
+                torch.zeros(
+                    det_bboxes_i.shape[0], dtype=torch.int64, device=det_bboxes_i.device
+                )
+                - 2
+            )
+            if src_idxs.shape[0] > 0 and tgt_idxs.shape[0] > 0:
+                ids_i[src_idxs] = gt_labels_i[tgt_idxs]
+            assign_ids.append(ids_i)
+        if isinstance(det_bboxes, torch.Tensor):
+            assign_ids = torch.stack(assign_ids)
+        return assign_ids
 
 
 class FoveaIDAssigner(IdAssigner):
     def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         ref_pts = kws["ref_pts"]
+        raise NotImplementedError
 
 
 class CenterIDAssigner(IdAssigner):
     def __call__(self, det_bboxes, det_scores, gt_bboxes, gt_labels, **kws):
         ref_pts = kws["ref_pts"]
+        raise NotImplementedError
 
 
-def build_id_assigner(ids_cfg):
+def build_id_assigner(cfg):
+    ids_cfg = cfg.PERSON_SEARCH.REID.ID_ASSIGN
     return {
         "iou": IouIDAssigner,
         "det": DetIDAssigner,

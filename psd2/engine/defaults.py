@@ -170,6 +170,9 @@ For python-based LazyConfig, use "path.key=value".
     parser.add_argument(
         "--n-find-unparams", action="store_true", help="find unused param for dist"
     )
+    parser.add_argument(
+        "--auto-relaunch", action="store_true", help="relaunch from exceptions"
+    )
 
     return parser
 

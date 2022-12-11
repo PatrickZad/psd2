@@ -558,10 +558,8 @@ class EvalHook(HookBase):
     def after_train(self):
         # This condition is to prevent the eval from running after a failed training
         # NOTE remove to avoid eval after relaunch when the training has already finished
-        """
         if self.trainer.iter + 1 >= self.trainer.max_iter:
             self._do_eval()
-        """
         # func is likely a closure that holds reference to the trainer
         # therefore we clean it to avoid circular reference in the end
         del self._func

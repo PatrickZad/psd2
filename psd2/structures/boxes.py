@@ -26,28 +26,32 @@ class BoxMode(IntEnum):
     Enum of different ways to represent a box.
     """
 
-    XYXY = 0
+    XYXY_ABS = 0
+    XYXY_REL = 1
     """
     (x0, y0, x1, y1) in floating points coordinates.
     The coordinates in range [0, width or height].
     """
-    XYWH = 1
+    XYWH_ABS = 2
+    XYWH_REL = 3
     """
     (x0, y0, w, h) in floating points coordinates.
     """
-    XYWHA = 4
+    XYWHA_ABS = 4
+    XYWHA_REL = 5
     """
     (xc, yc, w, h, a) in absolute floating points coordinates.
     (xc, yc) is the center of the rotated box, and the angle a is in degrees ccw.
     """
-    CCWH = 5
+    CCWH_ABS = 6
+    CCWH_REL = 7
     """
     (xc, yc, w, h) in floating points coordinates.
     """
 
     @staticmethod
     def convert(
-        box: _RawBoxType, from_mode: "BoxMode", to_mode: "BoxMode"
+        box: _RawBoxType, from_mode: "BoxMode", to_mode: "BoxMode", img_size=None
     ) -> _RawBoxType:
         """
         Args:
@@ -75,8 +79,16 @@ class BoxMode(IntEnum):
                 arr = torch.from_numpy(np.asarray(box)).clone()
             else:
                 arr = box.clone()
+        if to_mode in ABS_MODE and from_mode in REL_MODE:
+            arr = BoxMode.convert(arr, from_mode, from_mode - 1, img_size)
+            from_mode = from_mode - 1
+        elif to_mode in REL_MODE and from_mode in ABS_MODE:
+            arr = BoxMode.convert(arr, from_mode, from_mode + 1, img_size)
+            from_mode = from_mode + 1
 
-        if from_mode == BoxMode.XYWHA and to_mode == BoxMode.XYXY:
+        if (from_mode == BoxMode.XYWHA_ABS and to_mode == BoxMode.XYXY_ABS) or (
+            from_mode == BoxMode.XYWHA_REL and to_mode == BoxMode.XYXY_REL
+        ):
             assert (
                 arr.shape[-1] == 5
             ), "The last dimension of input shape must be 5 for XYWHA format"
@@ -100,7 +112,9 @@ class BoxMode(IntEnum):
             arr[:, 3] = arr[:, 1] + new_h
 
             arr = arr[:, :4].to(dtype=original_dtype)
-        elif from_mode == BoxMode.XYWH and to_mode == BoxMode.XYWHA:
+        elif (from_mode == BoxMode.XYWH_ABS and to_mode == BoxMode.XYWHA_ABS) or (
+            from_mode == BoxMode.XYWH_REL and to_mode == BoxMode.XYWHA_REL
+        ):
             original_dtype = arr.dtype
             arr = arr.double()
             arr[:, 0] += arr[:, 2] / 2.0
@@ -108,18 +122,36 @@ class BoxMode(IntEnum):
             angles = torch.zeros((arr.shape[0], 1), dtype=arr.dtype)
             arr = torch.cat((arr, angles), axis=1).to(dtype=original_dtype)
         else:
-            if to_mode == BoxMode.XYXY and from_mode == BoxMode.XYWH:
+            if (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.XYWH_ABS) or (
+                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.XYWH_REL
+            ):
                 arr[:, 2] += arr[:, 0]
                 arr[:, 3] += arr[:, 1]
-            elif from_mode == BoxMode.XYXY and to_mode == BoxMode.XYWH:
+            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.XYWH_ABS) or (
+                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.XYWH_REL
+            ):
                 arr[:, 2] -= arr[:, 0]
                 arr[:, 3] -= arr[:, 1]
-            elif to_mode == BoxMode.XYXY and from_mode == BoxMode.CCWH:
+            elif (to_mode == BoxMode.XYXY_ABS and from_mode == BoxMode.CCWH_ABS) or (
+                to_mode == BoxMode.XYXY_REL and from_mode == BoxMode.CCWH_REL
+            ):
                 arr[:, :2] = arr[:, :2] - arr[:, 2:] / 2
                 arr[:, 2:] = arr[:, :2] + arr[:, 2:]
-            elif from_mode == BoxMode.XYXY and to_mode == BoxMode.CCWH:
+            elif (from_mode == BoxMode.XYXY_ABS and to_mode == BoxMode.CCWH_ABS) or (
+                from_mode == BoxMode.XYXY_REL and to_mode == BoxMode.CCWH_REL
+            ):
                 arr[:, 2:] = arr[:, 2:] - arr[:, :2]
                 arr[:, :2] = arr[:, :2] + arr[:, 2:] / 2
+            elif from_mode - to_mode == 1:
+                # rel -> abs
+                h, w = img_size[0], img_size[1]
+                factor = torch.tensor([[w, h, w, h]], device=arr.device)
+                arr[:, :4] = arr[:, :4] * factor
+            elif to_mode - from_mode == 1:
+                # abs -> rel
+                h, w = img_size[0], img_size[1]
+                factor = torch.tensor([[w, h, w, h]], device=arr.device)
+                arr[:, :4] = arr[:, :4] / factor
             else:
                 raise NotImplementedError(
                     "Conversion from BoxMode {} to {} is not supported yet".format(
@@ -135,6 +167,10 @@ class BoxMode(IntEnum):
             return arr
 
 
+ABS_MODE = [BoxMode.CCWH_ABS, BoxMode.XYWH_ABS, BoxMode.XYWHA_ABS, BoxMode.XYXY_ABS]
+REL_MODE = [BoxMode.CCWH_REL, BoxMode.XYWH_REL, BoxMode.XYWHA_REL, BoxMode.XYXY_REL]
+
+
 class Boxes:
     """
     This structure stores a list of boxes as a Nx4 torch.Tensor.
@@ -147,7 +183,7 @@ class Boxes:
         tensor (torch.Tensor): float matrix of Nx4. Each row is (x1, y1, x2, y2).
     """
 
-    def __init__(self, tensor: torch.Tensor, box_mode=BoxMode.XYXY):
+    def __init__(self, tensor: torch.Tensor, box_mode=BoxMode.XYXY_ABS):
         """
         Args:
             tensor (Tensor[float]): a Nx4 matrix.  Each row is (x1, y1, x2, y2).
@@ -176,8 +212,8 @@ class Boxes:
         """
         return Boxes(self.tensor.clone())
 
-    def convert_mode(self, to_mode):
-        box_t = BoxMode.convert(self.tensor, self.box_mode, to_mode)
+    def convert_mode(self, to_mode, img_size=None):
+        box_t = BoxMode.convert(self.tensor, self.box_mode, to_mode, img_size)
         return Boxes(box_t, to_mode)
 
     @_maybe_jit_unused
@@ -192,10 +228,10 @@ class Boxes:
         Returns:
             torch.Tensor: a vector with areas of each box.
         """
-        if self.box_mode != BoxMode.XYXY:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        if self.box_mode in ABS_MODE:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_ABS)
         else:
-            box = self.tensor
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_REL)
         area = (box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1])
         return area
 
@@ -209,18 +245,17 @@ class Boxes:
         """
         assert torch.isfinite(self.tensor).all(), "Box tensor contains infinite or NaN!"
         h, w = box_size
-        if self.box_mode != BoxMode.XYXY:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        if self.box_mode in ABS_MODE:
+            mode_temp = BoxMode.XYXY_ABS
         else:
-            box = self.tensor
+            mode_temp = BoxMode.XYXY_REL
+        box = BoxMode.convert(self.tensor, self.box_mode, mode_temp)
         x1 = box[:, 0].clamp(min=0, max=w)
         y1 = box[:, 1].clamp(min=0, max=h)
         x2 = box[:, 2].clamp(min=0, max=w)
         y2 = box[:, 3].clamp(min=0, max=h)
         box = torch.stack((x1, y1, x2, y2), dim=-1)
-        if self.box_mode != BoxMode.XYXY:
-            box = BoxMode.convert(self.tensor, BoxMode.XYXY, self.box_mode)
-
+        box = BoxMode.convert(self.tensor, mode_temp, self.box_mode)
         self.tensor = box
 
     def nonempty(self, threshold: float = 0.0) -> torch.Tensor:
@@ -233,10 +268,10 @@ class Boxes:
                 a binary vector which represents whether each box is empty
                 (False) or non-empty (True).
         """
-        if self.box_mode != BoxMode.XYXY:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        if self.box_mode in ABS_MODE:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_ABS)
         else:
-            box = self.tensor
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_REL)
         widths = box[:, 2] - box[:, 0]
         heights = box[:, 3] - box[:, 1]
         keep = (widths > threshold) & (heights > threshold)
@@ -286,10 +321,10 @@ class Boxes:
         Returns:
             a binary vector, indicating whether each box is inside the reference box.
         """
-        if self.box_mode != BoxMode.XYXY:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY)
+        if self.box_mode in ABS_MODE:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_ABS)
         else:
-            box = self.tensor
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.XYXY_REL)
         height, width = box_size
         inds_inside = (
             (box[..., 0] >= -boundary_threshold)
@@ -304,18 +339,18 @@ class Boxes:
         Returns:
             The box centers in a Nx2 array of (x, y).
         """
-        if self.box_mode != BoxMode.CCWH:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH)
+        if self.box_mode in ABS_MODE:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH_ABS)
         else:
-            box = self.tensor
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH_REL)
         return box[:, :2]
 
     def get_sizes(self) -> torch.Tensor:
-        if self.box_mode != BoxMode.CCWH:
-            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH)
+        if self.box_mode in ABS_MODE:
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH_ABS)
         else:
-            box = self.tensor
-        return torch.cat(box[:, -1:], box[:, -2:-1], dim=-1)
+            box = BoxMode.convert(self.tensor, self.box_mode, BoxMode.CCWH_REL)
+        return torch.cat([box[:, -1:], box[:, -2:-1]], dim=-1)
 
     def scale(self, scale_x: float, scale_y: float) -> None:
         """
@@ -371,9 +406,14 @@ def pairwise_intersection(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: intersection, sized [N,M].
     """
-    boxes1, boxes2 = BoxMode.convert(
-        boxes1.tensor, boxes1.box_mode, BoxMode.XYXY
-    ), BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY)
+    if boxes1.box_mode in ABS_MODE:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_REL)
+    if boxes2.box_mode in ABS_MODE:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_REL)
     width_height = torch.min(boxes1[:, None, 2:], boxes2[:, 2:]) - torch.max(
         boxes1[:, None, :2], boxes2[:, :2]
     )  # [N,M,2]
@@ -397,8 +437,6 @@ def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: IoU, sized [N,M].
     """
-    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
-    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)
@@ -422,8 +460,14 @@ def pairwise_ioa(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: IoA, sized [N,M].
     """
-    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
-    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
+    if boxes1.box_mode in ABS_MODE:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_REL)
+    if boxes2.box_mode in ABS_MODE:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_REL)
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)
 
@@ -449,7 +493,10 @@ def pairwise_point_box_distance(points: torch.Tensor, boxes: Boxes):
             the point to the left, top, right, bottom of the box.
     """
     x, y = points.unsqueeze(dim=2).unbind(dim=1)  # (N, 1)
-    boxes_t = BoxMode.convert(boxes.box_mode, BoxMode.XYXY)
+    if boxes.box_mode in ABS_MODE:
+        boxes_t = BoxMode.convert(boxes.tensor, boxes.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes_t = BoxMode.convert(boxes.tensor, boxes.box_mode, BoxMode.XYXY_REL)
     x0, y0, x1, y1 = boxes_t.unsqueeze(dim=0).unbind(dim=2)  # (1, M)
     return torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
 
@@ -471,8 +518,14 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     ), "boxlists should have the same" "number of entries, got {}, {}".format(
         len(boxes1), len(boxes2)
     )
-    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
-    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
+    if boxes1.box_mode in ABS_MODE:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_REL)
+    if boxes2.box_mode in ABS_MODE:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_REL)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [N]
     box1, box2 = boxes1.tensor, boxes2.tensor
@@ -485,8 +538,14 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
 
 
 def pairwise_giou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
-    boxes1 = boxes1.convert_mode(BoxMode.XYXY)
-    boxes2 = boxes2.convert_mode(BoxMode.XYXY)
+    if boxes1.box_mode in ABS_MODE:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_REL)
+    if boxes2.box_mode in ABS_MODE:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_ABS)
+    else:
+        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_REL)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)

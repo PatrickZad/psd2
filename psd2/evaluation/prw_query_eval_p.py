@@ -20,19 +20,8 @@ def _get_img_cid(img_id):
 
 
 class PrwQueryEvaluatorP(QueryEvaluator):
-    def __init__(
-        self,
-        dataset_name,
-        distributed,
-        output_dir,
-        s_threds=[0.05, 0.2, 0.5, 0.7],
-        vis=False,
-        hist_only=False,
-    ):
-        assert not distributed
-        super().__init__(
-            dataset_name, distributed, output_dir, s_threds, vis, hist_only
-        )
+    def __init__(self, *args, **kws):
+        super().__init__(*args, **kws)
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
         self.inf_results = []
@@ -74,7 +63,7 @@ class PrwQueryEvaluatorP(QueryEvaluator):
         # NOTE save pairs (query gt instances, query pred instances)
         save_inputs = []
         for item_in, inst_pred in zip(inputs, outputs):
-            q_gt_instances = item_in["instances"].to(self._cpu_device)
+            q_gt_instances = item_in["query"]["instances"].to(self._cpu_device)
             q_pred_instances = inst_pred.to(self._cpu_device)
             save_inputs.append((q_gt_instances, q_pred_instances))
         self.inf_results.append(save_inputs)
@@ -139,7 +128,7 @@ class EvaluatorDataset(Dataset):
             q_gt_instances, q_pred_instances = in_dict
             q_imgid = q_gt_instances.image_id
             q_pid = q_gt_instances.gt_pids
-            q_box = q_gt_instances.gt_boxes
+            q_box = q_gt_instances.org_gt_boxes
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
@@ -182,7 +171,7 @@ class EvaluatorDataset(Dataset):
                         continue
                     else:
                         ious = pairwise_iou(
-                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY_ABS)
                         )
                         max_iou, nmax = torch.max(ious, dim=1)
                         if max_iou < 0.4:

@@ -15,20 +15,9 @@ import copy
 
 # TODO change evaluator type to "query"
 def register_cuhk_sysu_all(datadir):
-    """for subset in cuhk_subsets:
-    name = "CUHK-SYSU_" + subset
-    DatasetCatalog.register(
-        name, lambda: load_cuhk_sysu(datadir, copy.deepcopy(subset))
-    )
-    MapperCatalog.register(name, mappers.CuhksysuMapper)
-    MetadataCatalog.get(name).set(evaluator_type="det")"""
     name = "CUHK-SYSU_" + "Train"
     DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "Train"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
-    name = "CUHK-SYSU_" + "TrainRE"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "Train"))
-    MapperCatalog.register(name, mappers.CuhksysuMapperRE)
-    # MetadataCatalog.get(name).set(evaluator_type="det")
     name = "CUHK-SYSU_" + "Gallery"
     DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "Gallery"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
@@ -37,51 +26,24 @@ def register_cuhk_sysu_all(datadir):
     DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG50"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_InfQ_" + "TestG50"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG50"))
-    MapperCatalog.register(name, mappers.CuhkSearchMapperInfQuery)
-    MetadataCatalog.get(name).set(evaluator_type="query")
     name = "CUHK-SYSU_" + "TestG100"
     DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG100"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_InfQ_" + "TestG100"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG100"))
-    MapperCatalog.register(name, mappers.CuhkSearchMapperInfQuery)
     MetadataCatalog.get(name).set(evaluator_type="query")
     name = "CUHK-SYSU_" + "TestG4000"
     DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG4000"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_InfQ_" + "TestG4000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu(datadir, "TestG4000"))
-    MapperCatalog.register(name, mappers.CuhkSearchMapperInfQuery)
-    MetadataCatalog.get(name).set(evaluator_type="query")
 
 
 def register_prw_all(datadir):
-    """
-    # TODO fix incorrect subset
-    for subset in prw_subsets:
-        name = "PRW_" + subset
-        DatasetCatalog.register(name, lambda: load_prw(datadir, copy.deepcopy(subset)))
-        MapperCatalog.register(name, mappers.PrwMapper)
-        MetadataCatalog.get(name).set(evaluator_type="det")
-    """
+
     name = "PRW_Train"
     DatasetCatalog.register(name, lambda: load_prw(datadir, "Train"))
     MapperCatalog.register(name, mappers.PrwMapper)
-    name = "PRW_TrainRE"
-    DatasetCatalog.register(name, lambda: load_prw(datadir, "Train"))
-    MapperCatalog.register(name, mappers.PrwMapperRE)
-    # MetadataCatalog.get(name).set(evaluator_type="det")
     name = "PRW_Query"
     DatasetCatalog.register(name, lambda: load_prw(datadir, "Query"))
     MapperCatalog.register(name, mappers.PrwMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "PRW_InfQ"
-    DatasetCatalog.register(name, lambda: load_prw(datadir, "Query"))
-    MapperCatalog.register(name, mappers.PrwSearchMapperInfQuery)
     MetadataCatalog.get(name).set(evaluator_type="query")
     name = "PRW_Gallery"
     DatasetCatalog.register(name, lambda: load_prw(datadir, "Gallery"))
@@ -158,9 +120,9 @@ _root = os.getenv("PS_DATASETS", "Data/ReID")
 register_cuhk_sysu_all(os.path.join(_root, "cuhk_sysu"))
 register_prw_all(os.path.join(_root, "PRW"))
 # register_cdps_all(os.path.join(_root, "CDPS_mini_v1.1"))
-register_cdps_all(os.path.join(_root, "CDPS"))
-register_ptk21_all(os.path.join(_root, "PoseTrack21"))
-_root_det = "Data/DetData"
-register_cococh_all(_root_det)
-register_cococh_ncd_all(_root_det)
-register_cococh2v_all(_root_det)
+# register_cdps_all(os.path.join(_root, "CDPS"))
+# register_ptk21_all(os.path.join(_root, "PoseTrack21"))
+# _root_det = "Data/DetData"
+# register_cococh_all(_root_det)
+# register_cococh_ncd_all(_root_det)
+# register_cococh2v_all(_root_det)

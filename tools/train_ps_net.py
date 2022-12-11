@@ -62,7 +62,7 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
     vis_eval = cfg.TEST.VIS
     if vis_eval:
         output_folder = os.path.join(output_folder, "visualize_eval")
-    single_gpu = comm.get_world_size() > 1
+    single_gpu = comm.get_world_size() == 1
     evaluator_list = []
     evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
     if evaluator_type is "det":
@@ -369,17 +369,27 @@ def main(args):
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
-    re_launch = True
-    while re_launch:
-        try:
-            launch(
-                main,
-                args.num_gpus,
-                num_machines=args.num_machines,
-                machine_rank=args.machine_rank,
-                dist_url=args.dist_url,
-                args=(args,),
-            )
-            re_launch = False
-        except Exception as e:
-            print(e)
+    if args.auto_relaunch:
+        re_launch = True
+        while re_launch:
+            try:
+                launch(
+                    main,
+                    args.num_gpus,
+                    num_machines=args.num_machines,
+                    machine_rank=args.machine_rank,
+                    dist_url=args.dist_url,
+                    args=(args,),
+                )
+                re_launch = False
+            except Exception as e:
+                print(e)
+    else:
+        launch(
+            main,
+            args.num_gpus,
+            num_machines=args.num_machines,
+            machine_rank=args.machine_rank,
+            dist_url=args.dist_url,
+            args=(args,),
+        )
