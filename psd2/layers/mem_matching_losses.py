@@ -23,11 +23,13 @@ def _lb_feat_update_avg(lookup_table, labeled_feats, labeled_ids, labeled_mms, d
     id_set = list(set(labeled_ids.tolist()))
     for pid in id_set:
         id_mask = labeled_ids == pid
-        p_feats = labeled_feats[id_mask]
-        proto_feat = lookup_table[pid]
+        p_feats = labeled_feats[id_mask].view(-1, labeled_feats.shape[-1])
+        proto_feat = lookup_table[pid][None]
         p_mms = labeled_mms[id_mask].unsqueeze(1)
         proto_mm = p_mms.new_tensor([[0.5]])
-        fuse_feat = (proto_mm * proto_feat + p_mms * p_feats) / (proto_mm + p_mms).sum()
+        fuse_feat = torch.cat([proto_mm * proto_feat, p_mms * p_feats], dim=0).sum(
+            dim=0
+        ) / (proto_mm.sum() + p_mms.sum())
         lookup_table[pid] = fuse_feat
         if do_norm:
             lookup_table[pid] /= lookup_table[pid].norm()

@@ -1,0 +1,7 @@
+_BASE_: "base_prw.yaml"
+PERSON_SEARCH:
+  REID:
+    LOSS:
+      OIM:
+        LB_LAYER: "lb_norm_avg"
+OUTPUT_DIR: "outputs/oim/oim_prw_oim-avg"
