@@ -68,7 +68,7 @@ class CuhkQueryEvaluator(QueryEvaluator):
         for bi, in_dict in enumerate(inputs):
             query_dict = in_dict["query"]
             q_instances = query_dict["instances"].to(self._cpu_device)
-            g_instances_list = in_dict["gallery"]["instances_list"]
+            g_instances_list = in_dict["gallery"]
             q_imgid = q_instances.image_id
             q_pid = q_instances.gt_pids
             q_box = q_instances.org_gt_boxes
@@ -112,7 +112,7 @@ class CuhkQueryEvaluator(QueryEvaluator):
                 for item in g_instances_list:
                     gallery_imname = item.image_id
                     # some contain the query (gt not empty), some not
-                    gt_boxes = item.gt_boxes
+                    gt_boxes = item.org_gt_boxes
                     count_gts[dst] += len(gt_boxes) > 0
                     # compute distance between query and gallery dets
                     if gallery_imname not in self.infs:
