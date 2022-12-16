@@ -80,10 +80,14 @@ class BoxMode(IntEnum):
             else:
                 arr = box.clone()
         if to_mode in ABS_MODE and from_mode in REL_MODE:
-            arr = BoxMode.convert(arr, from_mode, from_mode - 1, img_size)
+            h, w = img_size[0], img_size[1]
+            factor = torch.tensor([[w, h, w, h]], device=arr.device)
+            arr[:, :4] = arr[:, :4] * factor
             from_mode = from_mode - 1
         elif to_mode in REL_MODE and from_mode in ABS_MODE:
-            arr = BoxMode.convert(arr, from_mode, from_mode + 1, img_size)
+            h, w = img_size[0], img_size[1]
+            factor = torch.tensor([[w, h, w, h]], device=arr.device)
+            arr[:, :4] = arr[:, :4] / factor
             from_mode = from_mode + 1
 
         if (from_mode == BoxMode.XYWHA_ABS and to_mode == BoxMode.XYXY_ABS) or (
@@ -142,16 +146,6 @@ class BoxMode(IntEnum):
             ):
                 arr[:, 2:] = arr[:, 2:] - arr[:, :2]
                 arr[:, :2] = arr[:, :2] + arr[:, 2:] / 2
-            elif from_mode - to_mode == 1:
-                # rel -> abs
-                h, w = img_size[0], img_size[1]
-                factor = torch.tensor([[w, h, w, h]], device=arr.device)
-                arr[:, :4] = arr[:, :4] * factor
-            elif to_mode - from_mode == 1:
-                # abs -> rel
-                h, w = img_size[0], img_size[1]
-                factor = torch.tensor([[w, h, w, h]], device=arr.device)
-                arr[:, :4] = arr[:, :4] / factor
             else:
                 raise NotImplementedError(
                     "Conversion from BoxMode {} to {} is not supported yet".format(
