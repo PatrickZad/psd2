@@ -31,9 +31,4 @@ def build_backbone(cfg, input_shape=None):
     backbone_name = cfg.MODEL.BACKBONE.NAME
     backbone = BACKBONE_REGISTRY.get(backbone_name)(cfg, input_shape)
     assert isinstance(backbone, Backbone)
-    if len(cfg.MODEL.BACKBONE.WEIGHTS) > 0:
-        wt_dir = os.path.split(cfg.MODEL.BACKBONE.WEIGHTS)[0]
-        DetectionCheckpointer(backbone).resume_or_load(
-            cfg.MODEL.BACKBONE.WEIGHTS, resume=True
-        )
     return backbone

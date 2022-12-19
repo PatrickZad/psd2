@@ -56,7 +56,11 @@ class ImageList(object):
             ).tolist()  # B x 2 hw
         elif mask is None:
             self.image_sizes = image_sizes  # unpadded image sizes
-            mask = torch.ones_like(tensor)
+            mask = torch.ones(
+                (tensor.shape[0], tensor.shape[2], tensor.shape[3]),
+                dtype=torch.bool,
+                device=tensor.device,
+            )
             for bi in range(tensor.shape[0]):
                 mask[bi, : image_sizes[bi][0], : image_sizes[bi][1]] = 0
             self.mask = mask.bool()

@@ -4,6 +4,7 @@ from .boxes import (
     BoxMode,
     pairwise_iou,
     pairwise_ioa,
+    pairwise_giou,
     pairwise_point_box_distance,
 )
 from .image_list import ImageList

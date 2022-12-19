@@ -117,9 +117,14 @@ class EvaluatorDataset(Dataset):
                 if q_pred_instances.has("reid_feats"):
                     feat_q = q_pred_instances.reid_feats
                 else:
-                    query_img_boxes_t, query_img_feats = self._get_gallery_dets(
+                    (
+                        query_img_boxes_t,
+                        query_img_feats,
+                    ) = self.eval_ref._get_gallery_dets(q_imgid, dst)[
+                        :, :4
+                    ], self.eval_ref._get_gallery_feats(
                         q_imgid, dst
-                    )[:, :4], self._get_gallery_feats(q_imgid, dst)
+                    )
                     if query_img_boxes_t.shape[0] == 0:
                         # no detection in this query image
                         logger.warning(

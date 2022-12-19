@@ -89,6 +89,8 @@ class BoxMode(IntEnum):
             factor = torch.tensor([[w, h, w, h]], device=arr.device)
             arr[:, :4] = arr[:, :4] / factor
             from_mode = from_mode + 1
+        if from_mode == to_mode:
+            return arr
 
         if (from_mode == BoxMode.XYWHA_ABS and to_mode == BoxMode.XYXY_ABS) or (
             from_mode == BoxMode.XYWHA_REL and to_mode == BoxMode.XYXY_REL
@@ -533,13 +535,13 @@ def matched_pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
 
 def pairwise_giou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     if boxes1.box_mode in ABS_MODE:
-        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_ABS)
+        boxes1 = boxes1.convert_mode(BoxMode.XYXY_ABS)
     else:
-        boxes1 = BoxMode.convert(boxes1.tensor, boxes1.box_mode, BoxMode.XYXY_REL)
+        boxes1 = boxes1.convert_mode(BoxMode.XYXY_REL)
     if boxes2.box_mode in ABS_MODE:
-        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_ABS)
+        boxes2 = boxes2.convert_mode(BoxMode.XYXY_ABS)
     else:
-        boxes2 = BoxMode.convert(boxes2.tensor, boxes2.box_mode, BoxMode.XYXY_REL)
+        boxes2 = boxes2.convert_mode(BoxMode.XYXY_REL)
     area1 = boxes1.area()  # [N]
     area2 = boxes2.area()  # [M]
     inter = pairwise_intersection(boxes1, boxes2)

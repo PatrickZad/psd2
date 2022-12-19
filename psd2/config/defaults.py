@@ -137,9 +137,18 @@ _C.MODEL.BACKBONE.NAME = "build_resnet_backbone"
 # stages are each group of residual blocks.
 _C.MODEL.BACKBONE.FREEZE_AT = 2
 # Load pretrained parameter for this module independantly
-_C.MODEL.BACKBONE.WEIGHTS = ""
 
 
+# ---------------------------------------------------------------------------- #
+# Patch Tokenizer options
+# ---------------------------------------------------------------------------- #
+_C.MODEL.PATCH_TOKENIZER = CN()
+_C.MODEL.PATCH_TOKENIZER.PRETRAIN_IMG_SIZE = 224
+_C.MODEL.PATCH_TOKENIZER.EMBED_DIM = 384
+_C.MODEL.PATCH_TOKENIZER.OUT_FEATURES = ["t1", "t2", "t3"]
+_C.MODEL.PATCH_TOKENIZER.STRIDES = [8, 16, 32]
+_C.MODEL.PATCH_TOKENIZER.WEIGHT_INIT = ""
+_C.MODEL.PATCH_TOKENIZER.NEW_NORMS = True
 # ---------------------------------------------------------------------------- #
 # FPN options
 # ---------------------------------------------------------------------------- #
@@ -604,6 +613,8 @@ _C.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0
 # Floating point number p for L-p norm to be used with the "norm"
 # gradient clipping type; for L-inf, please specify .inf
 _C.SOLVER.CLIP_GRADIENTS.NORM_TYPE = 2.0
+
+_C.SOLVER.CLIP_GRADIENTS.FULL_MODEL = False
 
 # custom lr factors
 _C.SOLVER.LR_FACTORS = []
