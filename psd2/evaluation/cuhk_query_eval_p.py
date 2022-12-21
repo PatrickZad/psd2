@@ -15,6 +15,10 @@ import logging
 from .query_evaluator import QueryEvaluator
 from torch.utils.data import Dataset, DataLoader
 from psd2.structures import Boxes, BoxMode, pairwise_iou
+import resource
+
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (40960, rlimit[1]))
 
 logger = logging.getLogger(__name__)  # setup_logger()
 
@@ -133,14 +137,15 @@ class EvaluatorDataset(Dataset):
                         continue
                     else:
                         ious = pairwise_iou(
-                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY_ABS)
                         )
                         max_iou, nmax = torch.max(ious, dim=1)
-                        logger.warning(
-                            "Low-quality {} query person detected in {} !".format(
-                                max_iou.item(), q_imgid
+                        if max_iou.item() < 0.4:
+                            logger.warning(
+                                "Low-quality {} query person detected in {} !".format(
+                                    max_iou.item(), q_imgid
+                                )
                             )
-                        )
                         feat_q = query_img_feats[nmax.item()]
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm

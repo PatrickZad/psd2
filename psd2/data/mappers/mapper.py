@@ -153,6 +153,7 @@ class SearchMapper(object):
                             BoxMode.XYXY_ABS, img_arr.shape[:2]
                         )
                     else:
+                        # boxes=torch.zeros((0,4))
                         boxes = Boxes(boxes, BoxMode.XYXY_ABS)
                     g_instance = Instances(
                         None,
