@@ -92,7 +92,7 @@ class CuhkQueryEvaluator(QueryEvaluator):
                         continue
                     else:
                         ious = pairwise_iou(
-                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY_ABS)
                         )
                         max_iou, nmax = torch.max(ious, dim=1)
                         if max_iou < 0.4:
