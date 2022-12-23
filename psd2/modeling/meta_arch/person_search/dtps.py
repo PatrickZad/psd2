@@ -3,12 +3,10 @@ import torch.nn as nn
 from torch.nn import init
 from torch.nn import functional as F
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union
 from .base import SearchBase
 from ..build import META_ARCH_REGISTRY
-from psd2.utils.events import get_event_storage
 from psd2.config.config import configurable
-from psd2.structures import Boxes, Instances, ImageList, pairwise_iou, BoxMode
+from psd2.structures import Boxes, Instances, BoxMode
 from psd2.modeling.id_assign import build_id_assigner
 from psd2.layers.mem_matching_losses import OIMLoss
 from psd2.modeling.matcher import DtHungarianMatcher as HungarianMatcher
@@ -17,6 +15,12 @@ from torchvision.ops import generalized_box_iou, box_convert
 from psd2.utils import comm
 import copy
 import math
+from psd2.layers.pos_encoding import PositionEmbeddingSine
+from psd2.modeling.extend.deformable_transformer import (
+    DeformableTransformer,
+    DeformableTransformerDecoder,
+    DeformableTransformerDecoderLayer,
+)
 
 
 @META_ARCH_REGISTRY.register()
@@ -53,7 +57,7 @@ class DTPS(SearchBase):
         self.in_features = in_features
         self.num_feature_levels = num_feature_levels
         self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
-        backbone_outshapes = len(self.backbone.output_shape)
+        backbone_outshapes = self.backbone.output_shape()
         if self.num_feature_levels > 1:
             input_proj_list = []
             for in_name in self.in_features:
@@ -120,26 +124,28 @@ class DTPS(SearchBase):
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
-        bk_output_shape = ret["backbone"].output_shape()
         ret["id_assigner"] = build_id_assigner(cfg)
-        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
-        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
-        if with_bn_neck:
-            bn_neck = nn.BatchNorm1d(feat_dim)
-            init.normal_(bn_neck.weight, std=0.01)
-            init.constant_(bn_neck.bias, 0)
-        else:
-            bn_neck = nn.Identity()
 
         ret["oim_loss"] = OIMLoss(cfg)
         ret["criterion"] = SetCriterion(cfg)
+        ret["pos_enc"] = PositionEmbeddingSine(
+            cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER.D_MODEL // 2, normalize=True
+        )
+        ret["transformer"] = DeformableTransformer(cfg)
+        det_cfg = cfg.PERSON_SEARCH.DET
+        ret["num_classes"] = det_cfg.NUM_CLASSES
+        ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
+        ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        ret["num_feature_levels"] = det_cfg.MODEL.TRANSFORMER.NUM_FEATURE_LEVELS
+        ret["reid_head"] = ReidHead(cfg)
+        ret["aux_loss"] = det_cfg.LOSS.DEEP_SUPERVISION
+        ret["with_box_refine"] = det_cfg.MODEL.BOX_REFINE
         return ret
 
     def forward_gallery(self, image_list, gt_instances):
 
-        features = self.backbone(image_list)
-        features = [feat[iname] for iname in self.in_features]
-        pos = self.pos_enc(features)
+        features = self.backbone(image_list.tensor)
+        features = [features[iname] for iname in self.in_features]
 
         srcs = []
         masks = []
@@ -151,7 +157,7 @@ class DTPS(SearchBase):
             )[0]
             srcs.append(self.input_proj[l](feat))
             masks.append(mask)
-            pos.append(self.pos_enc(feat, mask))
+            pos.append(self.pos_enc(mask))
             assert mask is not None
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
@@ -173,8 +179,8 @@ class DTPS(SearchBase):
         if not self.two_stage:
             query_embeds = self.query_embed.weight
         (
-            memory,
-            hs,
+            input_info,
+            trans_hs,
             init_reference,
             inter_references,
             enc_outputs_class,
@@ -183,6 +189,7 @@ class DTPS(SearchBase):
 
         outputs_classes = []
         outputs_coords = []
+        hs = trans_hs
         for lvl in range(hs.shape[0]):
             if lvl == 0:
                 reference = init_reference
@@ -206,12 +213,20 @@ class DTPS(SearchBase):
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord)
 
-        if self.two_stage:
-            enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-            out["enc_outputs"] = {
-                "pred_logits": enc_outputs_class,
-                "pred_boxes": enc_outputs_coord,
-            }
+        # TODO shared reid head
+        query_pos, _ = torch.split(query_embeds, trans_hs.shape[-1], dim=1)
+        query_pos = query_pos.unsqueeze(0).expand(len(image_list), -1, -1)
+        reid_feats = self.reid_head(
+            hs[-1],
+            inter_references[-1],
+            input_info[-1],
+            input_info[2],
+            input_info[3],
+            input_info[4],
+            query_pos,
+            input_info[0],
+            input_info[1],
+        )
         if self.training:
             loss_dict = {}
             loss_loc, matches = self.criterion(
@@ -223,16 +238,6 @@ class DTPS(SearchBase):
                     loss_loc[k] *= weight_dict[k]
             loss_dict.update(loss_loc)
             all_assign_ids = []
-            all_obj_queries = []
-            assign_ids = self.id_assigner(
-                out["pred_boxes"],
-                out["pred_logits"],
-                [inst.gt_boxes.tensor for inst in gt_instances],
-                [inst.gt_pids for inst in gt_instances],
-                match_indices=matches["matches"],
-            )
-            all_assign_ids.append(assign_ids)
-            all_obj_queries.append(hs[-1])
             if self.aux_loss:
                 for i, (out_a, mat_a) in enumerate(
                     zip(out["aux_outputs"], matches["aux_matches"])
@@ -245,17 +250,90 @@ class DTPS(SearchBase):
                         match_indices=mat_a,
                     )
                     all_assign_ids.append(assign_ids)
-                    all_obj_queries.append(hs[i])
-            reid_feats = self.reid_head(
-                torch.cat(all_obj_queries, dim=0),
-                torch.cat(all_assign_ids, dim=0),
-                memory=memory,
-                hidden_states=hs,
-                reference_points=inter_references,
+            assign_ids = self.id_assigner(
+                out["pred_boxes"],
+                out["pred_logits"],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=matches["matches"],
             )
-            
+            all_assign_ids.append(assign_ids)
+            oim_loss = self.oim_loss(
+                reid_feats.reshape(-1, reid_feats.shape[-1]),
+                all_assign_ids[-1].reshape(-1),
+            )
+            loss_dict.update(oim_loss)
+            with torch.no_grad():  # for vis only
+                pred_instances_list = []
+                featmap_flatten = input_info[-1]  # memory
+                lvl_feats = [[] * self.num_feature_levels]
+                spatial_shapes, level_start_index = input_info[2], input_info[3]
+                level_start_index = level_start_index.tolist()
+                level_start_index.append(featmap_flatten.shape[1])
+                for bi, (bi_boxes, bi_logits, bi_pids, bi_feats_f) in enumerate(
+                    zip(
+                        out["pred_boxes"],
+                        out["pred_logits"],
+                        all_assign_ids[-1],
+                        featmap_flatten,
+                    )
+                ):
+                    top_indices = torch.topk(bi_logits.view(-1), k=100)[1]
+                    pred_boxes = bi_boxes[top_indices]
+                    pred_scores = bi_logits[top_indices].sigmoid().view(-1)
+                    assign_ids = bi_pids[top_indices]
+                    pred_instances = Instances(
+                        None,
+                        pred_scores=pred_scores,
+                        pred_boxes=Boxes(pred_boxes, BoxMode.CCWH_REL).convert_mode(
+                            BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                        ),
+                        assign_ids=assign_ids,
+                    )
+                    pred_instances_list.append(pred_instances)
+                    for li in range(self.num_feature_levels):
+                        li_bi_feats_f = bi_feats_f[
+                            level_start_index[li] : level_start_index[li + 1]
+                        ]
+                        li_bi_feats = li_bi_feats_f.reshape(
+                            spatial_shapes[li][0], spatial_shapes[li][1], -1
+                        ).permute(2, 0, 1)
+                        lvl_feats[li].append(li_bi_feats)
+                for li in range(self.num_feature_levels):
+                    lvl_feats[li] = torch.stack(lvl_feats[li])
+            return pred_instances_list, lvl_feats, loss_dict
+
         else:
-            pass
+            pred_instances_list = []
+            for bi, (bi_boxes, bi_logits, bi_reid_feats) in enumerate(
+                zip(
+                    out["pred_boxes"],
+                    out["pred_logits"],
+                    reid_feats,
+                )
+            ):
+                top_indices = torch.topk(bi_logits.view(-1), k=100)[1]
+                pred_boxes = bi_boxes[top_indices]
+                pred_scores = bi_logits[top_indices].sigmoid().view(-1)
+                reid_feats = bi_reid_feats[top_indices]
+                org_h, org_w = gt_instances[bi].org_img_size
+                h, w = gt_instances[bi].image_size
+                pred_boxes = Boxes(pred_boxes, BoxMode.CCWH_REL).convert_mode(
+                    BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                )
+                pred_boxes.scale(org_w / w, org_h / h)
+                pred_instances = Instances(
+                    None,
+                    pred_scores=pred_scores,
+                    pred_boxes=pred_boxes,
+                    reid_feats=reid_feats,
+                )
+                pred_instances_list.append(pred_instances)
+
+            return pred_instances_list
+
+    def forward_query(self, image_list, gt_instances):
+        return [Instances(gt_instances[i].image_size) for i in range(len(gt_instances))]
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -339,7 +417,7 @@ class SetCriterion(nn.Module):
 
         if det_cfg.LOSS.DEEP_SUPERVISION:
             aux_weight_dict = {}
-            for i in range(det_cfg.MODEL.HEAD.NUM_HEADS - 1):
+            for i in range(det_cfg.MODEL.TRANSFORMER.NUM_DECODER_LAYERS - 1):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
 
@@ -528,3 +606,88 @@ class MLP(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+
+
+class ReidHead(DeformableTransformerDecoder):
+    @configurable()
+    def __init__(
+        self,
+        decoder_layer,
+        num_layers,
+        bn_neck,
+        return_intermediate=False,
+    ):
+        super().__init__(
+            decoder_layer,
+            num_layers,
+            return_intermediate,
+        )
+        self.bn_neck = bn_neck
+
+    @classmethod
+    def from_config(cls, cfg):
+        dt_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        dec_layer = DeformableTransformerDecoderLayer(
+            d_model=dt_cfg.D_MODEL,
+            d_ffn=dt_cfg.DIM_FEEDFORWARD,
+            dropout=dt_cfg.DROPOUT,
+            activation=dt_cfg.ACTIVATION,
+            n_levels=dt_cfg.NUM_FEATURE_LEVELS,
+            n_heads=dt_cfg.NHEAD,
+            n_points=dt_cfg.DEC_N_POINTS,
+        )
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+
+        return dict(
+            decoder_layer=dec_layer,
+            num_layers=cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.NUM_DECODER_LAYERS,
+            return_intermediate=dt_cfg.RETURN_INTERMEDIATE_DEC,
+            bn_neck=bn_neck,
+        )
+
+    def forward(
+        self,
+        tgt,
+        reference_points,
+        src,
+        src_spatial_shapes,
+        src_level_start_index,
+        src_valid_ratios,
+        query_pos=None,
+        src_padding_mask=None,
+        src_pos=None,
+    ):
+        output = tgt
+
+        for lid, layer in enumerate(self.layers):
+            if reference_points.shape[-1] == 4:
+                reference_points_input = (
+                    reference_points[:, :, None]
+                    * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
+                )
+            else:
+                assert reference_points.shape[-1] == 2
+                reference_points_input = (
+                    reference_points[:, :, None] * src_valid_ratios[:, None]
+                )
+            output = layer(
+                output,
+                query_pos,
+                reference_points_input,
+                src,
+                src_spatial_shapes,
+                src_level_start_index,
+                src_padding_mask,
+            )
+        output = self.bn_neck(output.permute(0, 2, 1)).permute(0, 2, 1)
+        if not self.training:
+            output = F.normalize(output, dim=-1)
+
+        return output
