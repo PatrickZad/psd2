@@ -100,9 +100,14 @@ def maybe_add_gradient_clipping(
         optimizer_type = optimizer
 
     grad_clipper = _create_gradient_clipper(cfg.SOLVER.CLIP_GRADIENTS)
-    OptimizerWithGradientClip = _generate_optimizer_class_with_gradient_clipping(
-        optimizer_type, per_param_clipper=grad_clipper
-    )
+    if cfg.SOLVER.CLIP_GRADIENTS.FULL_MODEL:
+        OptimizerWithGradientClip = _generate_optimizer_class_with_gradient_clipping(
+            optimizer_type, global_clipper=grad_clipper
+        )
+    else:
+        OptimizerWithGradientClip = _generate_optimizer_class_with_gradient_clipping(
+            optimizer_type, per_param_clipper=grad_clipper
+        )
     if isinstance(optimizer, torch.optim.Optimizer):
         optimizer.__class__ = OptimizerWithGradientClip  # a bit hacky, not recommended
         return optimizer
