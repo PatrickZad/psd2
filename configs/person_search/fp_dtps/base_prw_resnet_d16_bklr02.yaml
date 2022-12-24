@@ -32,4 +32,4 @@ DATASETS:
   TEST: ("PRW_Gallery", "PRW_Query",) #
 TEST:
   EVAL_PERIOD: 2280 
-OUTPUT_DIR: "outputs/fpdtps/fpdtps_prw_resnet_d16"
+OUTPUT_DIR: "outputs/fpdtps/fpdtps_prw_resnet_d16_bklr02"

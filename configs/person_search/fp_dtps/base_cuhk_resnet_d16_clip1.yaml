@@ -25,11 +25,11 @@ SOLVER:
   CHECKPOINT_PERIOD: 2241
   WARMUP_ITERS: 2241
   IMS_PER_BATCH: 5
-  LR_FACTORS: [0.2,0.1,0.1]
-  LR_GROUP_REGEX: ["backbone.*",".*sampling_offsets.*",".*reference_points.*"]
+  CLIP_GRADIENTS:
+    CLIP_VALUE: 1.0
 DATASETS:
   TRAIN: ("CUHK-SYSU_Train",) 
   TEST: ("CUHK-SYSU_Gallery", "CUHK-SYSU_TestG100",) #
 TEST:
   EVAL_PERIOD: 4482
-OUTPUT_DIR: "outputs/fpdtps/fpdtps_cuhk_resnet_d16_bklr02"
+OUTPUT_DIR: "outputs/fpdtps/fpdtps_cuhk_resnet_d16_clip1"
