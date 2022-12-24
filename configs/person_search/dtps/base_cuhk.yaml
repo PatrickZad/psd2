@@ -16,4 +16,4 @@ DATASETS:
   TEST: ("CUHK-SYSU_Gallery", "CUHK-SYSU_TestG100",) #
 TEST:
   EVAL_PERIOD: 4482
-OUTPUT_DIR: "outputs/fpdtps/dtps_cuhk"
+OUTPUT_DIR: "outputs/dtps/dtps_cuhk"

@@ -18,4 +18,4 @@ DATASETS:
   TEST: ("PRW_Gallery", "PRW_Query",) #
 TEST:
   EVAL_PERIOD: 2280 
-OUTPUT_DIR: "outputs/fpdtps/dtps_prw_1clip"
+OUTPUT_DIR: "outputs/dtps/dtps_prw_1clip"
