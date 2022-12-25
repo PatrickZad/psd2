@@ -38,6 +38,8 @@ class DTPS(SearchBase):
         id_assigner,
         reid_head,
         oim_loss,
+        reid_query_aux,
+        reid_query_pos,
         aux_loss=True,
         with_box_refine=False,
         *args,
@@ -121,6 +123,9 @@ class DTPS(SearchBase):
             self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = None
 
+        self.reid_query_aux = reid_query_aux
+        self.reid_query_pos = reid_query_pos
+
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
@@ -138,6 +143,8 @@ class DTPS(SearchBase):
         ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
         ret["num_feature_levels"] = det_cfg.MODEL.TRANSFORMER.NUM_FEATURE_LEVELS
         ret["reid_head"] = ReidHead(cfg)
+        ret["reid_query_aux"] = cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.QUERY_AUX
+        ret["reid_query_pos"] = cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.QUERY_POS
         ret["aux_loss"] = det_cfg.LOSS.DEEP_SUPERVISION
         ret["with_box_refine"] = det_cfg.MODEL.BOX_REFINE
         return ret
@@ -216,17 +223,43 @@ class DTPS(SearchBase):
         # TODO shared reid head
         query_pos, _ = torch.split(query_embeds, trans_hs.shape[-1], dim=1)
         query_pos = query_pos.unsqueeze(0).expand(len(image_list), -1, -1)
-        reid_feats = self.reid_head(
-            hs[-1],
-            inter_references[-1],
-            input_info[-1],
-            input_info[2],
-            input_info[3],
-            input_info[4],
-            query_pos,
-            input_info[0],
-            input_info[1],
-        )
+        if self.training and self.reid_query_aux:
+            reid_feats = self.reid_head(
+                hs.flatten(0, 1),
+                inter_references.flatten(0, 1),
+                input_info[-1]
+                .unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1),
+                input_info[2],
+                input_info[3],
+                input_info[4]
+                .unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1),
+                query_pos.unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1)
+                if self.reid_query_pos
+                else None,
+                input_info[0]
+                .unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1)
+                .flatten(0, 1),
+                None,
+            )
+        else:
+            reid_feats = self.reid_head(
+                hs[-1],
+                inter_references[-1],
+                input_info[-1],
+                input_info[2],
+                input_info[3],
+                input_info[4],
+                query_pos if self.reid_query_pos else None,
+                input_info[0],
+                None,
+            )
         if self.training:
             loss_dict = {}
             loss_loc, matches = self.criterion(
@@ -258,10 +291,16 @@ class DTPS(SearchBase):
                 match_indices=matches["matches"],
             )
             all_assign_ids.append(assign_ids)
-            oim_loss = self.oim_loss(
-                reid_feats.reshape(-1, reid_feats.shape[-1]),
-                all_assign_ids[-1].reshape(-1),
-            )
+            if self.reid_query_aux:
+                oim_loss = self.oim_loss(
+                    reid_feats.reshape(-1, reid_feats.shape[-1]),
+                    torch.cat(all_assign_ids, dim=0).reshape(-1),
+                )
+            else:
+                oim_loss = self.oim_loss(
+                    reid_feats.reshape(-1, reid_feats.shape[-1]),
+                    all_assign_ids[-1].reshape(-1),
+                )
             loss_dict.update(oim_loss)
             with torch.no_grad():  # for vis only
                 pred_instances_list = []

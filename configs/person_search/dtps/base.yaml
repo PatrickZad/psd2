@@ -50,6 +50,8 @@ PERSON_SEARCH:
       EMB_DIM: 256
       BN_NECK: False
       TRANSFORMER:
+        QUERY_AUX: False
+        QUERY_POS: True
         NUM_DECODER_LAYERS: 1
     ID_ASSIGN:
       NAME: "det"
