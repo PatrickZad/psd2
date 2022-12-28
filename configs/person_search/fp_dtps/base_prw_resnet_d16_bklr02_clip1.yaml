@@ -1,0 +1,37 @@
+_BASE_: "base.yaml"
+MODEL:
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
+  BACKBONE:
+    NAME: "build_resnet_backbone"
+    FREEZE_AT: 2
+  RESNETS:
+    DEPTH: 50
+    NORM: "FrozenBN"
+    RES2_OUT_CHANNELS: 256
+    STRIDE_IN_1X1: False
+    RES5_DILATION: 2
+    OUT_FEATURES: ["res5"]
+  ROI_HEADS:
+    IN_FEATURES: ["res5"]
+PERSON_SEARCH:
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 483
+        LEN_ULB: 500
+SOLVER:
+  MAX_ITER: 57000 # 1140 * 20
+  STEPS: (45600,)
+  CHECKPOINT_PERIOD: 1140
+  WARMUP_ITERS: 1140
+  IMS_PER_BATCH: 5
+  LR_FACTORS: [0.2,0.1,0.1]
+  LR_GROUP_REGEX: ["backbone.*",".*sampling_offsets.*",".*reference_points.*"]
+  CLIP_GRADIENTS:
+    CLIP_VALUE: 1.0
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery", "PRW_Query",) #
+TEST:
+  EVAL_PERIOD: 2280 
+OUTPUT_DIR: "outputs/fpdtps/fpdtps_prw_resnet_d16_bklr02_clip1"
