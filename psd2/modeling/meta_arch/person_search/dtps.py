@@ -40,6 +40,7 @@ class DTPS(SearchBase):
         oim_loss,
         reid_query_aux,
         reid_query_pos,
+        reid_backbone_src,
         aux_loss=True,
         with_box_refine=False,
         *args,
@@ -59,6 +60,40 @@ class DTPS(SearchBase):
         self.in_features = in_features
         self.num_feature_levels = num_feature_levels
         self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
+
+        self.aux_loss = aux_loss
+        self.with_box_refine = with_box_refine
+        self.two_stage = False
+
+        self._init_mapper(hidden_dim)
+
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+
+        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
+        num_pred = transformer.decoder.num_layers
+        if with_box_refine:
+            self.class_embed = _get_clones(self.class_embed, num_pred)
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            # hack implementation for iterative bounding box refinement
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
+            self.class_embed = nn.ModuleList(
+                [self.class_embed for _ in range(num_pred)]
+            )
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+            self.transformer.decoder.bbox_embed = None
+
+        self.reid_query_aux = reid_query_aux
+        self.reid_query_pos = reid_query_pos
+        self.reid_backbone_src = reid_backbone_src
+
+    def _init_mapper(self, hidden_dim):
         backbone_outshapes = self.backbone.output_shape()
         if self.num_feature_levels > 1:
             input_proj_list = []
@@ -94,37 +129,9 @@ class DTPS(SearchBase):
                     )
                 ]
             )
-        self.aux_loss = aux_loss
-        self.with_box_refine = with_box_refine
-        self.two_stage = False
-
-        prior_prob = 0.01
-        bias_value = -math.log((1 - prior_prob) / prior_prob)
-        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
-        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
         for proj in self.input_proj:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
-
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = transformer.decoder.num_layers
-        if with_box_refine:
-            self.class_embed = _get_clones(self.class_embed, num_pred)
-            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
-            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
-            # hack implementation for iterative bounding box refinement
-            self.transformer.decoder.bbox_embed = self.bbox_embed
-        else:
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
-            self.class_embed = nn.ModuleList(
-                [self.class_embed for _ in range(num_pred)]
-            )
-            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
-            self.transformer.decoder.bbox_embed = None
-
-        self.reid_query_aux = reid_query_aux
-        self.reid_query_pos = reid_query_pos
 
     @classmethod
     def from_config(cls, cfg):
@@ -145,6 +152,7 @@ class DTPS(SearchBase):
         ret["reid_head"] = ReidHead(cfg)
         ret["reid_query_aux"] = cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.QUERY_AUX
         ret["reid_query_pos"] = cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.QUERY_POS
+        ret["reid_backbone_src"] = cfg.PERSON_SEARCH.REID.MODEL.TRANSFORMER.BACKBONE_SRC
         ret["aux_loss"] = det_cfg.LOSS.DEEP_SUPERVISION
         ret["with_box_refine"] = det_cfg.MODEL.BOX_REFINE
         return ret
@@ -159,10 +167,11 @@ class DTPS(SearchBase):
         pos = []
         for l, feat in enumerate(features):
             org_mask = image_list.mask
-            mask = F.interpolate(org_mask[None].float(), size=feat.shape[-2:]).to(
+            proj_feat = self.input_proj[l](feat)
+            mask = F.interpolate(org_mask[None].float(), size=proj_feat.shape[-2:]).to(
                 torch.bool
             )[0]
-            srcs.append(self.input_proj[l](feat))
+            srcs.append(proj_feat)
             masks.append(mask)
             pos.append(self.pos_enc(mask))
             assert mask is not None
@@ -193,7 +202,15 @@ class DTPS(SearchBase):
             enc_outputs_class,
             enc_outputs_coord_unact,
         ) = self.transformer(srcs, masks, pos, query_embeds)
-
+        (
+            src_flatten,
+            mask_flatten,
+            lvl_pos_embed_flatten,
+            spatial_shapes,
+            level_start_index,
+            valid_ratios,
+            memory,
+        ) = input_info
         outputs_classes = []
         outputs_coords = []
         hs = trans_hs
@@ -227,14 +244,13 @@ class DTPS(SearchBase):
             reid_feats = self.reid_head(
                 hs.flatten(0, 1),
                 inter_references.flatten(0, 1),
-                input_info[-1]
+                (src_flatten if self.reid_backbone_src else memory)
                 .unsqueeze(0)
                 .repeat(outputs_class.shape[0], 1, 1, 1)
                 .flatten(0, 1),
-                input_info[2],
-                input_info[3],
-                input_info[4]
-                .unsqueeze(0)
+                spatial_shapes,
+                level_start_index,
+                valid_ratios.unsqueeze(0)
                 .repeat(outputs_class.shape[0], 1, 1, 1)
                 .flatten(0, 1),
                 query_pos.unsqueeze(0)
@@ -242,8 +258,7 @@ class DTPS(SearchBase):
                 .flatten(0, 1)
                 if self.reid_query_pos
                 else None,
-                input_info[0]
-                .unsqueeze(0)
+                mask_flatten.unsqueeze(0)
                 .repeat(outputs_class.shape[0], 1, 1)
                 .flatten(0, 1),
                 None,
@@ -252,12 +267,12 @@ class DTPS(SearchBase):
             reid_feats = self.reid_head(
                 hs[-1],
                 inter_references[-1],
-                input_info[-1],
-                input_info[2],
-                input_info[3],
-                input_info[4],
+                src_flatten if self.reid_backbone_src else memory,
+                spatial_shapes,
+                level_start_index,
+                valid_ratios,
                 query_pos if self.reid_query_pos else None,
-                input_info[0],
+                mask_flatten,
                 None,
             )
         if self.training:
@@ -304,9 +319,8 @@ class DTPS(SearchBase):
             loss_dict.update(oim_loss)
             with torch.no_grad():  # for vis only
                 pred_instances_list = []
-                featmap_flatten = input_info[-1]  # memory
+                featmap_flatten = src_flatten if self.reid_backbone_src else memory
                 lvl_feats = [[] * self.num_feature_levels]
-                spatial_shapes, level_start_index = input_info[2], input_info[3]
                 level_start_index = level_start_index.tolist()
                 level_start_index.append(featmap_flatten.shape[1])
                 for bi, (bi_boxes, bi_logits, bi_pids, bi_feats_f) in enumerate(
@@ -730,3 +744,59 @@ class ReidHead(DeformableTransformerDecoder):
             output = F.normalize(output, dim=-1)
 
         return output
+
+
+from psd2.layers import DeformConvPack
+
+# TODO check im2col_step for dconv
+# from pstr
+@META_ARCH_REGISTRY.register()
+class DDTPS(DTPS):
+    def _init_mapper(self, hidden_dim):
+        assert self.num_feature_levels in [1, 2, 3]
+        backbone_outshapes = self.backbone.output_shape()
+        if self.num_feature_levels > 1:
+            input_proj_list = []
+            for in_name in self.in_features:
+                in_channels = backbone_outshapes[in_name].channels
+                input_proj_list.append(
+                    nn.Sequential(
+                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                        nn.Identity()
+                        if backbone_outshapes[in_name].stride <= 16
+                        else nn.Upsample(
+                            scale_factor=self.in_features[in_name].stride // 16,
+                            mode="nearest",
+                        ),
+                        DeformConvPack(
+                            hidden_dim,
+                            hidden_dim,
+                            3,
+                            padding=1,
+                            stride=2 if backbone_outshapes[in_name].stride == 8 else 1,
+                        ),
+                    )
+                )
+            self.input_proj = nn.ModuleList(input_proj_list)
+        else:
+            self.input_proj = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        nn.Conv2d(
+                            backbone_outshapes[self.in_features[-1]].channels,
+                            hidden_dim,
+                            kernel_size=1,
+                        ),
+                        nn.Identity()
+                        if backbone_outshapes[self.in_features[-1]].stride == 16
+                        else nn.Upsample(
+                            scale_factor=self.in_features[-1].stride // 16,
+                            mode="nearest",
+                        ),
+                        DeformConvPack(hidden_dim, hidden_dim, 3, padding=1, stride=1),
+                    )
+                ]
+            )
+        for proj in self.input_proj:
+            nn.init.xavier_uniform_(proj[0].weight, gain=1)
+            nn.init.constant_(proj[0].bias, 0)

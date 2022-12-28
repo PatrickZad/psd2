@@ -53,6 +53,7 @@ PERSON_SEARCH:
         QUERY_AUX: False
         QUERY_POS: True
         NUM_DECODER_LAYERS: 1
+        BACKBONE_SRC: False
     ID_ASSIGN:
       NAME: "det"
     LOSS:
