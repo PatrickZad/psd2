@@ -287,7 +287,7 @@ class Trainer(DefaultTrainer):
 
         for key, value in model.named_parameters(recurse=True):
             match_freeze = _find_match(key, freeze_regex)
-            if match_freeze > 0:
+            if match_freeze > -1:
                 value.requires_grad = False
             if not value.requires_grad:
                 frozen_params.append(key)
