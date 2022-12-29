@@ -369,6 +369,7 @@ class DTPS(SearchBase):
                 pred_boxes = bi_boxes[top_indices]
                 pred_scores = bi_logits[top_indices].sigmoid().view(-1)
                 reid_feats = bi_reid_feats[top_indices]
+                reid_feats = F.normalize(reid_feats, dim=-1)
                 org_h, org_w = gt_instances[bi].org_img_size
                 h, w = gt_instances[bi].image_size
                 pred_boxes = Boxes(pred_boxes, BoxMode.CCWH_REL).convert_mode(
@@ -740,8 +741,6 @@ class ReidHead(DeformableTransformerDecoder):
                 src_padding_mask,
             )
         output = self.bn_neck(output.permute(0, 2, 1)).permute(0, 2, 1)
-        if not self.training:
-            output = F.normalize(output, dim=-1)
 
         return output
 
@@ -752,51 +751,301 @@ from psd2.layers import DeformConvPack
 # from pstr
 @META_ARCH_REGISTRY.register()
 class DDTPS(DTPS):
+    @configurable
+    def __init__(self, *args, **kws) -> None:
+        self.ms_cat_weights = kws.pop("ms_cat_weights")
+        super().__init__(*args, **kws)
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = DTPS.from_config(cfg)
+        num_lvl = ret["num_feature_levels"]
+        ret["oim_loss"] = _get_clones(ret["oim_loss"], num_lvl)
+        ret["ms_cat_weights"] = cfg.PERSON_SEARCH.REID.MODEL.MS_WEIGHTS
+        return ret
+
     def _init_mapper(self, hidden_dim):
         assert self.num_feature_levels in [1, 2, 3]
         backbone_outshapes = self.backbone.output_shape()
-        if self.num_feature_levels > 1:
-            input_proj_list = []
-            for in_name in self.in_features:
-                in_channels = backbone_outshapes[in_name].channels
-                input_proj_list.append(
-                    nn.Sequential(
-                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                        nn.Identity()
-                        if backbone_outshapes[in_name].stride <= 16
-                        else nn.Upsample(
-                            scale_factor=self.in_features[in_name].stride // 16,
-                            mode="nearest",
-                        ),
-                        DeformConvPack(
-                            hidden_dim,
-                            hidden_dim,
-                            3,
-                            padding=1,
-                            stride=2 if backbone_outshapes[in_name].stride == 8 else 1,
-                        ),
-                    )
+        input_proj_list = []
+        for in_name in self.in_features:
+            in_channels = backbone_outshapes[in_name].channels
+            input_proj_list.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.Identity()
+                    if backbone_outshapes[in_name].stride <= 16
+                    else nn.Upsample(
+                        scale_factor=backbone_outshapes[in_name].stride // 16,
+                        mode="nearest",
+                    ),
+                    DeformConvPack(
+                        hidden_dim,
+                        hidden_dim,
+                        3,
+                        padding=1,
+                        stride=2 if backbone_outshapes[in_name].stride == 8 else 1,
+                    ),
                 )
-            self.input_proj = nn.ModuleList(input_proj_list)
-        else:
-            self.input_proj = nn.ModuleList(
-                [
-                    nn.Sequential(
-                        nn.Conv2d(
-                            backbone_outshapes[self.in_features[-1]].channels,
-                            hidden_dim,
-                            kernel_size=1,
-                        ),
-                        nn.Identity()
-                        if backbone_outshapes[self.in_features[-1]].stride == 16
-                        else nn.Upsample(
-                            scale_factor=self.in_features[-1].stride // 16,
-                            mode="nearest",
-                        ),
-                        DeformConvPack(hidden_dim, hidden_dim, 3, padding=1, stride=1),
-                    )
-                ]
             )
+        self.input_proj = nn.ModuleList(input_proj_list)
         for proj in self.input_proj:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
+
+    def forward_gallery(self, image_list, gt_instances):
+
+        features = self.backbone(image_list.tensor)
+        features = [features[iname] for iname in self.in_features]
+
+        srcs = []
+        masks = []
+        pos = []
+        for l, feat in enumerate(features):
+            org_mask = image_list.mask
+            proj_feat = self.input_proj[l](feat)
+            mask = F.interpolate(org_mask[None].float(), size=proj_feat.shape[-2:]).to(
+                torch.bool
+            )[0]
+            srcs.append(proj_feat)
+            masks.append(mask)
+            pos.append(self.pos_enc(mask))
+            assert mask is not None
+
+        query_embeds = None
+        if not self.two_stage:
+            query_embeds = self.query_embed.weight
+        (
+            input_info,
+            trans_hs,
+            init_reference,
+            inter_references,
+            enc_outputs_class,
+            enc_outputs_coord_unact,
+        ) = self.transformer(srcs[-1:], masks[-1:], pos[-1:], query_embeds)
+        (
+            src_flatten_last,
+            mask_flatten_last,
+            lvl_pos_embed_flatten_last,
+            spatial_shapes_last,
+            level_start_index_last,
+            valid_ratios_last,
+            memory_last,
+        ) = input_info
+        outputs_classes = []
+        outputs_coords = []
+        hs = trans_hs
+        for lvl in range(hs.shape[0]):
+            if lvl == 0:
+                reference = init_reference
+            else:
+                reference = inter_references[lvl - 1]
+            reference = inverse_sigmoid(reference)
+            outputs_class = self.class_embed[lvl](hs[lvl])
+            tmp = self.bbox_embed[lvl](hs[lvl])
+            if reference.shape[-1] == 4:
+                tmp += reference
+            else:
+                assert reference.shape[-1] == 2
+                tmp[..., :2] += reference
+            outputs_coord = tmp.sigmoid()
+            outputs_classes.append(outputs_class)
+            outputs_coords.append(outputs_coord)
+        outputs_class = torch.stack(outputs_classes)
+        outputs_coord = torch.stack(outputs_coords)
+
+        out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord[-1]}
+        if self.aux_loss:
+            out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord)
+
+        # TODO shared reid head
+        query_pos, _ = torch.split(query_embeds, trans_hs.shape[-1], dim=1)
+        query_pos = query_pos.unsqueeze(0).expand(len(image_list), -1, -1)
+        reid_reference_pts = outputs_coord[..., :2].detach()
+        if self.training and self.reid_query_aux:
+            # reid decoder on last level
+            reid_feats_last = self.reid_head(
+                hs.flatten(0, 1),
+                reid_reference_pts.flatten(0, 1),
+                src_flatten_last.unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1),
+                spatial_shapes_last,
+                level_start_index_last,
+                valid_ratios_last.unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1),
+                query_pos.unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1, 1)
+                .flatten(0, 1)
+                if self.reid_query_pos
+                else None,
+                mask_flatten_last.unsqueeze(0)
+                .repeat(outputs_class.shape[0], 1, 1)
+                .flatten(0, 1),
+                None,
+            )
+            ms_reid_feats = [reid_feats_last]
+            # reid decoder on prev level
+            # NOTE assume the spatial sizes are consistent
+            for src_s in srcs[:-1]:
+                src_flatten = src_s.flatten(2).transpose(1, 2)
+                reid_feats_s = self.reid_head(
+                    hs.flatten(0, 1).detach(),
+                    reid_reference_pts.flatten(0, 1),
+                    src_flatten.unsqueeze(0)
+                    .repeat(outputs_class.shape[0], 1, 1, 1)
+                    .flatten(0, 1),
+                    spatial_shapes_last,
+                    level_start_index_last,
+                    valid_ratios_last.unsqueeze(0)
+                    .repeat(outputs_class.shape[0], 1, 1, 1)
+                    .flatten(0, 1),
+                    query_pos.unsqueeze(0)
+                    .repeat(outputs_class.shape[0], 1, 1, 1)
+                    .flatten(0, 1)
+                    .detach()
+                    if self.reid_query_pos
+                    else None,
+                    mask_flatten_last.unsqueeze(0)
+                    .repeat(outputs_class.shape[0], 1, 1)
+                    .flatten(0, 1),
+                    None,
+                )
+                ms_reid_feats.append(reid_feats_s)
+
+        else:
+            # reid decoder on last level
+            reid_feats_last = self.reid_head(
+                hs[-1],
+                reid_reference_pts[-1],
+                src_flatten_last,
+                spatial_shapes_last,
+                level_start_index_last,
+                valid_ratios_last,
+                query_pos if self.reid_query_pos else None,
+                mask_flatten_last,
+                None,
+            )
+            ms_reid_feats = [reid_feats_last]
+            for src_s in srcs[:-1]:
+                src_flatten = src_s.flatten(2).transpose(1, 2)
+                reid_feats_s = self.reid_head(
+                    hs[-1],
+                    reid_reference_pts[-1],
+                    src_flatten,
+                    spatial_shapes_last,
+                    level_start_index_last,
+                    valid_ratios_last,
+                    query_pos if self.reid_query_pos else None,
+                    mask_flatten_last,
+                    None,
+                )
+                ms_reid_feats.append(reid_feats_s)
+        if self.training:
+            loss_dict = {}
+            loss_loc, matches = self.criterion(
+                out, gt_instances
+            )  # the gt_classes has been modified for query-matching
+            weight_dict = self.criterion.weight_dict
+            for k in loss_loc.keys():
+                if k in weight_dict:
+                    loss_loc[k] *= weight_dict[k]
+            loss_dict.update(loss_loc)
+            all_assign_ids = []
+            if self.aux_loss:
+                for i, (out_a, mat_a) in enumerate(
+                    zip(out["aux_outputs"], matches["aux_matches"])
+                ):
+                    assign_ids = self.id_assigner(
+                        out_a["pred_boxes"],
+                        out_a["pred_logits"],
+                        [inst.gt_boxes.tensor for inst in gt_instances],
+                        [inst.gt_pids for inst in gt_instances],
+                        match_indices=mat_a,
+                    )
+                    all_assign_ids.append(assign_ids)
+            assign_ids = self.id_assigner(
+                out["pred_boxes"],
+                out["pred_logits"],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=matches["matches"],
+            )
+            all_assign_ids.append(assign_ids)
+            for mi, reid_feats_mi in enumerate(ms_reid_feats):
+                if self.reid_query_aux:
+                    oim_loss = self.oim_loss[mi](
+                        reid_feats_mi.reshape(-1, reid_feats_mi.shape[-1]),
+                        torch.cat(all_assign_ids, dim=0).reshape(-1),
+                    )
+                else:
+                    oim_loss = self.oim_loss[mi](
+                        reid_feats_mi.reshape(-1, reid_feats_mi.shape[-1]),
+                        all_assign_ids[-1].reshape(-1),
+                    )
+                if mi > 0:
+                    loss_dict.update(
+                        {k + "_{}".format(mi - 1): v for k, v in oim_loss.items()}
+                    )
+                else:
+                    loss_dict.update(oim_loss)
+            with torch.no_grad():  # for vis only
+                pred_instances_list = []
+                for bi, (bi_boxes, bi_logits, bi_pids) in enumerate(
+                    zip(
+                        out["pred_boxes"],
+                        out["pred_logits"],
+                        all_assign_ids[-1],
+                    )
+                ):
+                    top_indices = torch.topk(bi_logits.view(-1), k=100)[1]
+                    pred_boxes = bi_boxes[top_indices]
+                    pred_scores = bi_logits[top_indices].sigmoid().view(-1)
+                    assign_ids = bi_pids[top_indices]
+                    pred_instances = Instances(
+                        None,
+                        pred_scores=pred_scores,
+                        pred_boxes=Boxes(pred_boxes, BoxMode.CCWH_REL).convert_mode(
+                            BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                        ),
+                        assign_ids=assign_ids,
+                    )
+                    pred_instances_list.append(pred_instances)
+            return pred_instances_list, srcs, loss_dict
+
+        else:
+            pred_instances_list = []
+            for bi, (bi_boxes, bi_logits) in enumerate(
+                zip(
+                    out["pred_boxes"],
+                    out["pred_logits"],
+                )
+            ):
+                bi_reid_feats = torch.cat(
+                    [
+                        mi_feats[bi] * self.ms_cat_weights[mi]
+                        for mi, mi_feats in enumerate(ms_reid_feats)
+                    ],
+                    dim=-1,
+                )
+                top_indices = torch.topk(bi_logits.view(-1), k=100)[1]
+                pred_boxes = bi_boxes[top_indices]
+                pred_scores = bi_logits[top_indices].sigmoid().view(-1)
+                reid_feats = bi_reid_feats[top_indices]
+                reid_feats = F.normalize(reid_feats, dim=-1)
+                org_h, org_w = gt_instances[bi].org_img_size
+                h, w = gt_instances[bi].image_size
+                pred_boxes = Boxes(pred_boxes, BoxMode.CCWH_REL).convert_mode(
+                    BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                )
+                pred_boxes.scale(org_w / w, org_h / h)
+                pred_instances = Instances(
+                    None,
+                    pred_scores=pred_scores,
+                    pred_boxes=pred_boxes,
+                    reid_feats=reid_feats,
+                )
+                pred_instances_list.append(pred_instances)
+
+            return pred_instances_list

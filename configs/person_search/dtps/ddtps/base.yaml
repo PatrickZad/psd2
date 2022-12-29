@@ -1,0 +1,111 @@
+MODEL:
+  META_ARCHITECTURE: "DDTPS"
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
+  BACKBONE:
+    NAME: "build_resnet_backbone"
+    FREEZE_AT: 2
+  RESNETS:
+    DEPTH: 50
+    NORM: "FrozenBN"
+    RES2_OUT_CHANNELS: 256
+    STRIDE_IN_1X1: False
+    OUT_FEATURES: ["res5"]
+  ROI_HEADS:
+    IN_FEATURES: ["res5"]
+PERSON_SEARCH:
+  DET:
+    NUM_CLASSES: 1
+    MODEL:
+      NUM_PROPOSALS: 100
+      BOX_REFINE: False
+      TRANSFORMER:
+        D_MODEL: 256
+        DIM_FEEDFORWARD: 1024
+        DROPOUT: 0.1
+        ACTIVATION: "relu"
+        NUM_FEATURE_LEVELS: 1
+        NHEAD: 8
+        ENC_N_POINTS: 4
+        DEC_N_POINTS: 4
+        RETURN_INTERMEDIATE_DEC: True
+        NUM_ENCODER_LAYERS: 3
+        NUM_DECODER_LAYERS: 3
+        TWO_STAGE: False
+        TWO_STAGE_NUM_PROPOSALS: 300
+    LOSS:
+      DEEP_SUPERVISION: True
+      WEIGHTS:
+        CLS: 2.0
+        GIOU: 2.0
+        L1: 5.0
+        NO_OBJECT: 0.1
+      FOCAL:
+        ENABLE: True
+        ALPHA: 0.25
+        GAMMA: 2.0
+  REID:
+    MODEL:
+      EMB_DIM: 256
+      BN_NECK: False
+      MS_WEIGHTS: [1.0,]
+      TRANSFORMER:
+        QUERY_AUX: True
+        QUERY_POS: False
+        NUM_DECODER_LAYERS: 1
+        BACKBONE_SRC: True
+    ID_ASSIGN:
+      NAME: "det"
+    LOSS:
+      OIM:
+        LB_LAYER: "lb"
+        ULB_LAYER: "ulb_full"
+        LB_FACTOR: 15
+        ULB_FACTOR: 10
+        NUM_LB: 483
+        LEN_ULB: 500
+        FEAT_DIM: 256
+        NORM_FEAT: True
+        SYNC_MEMORY: False
+        USE_FOCAL: True
+        FOCAL_ALPHA: 1.0
+        FOCAL_GAMMA: 2.0
+        LOSS_WEIGHT: 1.0
+    CWS: False
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 900,1000)
+  MAX_SIZE_TRAIN: 1666
+  MIN_SIZE_TEST: 900
+  MAX_SIZE_TEST: 1500
+  FORMAT: "RGB"
+  SIZE_DIVISIBILITY: 32
+
+DATALOADER:
+  NUM_WORKERS: 8
+  ASPECT_RATIO_GROUPING: True
+
+SOLVER:
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  WARMUP_ITERS: 500
+  BASE_LR: 1.0e-4
+  WEIGHT_DECAY: 1.0e-4
+  GAMMA: 0.1
+  IMS_PER_BATCH: 4
+  LR_FACTORS: [0.2,0.1,0.1]
+  LR_GROUP_REGEX: ["backbone.*",".*sampling_offsets.*",".*reference_points.*"]
+  CLIP_GRADIENTS:
+    ENABLED: True
+    FULL_MODEL: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 0.1
+    NORM_TYPE: 2.0
+
+TEST:
+  IMS_PER_PROC: 4
+  DETECTIONS_PER_IMAGE: 100
+  DETECTION_SCORE_TS: [0.2,0.25,0.3]
+# SEED: 42
+VIS_PERIOD: 500
+VERSION: 2
