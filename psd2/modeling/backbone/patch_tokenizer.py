@@ -28,7 +28,7 @@ from .build import BACKBONE_REGISTRY
 from psd2.layers import Conv2d, ShapeSpec
 
 
-class PatchEmbed(nn.Module):
+class PatchEmbed_(nn.Module):
     """2D Image to Patch Embedding"""
 
     def __init__(
@@ -49,15 +49,14 @@ class PatchEmbed(nn.Module):
             pretrain_img_size[0] // patch_size[0],
             pretrain_img_size[1] // patch_size[1],
         )
-        self.pretrain_num_patches = (
-            self.pretrain_grid_size[0] * self.pretrain_grid_size[1]
-        )
+        self.num_patches = self.pretrain_grid_size[0] * self.pretrain_grid_size[1]
         self.flatten = flatten
 
         self.proj = Conv2d(
             in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
         )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+        self.embed_dim = embed_dim
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -102,6 +101,7 @@ def lecun_normal_(tensor):
     variance_scaling_(tensor, mode="fan_in", distribution="truncated_normal")
 
 
+# FPDETR
 class PatchTokenizerMS(Backbone):
     """A multi-scale"""
 
@@ -110,7 +110,7 @@ class PatchTokenizerMS(Backbone):
         pretrain_img_size=224,
         in_chans=3,
         embed_dim=768,
-        embed_layer=PatchEmbed,  # not in swin
+        embed_layer=PatchEmbed_,  # not in swin
         norm_layer=None,
         out_features=None,
         weight_init="",  # not in swin
@@ -258,16 +258,65 @@ def to_2tuple(x):
     return tuple(repeat(x, 2))
 
 
+# YOLOS
+class PatchEmbed(PatchEmbed_, Backbone):
+    def __init__(self, *args, **kws):
+        PatchEmbed_.__init__(self, *args, **kws)
+        self._out_features = ["out"]
+
+    @property
+    def size_divisibility(self) -> int:
+        """
+        Some backbones require the input height and width to be divisible by a
+        specific integer. This is typically true for encoder / decoder type networks
+        with lateral connection (e.g., FPN) for which feature maps need to match
+        dimension in the "bottom up" and "top down" paths. Set to 0 if no specific
+        input size divisibility is required.
+        """
+        return self.patch_size[0]
+
+    def output_shape(self):
+        """
+        Returns:
+            dict[str->ShapeSpec]
+        """
+        # this is a backward-compatible default
+        return {
+            name: ShapeSpec(
+                channels=self.embed_dim,
+                stride=self.patch_size[0],
+            )
+            for name in self._out_features
+        }
+
+    def forward(self, x):
+        ret = super().forward(x)
+        return {self._out_features[-1]: ret}
+
+
 @BACKBONE_REGISTRY.register()
-def build_patch_tokenizer(cfg, input_shape):
+def build_patch_tokenizerms(cfg, input_shape):
     pt_cfg = cfg.MODEL.PATCH_TOKENIZER
     return PatchTokenizerMS(
         pt_cfg.PRETRAIN_IMG_SIZE,
         input_shape.channels,
         pt_cfg.EMBED_DIM,
-        PatchEmbed,
+        PatchEmbed_,
         out_features=pt_cfg.OUT_FEATURES,
         strides=pt_cfg.STRIDES,
         weight_init=pt_cfg.WEIGHT_INIT,
         new_norms=pt_cfg.NEW_NORMS,
+    )
+
+
+@BACKBONE_REGISTRY.register()
+def build_patch_embed(cfg, input_shape):
+    pt_cfg = cfg.MODEL.PATCH_EMBED
+    return PatchEmbed(
+        pt_cfg.PRETRAIN_IMG_SIZE,
+        pt_cfg.PATCH_SIZE,
+        input_shape.channels,
+        pt_cfg.EMBED_DIM,
+        norm_layer=None,
+        flatten=False,
     )

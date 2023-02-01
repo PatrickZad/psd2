@@ -140,7 +140,7 @@ _C.MODEL.BACKBONE.FREEZE_AT = 2
 
 
 # ---------------------------------------------------------------------------- #
-# Patch Tokenizer options
+# MS Patch Tokenizer options
 # ---------------------------------------------------------------------------- #
 _C.MODEL.PATCH_TOKENIZER = CN()
 _C.MODEL.PATCH_TOKENIZER.PRETRAIN_IMG_SIZE = 224
@@ -149,6 +149,13 @@ _C.MODEL.PATCH_TOKENIZER.OUT_FEATURES = ["t1", "t2", "t3"]
 _C.MODEL.PATCH_TOKENIZER.STRIDES = [8, 16, 32]
 _C.MODEL.PATCH_TOKENIZER.WEIGHT_INIT = ""
 _C.MODEL.PATCH_TOKENIZER.NEW_NORMS = True
+# ---------------------------------------------------------------------------- #
+# Plain Patch Embedding options
+# ---------------------------------------------------------------------------- #
+_C.MODEL.PATCH_EMBED = CN()
+_C.MODEL.PATCH_EMBED.PRETRAIN_IMG_SIZE = 224
+_C.MODEL.PATCH_EMBED.PATCH_SIZE = 16
+_C.MODEL.PATCH_EMBED.EMBED_DIM = 384
 # ---------------------------------------------------------------------------- #
 # FPN options
 # ---------------------------------------------------------------------------- #

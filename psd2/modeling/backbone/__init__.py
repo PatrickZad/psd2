@@ -13,12 +13,8 @@ from .resnet import (
     make_stage,
     BottleneckBlock,
 )
-from .vit import (
-    build_vit_base_backbone,
-    build_vit_small_backbone,
-    build_vit_tiny_backbone,
-)
-from .patch_tokenizer import build_patch_tokenizer
+
+from .patch_tokenizer import build_patch_tokenizerms, build_patch_embed
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]
 # TODO can expose more resnet blocks after careful consideration
