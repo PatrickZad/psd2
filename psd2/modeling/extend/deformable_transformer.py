@@ -268,6 +268,7 @@ class DeformableTransformer(nn.Module):
 
         inter_references_out = inter_references
         input_info = (
+            src_flatten,
             mask_flatten,
             lvl_pos_embed_flatten,
             spatial_shapes,

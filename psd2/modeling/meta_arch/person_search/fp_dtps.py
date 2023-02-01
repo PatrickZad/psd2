@@ -59,6 +59,35 @@ class FP_DTPS(SearchBase):
         self.in_features = in_features
         self.num_feature_levels = num_feature_levels
         self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
+        self.aux_loss = aux_loss
+        self.with_box_refine = with_box_refine
+        self.two_stage = False
+
+        self._init_mapper(hidden_dim)
+
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+
+        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
+        num_pred = transformer.decoder.num_layers
+        if with_box_refine:
+            self.class_embed = _get_clones(self.class_embed, num_pred)
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            # hack implementation for iterative bounding box refinement
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
+            self.class_embed = nn.ModuleList(
+                [self.class_embed for _ in range(num_pred)]
+            )
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+            self.transformer.decoder.bbox_embed = None
+
+    def _init_mapper(self, hidden_dim):
         backbone_outshapes = self.backbone.output_shape()
         if self.num_feature_levels > 1:
             input_proj_list = []
@@ -94,34 +123,9 @@ class FP_DTPS(SearchBase):
                     )
                 ]
             )
-        self.aux_loss = aux_loss
-        self.with_box_refine = with_box_refine
-        self.two_stage = False
-
-        prior_prob = 0.01
-        bias_value = -math.log((1 - prior_prob) / prior_prob)
-        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
-        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
         for proj in self.input_proj:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
-
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = transformer.decoder.num_layers
-        if with_box_refine:
-            self.class_embed = _get_clones(self.class_embed, num_pred)
-            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
-            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
-            # hack implementation for iterative bounding box refinement
-            self.transformer.decoder.bbox_embed = self.bbox_embed
-        else:
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
-            self.class_embed = nn.ModuleList(
-                [self.class_embed for _ in range(num_pred)]
-            )
-            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
-            self.transformer.decoder.bbox_embed = None
 
     @classmethod
     def from_config(cls, cfg):
@@ -188,7 +192,15 @@ class FP_DTPS(SearchBase):
             enc_outputs_class,
             enc_outputs_coord_unact,
         ) = self.transformer(srcs, masks, pos, query_embeds)
-
+        (
+            src_flatten,
+            mask_flatten,
+            lvl_pos_embed_flatten,
+            spatial_shapes,
+            level_start_index,
+            valid_ratios,
+            memory,
+        ) = input_info
         outputs_classes = []
         outputs_coords = []
         hs = trans_hs[:, :, -self.num_queries :, :]
@@ -222,12 +234,12 @@ class FP_DTPS(SearchBase):
             trans_hs[-1, :, -self.num_queries :, :],
             inter_references[-1],
             trans_hs[-1, :, : -self.num_queries, :],
-            input_info[2],
-            input_info[3],
-            input_info[4],
+            spatial_shapes,
+            level_start_index,
+            valid_ratios,
             query_pos,
-            input_info[0],
-            input_info[1],
+            mask_flatten,
+            lvl_pos_embed_flatten,
         )
         if self.training:
             loss_dict = {}
