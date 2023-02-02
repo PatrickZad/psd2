@@ -1,0 +1,6 @@
+_BASE_: "base_prw.yaml"
+PERSON_SEARCH:
+  REID:
+    MODEL:
+      BN_NECK: True
+OUTPUT_DIR: "outputs/oim/oim_prw_bn"

@@ -9,7 +9,10 @@ import copy
 import re
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+import resource
 
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (40960, rlimit[1]))
 logger = logging.getLogger(__name__)
 
 

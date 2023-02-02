@@ -13,7 +13,7 @@ SOLVER:
   IMS_PER_BATCH: 5
 DATASETS:
   TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ("CUHK-SYSU_Gallery", "CUHK-SYSU_TestG100",) #
+  TEST: ( "CUHK-SYSU_TestG100",) #"CUHK-SYSU_Gallery",
 TEST:
   EVAL_PERIOD: 4482
 OUTPUT_DIR: "outputs/oim/oim_cuhk"

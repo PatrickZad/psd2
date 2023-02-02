@@ -222,6 +222,10 @@ class LabeledMatchingLayer(nn.Module):
     def _scores_usync(self, features, pids, mms):
         return LabeledMatchingUsync.apply(features, pids, self.lookup_table, mms)
 
+    @property
+    def weight(self):
+        return self.lookup_table
+
     def forward(self, features, pid_labels, momentums=None):
         """
         Args:
@@ -540,7 +544,7 @@ class OIMLoss(nn.Module):
         loss_cfg = cfg.PERSON_SEARCH.REID.LOSS
         assert hasattr(loss_cfg, "OIM")
         oim_cfg = loss_cfg.OIM
-        cfg = {
+        ret = {
             "lb_layer": oim_cfg.LB_LAYER,
             "ulb_layer": oim_cfg.ULB_LAYER,
             "lb_factor": oim_cfg.LB_FACTOR,
@@ -553,12 +557,12 @@ class OIMLoss(nn.Module):
             "loss_weight": oim_cfg.LOSS_WEIGHT,
         }
         if oim_cfg.USE_FOCAL:
-            cfg["use_focal"] = True
-            cfg["focal_alpha"] = oim_cfg.FOCAL_ALPHA
-            cfg["focal_gamma"] = oim_cfg.FOCAL_GAMMA
+            ret["use_focal"] = True
+            ret["focal_alpha"] = oim_cfg.FOCAL_ALPHA
+            ret["focal_gamma"] = oim_cfg.FOCAL_GAMMA
         else:
-            cfg["use_focal"] = False
-        return cfg
+            ret["use_focal"] = False
+        return ret
 
     def forward(self, pfeats, pids, lb_mms=None):
         pos_mask = pids > -2

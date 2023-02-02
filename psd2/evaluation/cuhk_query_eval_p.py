@@ -15,6 +15,10 @@ import logging
 from .query_evaluator import QueryEvaluator
 from torch.utils.data import Dataset, DataLoader
 from psd2.structures import Boxes, BoxMode, pairwise_iou
+import resource
+
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (40960, rlimit[1]))
 
 logger = logging.getLogger(__name__)  # setup_logger()
 
@@ -117,9 +121,14 @@ class EvaluatorDataset(Dataset):
                 if q_pred_instances.has("reid_feats"):
                     feat_q = q_pred_instances.reid_feats
                 else:
-                    query_img_boxes_t, query_img_feats = self._get_gallery_dets(
+                    (
+                        query_img_boxes_t,
+                        query_img_feats,
+                    ) = self.eval_ref._get_gallery_dets(q_imgid, dst)[
+                        :, :4
+                    ], self.eval_ref._get_gallery_feats(
                         q_imgid, dst
-                    )[:, :4], self._get_gallery_feats(q_imgid, dst)
+                    )
                     if query_img_boxes_t.shape[0] == 0:
                         # no detection in this query image
                         logger.warning(
@@ -128,14 +137,15 @@ class EvaluatorDataset(Dataset):
                         continue
                     else:
                         ious = pairwise_iou(
-                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY)
+                            q_box, Boxes(query_img_boxes_t, BoxMode.XYXY_ABS)
                         )
                         max_iou, nmax = torch.max(ious, dim=1)
-                        logger.warning(
-                            "Low-quality {} query person detected in {} !".format(
-                                max_iou.item(), q_imgid
+                        if max_iou.item() < 0.4:
+                            logger.warning(
+                                "Low-quality {} query person detected in {} !".format(
+                                    max_iou.item(), q_imgid
+                                )
                             )
-                        )
                         feat_q = query_img_feats[nmax.item()]
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm
