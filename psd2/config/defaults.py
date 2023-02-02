@@ -616,6 +616,10 @@ _C.SOLVER.FREEZE_PARAM_REGEX = []
 # To use AMP in inference, run inference under autocast()
 _C.SOLVER.AMP = CN({"ENABLED": False})
 
+# epoch based cfg
+_C.SOLVER.EPOCH_ITERS = -1
+_C.SOLVER.COS_LR_MAX_FACTOR = 1.0
+_C.SOLVER.COS_LR_MIN_FACTOR = 0.0  # NOTE expected min_lr/max_lr
 
 # ---------------------------------------------------------------------------- #
 # Specific test options
