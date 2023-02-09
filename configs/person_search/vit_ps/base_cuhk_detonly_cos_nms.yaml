@@ -3,6 +3,9 @@ MODEL:
   META_ARCHITECTURE: "VitPD"
   WEIGHTS: "Data/model_zoo/yolos_small_psd2.pkl"
 PERSON_SEARCH:
+  DET:
+    MODEL:
+      DO_NMS: True
   REID:
     LOSS:
       OIM:
@@ -11,7 +14,7 @@ PERSON_SEARCH:
         LOSS_WEIGHT: 0.0
 SOLVER:
   LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
-  MAX_ITER: 140050 # 2801 * 50
+  MAX_ITER: 140050 # 2801 * 100
   STEPS: (1,)
   CHECKPOINT_PERIOD: 5602
   WARMUP_ITERS: 0
@@ -24,4 +27,4 @@ DATASETS:
   TEST: ("CUHK-SYSU_Gallery",) #
 TEST:
   EVAL_PERIOD: 5602
-OUTPUT_DIR: "outputs/vit_ps/vitps_cuhk_detonly_cos"
+OUTPUT_DIR: "outputs/vit_ps/vitps_cuhk_detonly_cos_nms"

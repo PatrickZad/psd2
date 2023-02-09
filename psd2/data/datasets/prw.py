@@ -23,6 +23,8 @@ id_remap_dict[479] = 483
 id_remap_dict[933] = 932
 id_remap_dict[-2] = -1
 
+debug_names = ["c1s2_071096.jpg"]
+
 
 def load_prw(dataset_dir, subset=subsets[0]):
     """

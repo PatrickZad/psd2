@@ -7,11 +7,13 @@ from psd2.config.config import configurable
 from psd2.structures import Boxes, Instances, BoxMode
 from psd2.modeling.id_assign import build_id_assigner
 from psd2.layers.mem_matching_losses import OIMLoss
+from psd2.layers import batched_nms
 from psd2.modeling.matcher import DtHungarianMatcher as HungarianMatcher
 from fvcore.nn import sigmoid_focal_loss_jit as sigmoid_focal_loss
 from torchvision.ops import generalized_box_iou, box_convert
 from psd2.utils import comm
 import math
+from functools import partial
 from psd2.modeling.extend.vit import (
     VisionTransformer,
     Block,
@@ -19,6 +21,7 @@ from psd2.modeling.extend.vit import (
     QMaskVisionTransformer,
     QMaskBlock,
 )
+from torch.utils import checkpoint
 
 
 @META_ARCH_REGISTRY.register()
@@ -26,6 +29,7 @@ class VitPS(SearchBase):
     @configurable()
     def __init__(
         self,
+        cfg,
         transformer,
         criterion,
         num_classes,
@@ -34,6 +38,7 @@ class VitPS(SearchBase):
         id_assigner,
         reid_head,
         oim_loss,
+        do_nms,
         *args,
         **kws,
     ):
@@ -59,17 +64,26 @@ class VitPS(SearchBase):
         self.reid_head = reid_head
         self.oim_loss = oim_loss
         self.in_features = in_features
+        self.cfg = cfg
+        self.do_nms = do_nms
 
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
+        ret["cfg"] = cfg
         ret["id_assigner"] = build_id_assigner(cfg)
 
         ret["oim_loss"] = OIMLoss(cfg)
         ret["criterion"] = SetCriterion(cfg)
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        patch_embed = ret["backbone"]
         vit = VisionTransformer(
-            patch_embed=ret["backbone"],
+            pretrain_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            embed_dim=patch_embed.embed_dim,
+            num_patches=patch_embed.num_patches,
             depth=tr_cfg.DEPTH,
             num_heads=tr_cfg.NHEAD,
             mlp_ratio=tr_cfg.MLP_RATIO,
@@ -78,7 +92,7 @@ class VitPS(SearchBase):
             drop_rate=tr_cfg.DROPOUT,
             attn_drop_rate=tr_cfg.ATTN_DROPOUT,
             drop_path_rate=tr_cfg.DROP_PATH,
-            norm_layer=nn.LayerNorm,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
             is_distill=tr_cfg.DEIT,
         )
         det_cfg = cfg.PERSON_SEARCH.DET
@@ -95,7 +109,7 @@ class VitPS(SearchBase):
         ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
         reid_cfg = cfg.PERSON_SEARCH.REID
         if reid_cfg.MODEL.BN_NECK:
-            bn_neck = nn.BatchNorm1d(reid_cfg.MODEL.EMB_DIM)
+            bn_neck = nn.BatchNorm1d(reid_cfg.MODEL.EMB_DIM, eps=1e-6)
             bn_neck.bias.requires_grad_(False)
             nn.init.constant_(bn_neck.weight, 1.0)
             nn.init.constant_(bn_neck.bias, 0.0)
@@ -103,9 +117,11 @@ class VitPS(SearchBase):
             bn_neck = nn.Identity()
         rhead = ReidHead(
             input_img_size=tr_cfg.INIT_PE_SIZE,
-            num_patches=vit.num_patches,
-            patch_size=vit.patch_size,
-            pretrain_img_size=vit.patch_embed.pretrain_img_size,
+            num_patches=patch_embed.num_patches,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            pretrain_img_size=patch_embed.pretrain_img_size,
             num_queies=det_cfg.MODEL.NUM_PROPOSALS,
             depth=reid_cfg.MODEL.TRANSFORMER.DEPTH,
             embed_dim=reid_cfg.MODEL.EMB_DIM,
@@ -116,17 +132,31 @@ class VitPS(SearchBase):
             drop_rate=tr_cfg.DROPOUT,
             attn_drop_rate=tr_cfg.ATTN_DROPOUT,
             drop_path_rate=tr_cfg.DROP_PATH,
-            norm_layer=nn.LayerNorm,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
             is_distill=reid_cfg.MODEL.TRANSFORMER.DEIT,
             bn_neck=bn_neck,
         )
         ret["reid_head"] = rhead
+        ret["do_nms"] = det_cfg.MODEL.DO_NMS
         return ret
 
     def forward_gallery(self, image_list, gt_instances):
-        out_seq = self.transformer(image_list.tensor)
+        features = self.backbone(image_list.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        out_seq = self.transformer(feat_seq, image_list.tensor.shape)
         reid_feats = self.reid_head(out_seq, image_list)
-        out_seq = out_seq[:, -self.num_queries :, :]
+        out_seq, out_feat = (
+            out_seq[:, -self.num_queries :, :],
+            out_seq[
+                :, self.transformer.cls_token.shape[1] : -self.num_queries, :
+            ].detach(),
+        )
+        out_feat = out_feat.reshape(
+            (-1, features.shape[-2], features.shape[-1], features.shape[1])
+        ).permute(0, 3, 1, 2)
+        del features
         # vis_featmap = feat_out.detach()
         outputs_class = self.class_embed(out_seq)
         outputs_coord = self.bbox_embed(out_seq).sigmoid()
@@ -165,7 +195,7 @@ class VitPS(SearchBase):
             loss_dict.update(oim_loss)
             with torch.no_grad():  # for vis only
                 pred_instances_list = []
-                featmap = None  # vis_featmap
+                featmap = out_feat  # vis_featmap
                 for bi, (bi_boxes, bi_scores, bi_pids) in enumerate(
                     zip(
                         pred_box_xyxy,
@@ -203,6 +233,17 @@ class VitPS(SearchBase):
                     BoxMode.XYXY_ABS, gt_instances[bi].image_size
                 )
                 pred_boxes.scale(org_w / w, org_h / h)
+                if self.do_nms:
+                    keep = batched_nms(
+                        pred_boxes.tensor,
+                        pred_scores,
+                        torch.zeros_like(pred_scores, dtype=torch.int64),
+                        0.5,
+                    )
+                    pred_boxes = pred_boxes[keep]
+                    pred_scores = pred_scores[keep]
+                    bi_reid_feats = bi_reid_feats[keep]
+
                 pred_instances = Instances(
                     None,
                     pred_scores=pred_scores,
@@ -215,6 +256,166 @@ class VitPS(SearchBase):
 
     def forward_query(self, image_list, gt_instances):
         return [Instances(gt_instances[i].image_size) for i in range(len(gt_instances))]
+
+
+@META_ARCH_REGISTRY.register()
+class VitPD(VitPS):
+    """
+    #TODO fix the bug
+    def load_state_dict(self, *args, **kws):
+        if "bbox_embed.layers.0.weight" not in args[0]:
+            # pre-train
+            outputs = super().load_state_dict(*args, **kws)
+            det_cfg = self.cfg.PERSON_SEARCH.DET
+            tr_cfg = self.cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+            self.transformer.finetune_det(
+                img_size=tr_cfg.INIT_PE_SIZE,
+                det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+                mid_pe_size=tr_cfg.MID_PE_SIZE,
+            )
+        else:
+            # resume
+            det_cfg = self.cfg.PERSON_SEARCH.DET
+            tr_cfg = self.cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+            self.transformer.finetune_det(
+                img_size=tr_cfg.INIT_PE_SIZE,
+                det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+                mid_pe_size=tr_cfg.MID_PE_SIZE,
+            )
+            outputs = super().load_state_dict(*args, **kws)
+        return outputs
+    """
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(VitPS, cls).from_config(cfg)
+        ret["cfg"] = cfg
+        ret["id_assigner"] = None
+
+        ret["oim_loss"] = None
+        ret["criterion"] = SetCriterion(cfg)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        patch_embed = ret["backbone"]
+        vit = VisionTransformer(
+            pretrain_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            embed_dim=patch_embed.embed_dim,
+            num_patches=patch_embed.num_patches,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            is_distill=tr_cfg.DEIT,
+        )
+        det_cfg = cfg.PERSON_SEARCH.DET
+        vit.finetune_det(
+            img_size=tr_cfg.INIT_PE_SIZE,
+            det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+            mid_pe_size=tr_cfg.MID_PE_SIZE,
+        )
+        ret["transformer"] = vit
+
+        ret["num_classes"] = det_cfg.NUM_CLASSES
+        ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
+        ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        ret["reid_head"] = None
+        ret["do_nms"] = det_cfg.MODEL.DO_NMS
+        return ret
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.backbone(image_list.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        out_seq = self.transformer(feat_seq, image_list.tensor.shape)
+        out_seq = out_seq[:, -self.num_queries :, :]
+        # vis_featmap = feat_out.detach()
+        outputs_class = self.class_embed(out_seq)
+        outputs_coord = self.bbox_embed(out_seq).sigmoid()
+        del out_seq
+
+        if self.training:
+            out = {"pred_logits": outputs_class, "pred_boxes": outputs_coord}
+            loss_dict = {}
+            loss_det, matches = self.criterion(out, gt_instances)
+            weight_dict = self.criterion.weight_dict
+            for k in loss_det.keys():
+                if k in weight_dict:
+                    loss_det[k] *= weight_dict[k]
+            loss_dict.update(loss_det)
+            if self.use_focal:
+                det_scores = out["pred_logits"].detach().sigmoid()[..., 0]
+            else:
+                det_scores = out["pred_logits"].detach().softmax(-1)[..., 0]
+            pred_box_xyxy = out["pred_boxes"].clone().detach()
+            pred_box_xyxy[..., :2] -= pred_box_xyxy[..., 2:] / 2
+            pred_box_xyxy[..., 2:] += pred_box_xyxy[..., :2]
+
+            with torch.no_grad():  # for vis only
+                pred_instances_list = []
+                featmap = None  # vis_featmap
+                for bi, (bi_boxes, bi_scores) in enumerate(
+                    zip(
+                        pred_box_xyxy,
+                        det_scores,
+                    )
+                ):
+                    pred_instances = Instances(
+                        None,
+                        pred_scores=bi_scores,
+                        pred_boxes=Boxes(bi_boxes, BoxMode.XYXY_REL).convert_mode(
+                            BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                        ),
+                        assign_ids=bi_scores.new_zeros(
+                            bi_scores.shape, dtype=torch.int32
+                        ),
+                    )
+                    pred_instances_list.append(pred_instances)
+
+            return pred_instances_list, featmap, loss_dict
+        else:
+            pred_instances_list = []
+            for bi, (bi_boxes, bi_logits) in enumerate(
+                zip(outputs_coord, outputs_class)
+            ):
+                if self.use_focal:
+                    pred_scores = bi_logits.sigmoid()
+                else:
+                    pred_scores = bi_logits.softmax(-1)[..., 0]
+                org_h, org_w = gt_instances[bi].org_img_size
+                h, w = gt_instances[bi].image_size
+                pred_boxes = Boxes(bi_boxes, BoxMode.CCWH_REL).convert_mode(
+                    BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                )
+                pred_boxes.scale(org_w / w, org_h / h)
+                if self.do_nms:
+                    keep = batched_nms(
+                        pred_boxes.tensor,
+                        pred_scores,
+                        torch.zeros_like(pred_scores, dtype=torch.int64),
+                        0.5,
+                    )
+                    pred_boxes = pred_boxes[keep]
+                    pred_scores = pred_scores[keep]
+                pred_instances = Instances(
+                    None,
+                    pred_scores=pred_scores,
+                    pred_boxes=pred_boxes,
+                    reid_feats=pred_boxes.tensor,  # trivial impl for eval
+                )
+                pred_instances_list.append(pred_instances)
+
+            return pred_instances_list
+
+    def forward_query(self, image_list, gt_instances):
+        raise NotImplementedError
 
 
 class MLP(nn.Module):

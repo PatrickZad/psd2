@@ -5,6 +5,7 @@ import torch.nn as nn
 from psd2.layers import DropPath
 import torch.utils.checkpoint as checkpoint
 from copy import deepcopy
+from functools import partial
 
 
 class Mlp(nn.Module):
@@ -302,7 +303,10 @@ class VisionTransformer(nn.Module):
 
     def __init__(
         self,
-        patch_embed,
+        pretrain_size,
+        patch_size,
+        embed_dim,
+        num_patches,
         depth=12,
         num_heads=12,
         mlp_ratio=4.0,
@@ -311,24 +315,19 @@ class VisionTransformer(nn.Module):
         drop_rate=0.0,
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
-        norm_layer=nn.LayerNorm,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
         is_distill=False,
     ):
         super().__init__()
-        self.patch_embed = patch_embed
-        self.img_size = self.patch_embed.pretrain_img_size
+        self.img_size = pretrain_size
         self.depth = depth
-        self.patch_size = (
-            self.patch_embed.patch_size[0]
-            if isinstance(self.patch_embed.patch_size, tuple)
-            else self.patch_embed.patch_size
-        )
-        self.embed_dim = self.patch_embed.embed_dim
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
         self.hidden_dim = (
             self.embed_dim
         )  # num_features for consistency with other models
 
-        self.num_patches = self.patch_embed.num_patches
+        self.num_patches = num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
         if is_distill:
@@ -400,11 +399,15 @@ class VisionTransformer(nn.Module):
             self.pos_embed = torch.nn.Parameter(self.pos_embed[:, 1:, :])
 
         self.det_token_num = det_token_num
-        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim))
+        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim)).to(
+            self.pos_embed.device
+        )
         self.det_token = trunc_normal_(self.det_token, std=0.02)
         cls_pos_embed = self.pos_embed[:, 0, :]
         cls_pos_embed = cls_pos_embed[:, None]
-        det_pos_embed = torch.zeros(1, det_token_num, self.embed_dim)
+        det_pos_embed = torch.zeros(
+            1, det_token_num, self.embed_dim, device=self.pos_embed.device
+        )
         det_pos_embed = trunc_normal_(det_pos_embed, std=0.02)
         patch_pos_embed = self.pos_embed[:, 1:, :]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
@@ -440,6 +443,7 @@ class VisionTransformer(nn.Module):
                     + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
                     + det_token_num,
                     self.embed_dim,
+                    device=self.pos_embed.device
                 )
             )
             trunc_normal_(self.mid_pos_embed, std=0.02)
@@ -515,18 +519,10 @@ class VisionTransformer(nn.Module):
         )
         return scale_pos_embed
 
-    def forward_features(self, x):
+    def forward_features(self, feat_seq, imgt_shape):
         # import pdb;pdb.set_trace()
-        B, H, W = x.shape[0], x.shape[2], x.shape[3]
-
-        # if (H,W) != self.img_size:
-        #     self.finetune = True
-
-        x = self.patch_embed(x)  # B x C x h x w
-        if isinstance(x, dict):
-            x = x[list(x.keys())[-1]]
-        h_pe, w_pe = x.shape[-2:]
-        x = x.flatten(2).transpose(1, 2)  # B x N x C
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
         # interpolate init pe
         if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
             temp_pos_embed = self.InterpolateInitPosEmbed(
@@ -569,14 +565,9 @@ class VisionTransformer(nn.Module):
         # feat_out = feat_out.transpose(1, 2).reshape((B, -1, h_pe, w_pe))
         # return cls_out, feat_out, det_out
 
-    def forward_return_all_selfattention(self, x):
-        # import pdb;pdb.set_trace()
-        B, H, W = x.shape[0], x.shape[2], x.shape[3]
-
-        # if (H,W) != self.img_size:
-        #     self.finetune = True
-
-        x = self.patch_embed(x)
+    def forward_return_all_selfattention(self, feat_seq, imgt_shape):
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
         # interpolate init pe
         if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
             temp_pos_embed = self.InterpolateInitPosEmbed(
@@ -615,12 +606,12 @@ class VisionTransformer(nn.Module):
 
         return output
 
-    def forward(self, x, return_attention=False):
+    def forward(self, feat_seq, imgt_shape, return_attention=False):
         if return_attention == True:
             # return self.forward_selfattention(x)
-            return self.forward_return_all_selfattention(x)
+            return self.forward_return_all_selfattention(feat_seq, imgt_shape)
         else:
-            x = self.forward_features(x)
+            x = self.forward_features(feat_seq, imgt_shape)
             return x
 
 

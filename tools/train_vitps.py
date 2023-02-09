@@ -67,9 +67,13 @@ class VitPSTrainer(Trainer):
                 continue
             match_learn = _find_match(key, lr_group_regex)
             is_zero_wd = False
-            for k in zero_weight_decay_keys:
-                if k in key:
+            if "transformer" in key:
+                if len(value.shape) == 1 or key.endswith(".bias"):
                     is_zero_wd = True
+                else:
+                    for k in zero_weight_decay_keys:
+                        if k in key:
+                            is_zero_wd = True
             if match_learn > 0:
                 if is_zero_wd:
                     zero_wd_param_groups[match_learn]["params"].append(value)
