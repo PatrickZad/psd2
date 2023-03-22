@@ -67,7 +67,6 @@ class VitPS(SearchBase):
         self.in_features = in_features
         self.cfg = cfg
         self.do_nms = do_nms
-        self.do_cws = do_cws
 
     @classmethod
     def from_config(cls, cfg):
@@ -140,7 +139,6 @@ class VitPS(SearchBase):
         )
         ret["reid_head"] = rhead
         ret["do_nms"] = det_cfg.MODEL.DO_NMS
-        ret["do_cws"] = reid_cfg.CWS
         return ret
 
     def forward_gallery(self, image_list, gt_instances):
@@ -1206,7 +1204,6 @@ class VitPSPara(SearchBase):
         bn_neck,
         oim_loss,
         do_nms,
-        do_cws,
         *args,
         **kws,
     ):
@@ -1234,7 +1231,6 @@ class VitPSPara(SearchBase):
         self.in_features = in_features
         self.cfg = cfg
         self.do_nms = do_nms
-        self.do_cws = do_cws
 
     @classmethod
     def from_config(cls, cfg):
@@ -1288,7 +1284,6 @@ class VitPSPara(SearchBase):
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
         ret["do_nms"] = det_cfg.MODEL.DO_NMS
-        ret["do_cws"] = reid_cfg.CWS
         return ret
 
     def forward_gallery(self, image_list, gt_instances):

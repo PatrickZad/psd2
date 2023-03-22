@@ -88,10 +88,12 @@ class CuhkQueryEvaluatorP(QueryEvaluator):
         logger.info("Parallel evaluating on {}:".format(self.dataset_name))
         with tqdm(total=len(eval_worker)) as pbar:
             for b_rst in eval_worker:
-                rst_aps, rst_accs = b_rst[0]
+                rst_aps, rst_accs, rst_aps_cws, rst_accs_cws = b_rst[0]
                 for st in self.det_score_thresh:
                     self.aps[st].extend(rst_aps[st])
                     self.accs[st].extend(rst_accs[st])
+                    self.aps_cws[st].extend(rst_aps_cws[st])
+                    self.accs_cws[st].extend(rst_accs_cws[st])
                 pbar.update(1)
         return super().evaluate()
 
@@ -108,6 +110,8 @@ class EvaluatorDataset(Dataset):
         inputs = self.eval_inputs[idx]
         rst_aps = {st: [] for st in self.eval_ref.det_score_thresh}
         rst_accs = {st: [] for st in self.eval_ref.det_score_thresh}
+        rst_aps_cws = {st: [] for st in self.eval_ref.det_score_thresh}
+        rst_accs_cws = {st: [] for st in self.eval_ref.det_score_thresh}
         for bi, in_dict in enumerate(inputs):
             q_gt_instances, g_gt_instances_list, q_pred_instances = in_dict
             q_imgid = q_gt_instances.image_id
@@ -115,6 +119,7 @@ class EvaluatorDataset(Dataset):
             q_box = q_gt_instances.org_gt_boxes
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
+            y_scores_cws = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             count_tps = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             for dst in self.eval_ref.det_score_thresh:
@@ -165,6 +170,7 @@ class EvaluatorDataset(Dataset):
                     det, feat_g = self.eval_ref._get_gallery_dets(
                         gallery_imname, dst
                     ), self.eval_ref._get_gallery_feats(gallery_imname, dst)
+                    feat_g_cws = feat_g * det[:, 4:5]
                     # no detection in this gallery, skip it
                     if det.shape[0] == 0:
                         continue
@@ -174,9 +180,11 @@ class EvaluatorDataset(Dataset):
                     sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
                         1
                     )  # n x 1 -> n
+                    sim_cws = torch.mm(feat_g_cws, feat_q.view(-1)[:, None]).squeeze(1)
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
+                    name2sim[gallery_imname + "cws"] = sim_cws
                     # save for vis
                     g_img_ids.append(gallery_imname)
 
@@ -200,12 +208,18 @@ class EvaluatorDataset(Dataset):
                                 label[j] = 1
                                 count_tps[dst] += 1
                                 break
+                        inds = torch.argsort(sim_cws)
+                        inds = inds.tolist()[::-1]
+                        inds = torch.tensor(inds, dtype=torch.long)
+                        sim_cws = name2sim[gallery_imname + "cws"][inds]
                     y_trues[dst].extend(label.tolist())
                     y_scores[dst].extend(sim.tolist())
+                    y_scores_cws[dst].extend(sim_cws.tolist())
 
                 # 2. Compute AP for this probe (need to scale by recall rate)
 
                 y_score = np.asarray(y_scores[dst])
+                y_score_cws = np.asarray(y_scores_cws[dst])
                 y_true = np.asarray(y_trues[dst])
                 assert count_tps[dst] <= count_gts[dst]
                 recall_rate = count_tps[dst] * 1.0 / count_gts[dst]
@@ -214,11 +228,23 @@ class EvaluatorDataset(Dataset):
                     if count_tps[dst] == 0
                     else average_precision_score(y_true, y_score) * recall_rate
                 )
+                ap_cws = (
+                    0
+                    if count_tps[dst] == 0
+                    else average_precision_score(y_true, y_score_cws) * recall_rate
+                )
                 rst_aps[dst].append(ap)
+                rst_aps_cws[dst].append(ap_cws)
                 inds = np.argsort(y_score)[::-1]
                 y_score = y_score[inds]
-                y_true = y_true[inds]
+                y_true_o = y_true[inds]
                 rst_accs[dst].append(
-                    [min(1, sum(y_true[:k])) for k in self.eval_ref.topks]
+                    [min(1, sum(y_true_o[:k])) for k in self.eval_ref.topks]
                 )
-        return rst_aps, rst_accs
+                inds = np.argsort(y_score_cws)[::-1]
+                y_score_cws = y_score_cws[inds]
+                y_true_cws = y_true[inds]
+                rst_accs_cws[dst].append(
+                    [min(1, sum(y_true_cws[:k])) for k in self.topks]
+                )
+        return rst_aps, rst_accs, rst_aps_cws, rst_accs_cws
