@@ -13,6 +13,7 @@ from .lr_scheduler import (
     LRMultiplier,
     WarmupParamScheduler,
     EpochBasedCosineParamScheduler,
+    CosineAfterWarmupParamScheduler,
 )
 
 _GradientClipperInput = Union[torch.Tensor, Iterable[torch.Tensor]]
@@ -251,12 +252,20 @@ def build_lr_scheduler(
         sched = CosineParamScheduler(
             cfg.SOLVER.COS_LR_MAX_FACTOR, cfg.SOLVER.COS_LR_MIN_FACTOR
         )
+    elif name == "WarmupCosineAfterWarmupLR":
+        sched = CosineAfterWarmupParamScheduler(
+            cfg.SOLVER.COS_LR_MAX_FACTOR,
+            cfg.SOLVER.COS_LR_MIN_FACTOR,
+            cfg.SOLVER.MAX_ITER,
+            cfg.SOLVER.WARMUP_ITERS,
+        )
     elif name == "WarmupEpochBasedCosineLR":
         sched = EpochBasedCosineParamScheduler(
             cfg.SOLVER.COS_LR_MAX_FACTOR,
             cfg.SOLVER.COS_LR_MIN_FACTOR,
             cfg.SOLVER.EPOCH_ITERS,
             cfg.SOLVER.MAX_ITER,
+            cfg.SOLVER.WARMUP_ITERS,
         )
     else:
         raise ValueError("Unknown LR scheduler: {}".format(name))

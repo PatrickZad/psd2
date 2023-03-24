@@ -60,6 +60,19 @@ def test_mapper(cfg_file):
             vis_map_data([mddict], cfg)
 
 
+def test_mapper_cococh(cfg_file):
+    cfg = setup_cfg(config_file=cfg_file)
+    base_out = os.path.join(cfg.OUTPUT_DIR, "test", "data_mapping")
+    tr_dataset = cfg.DATASETS.TRAIN[0]
+    train_dicts = get_detection_dataset_dicts(tr_dataset)
+    train_mapper = MapperCatalog.get(tr_dataset)(cfg, is_train=True)
+    cfg.OUTPUT_DIR = os.path.join(base_out, cfg.DATASETS.TRAIN[0])
+    for ddict in train_dicts[:32]:
+        mddict = train_mapper(ddict)
+        mddict = mddict["global"] + mddict["local"]
+        vis_map_data(mddict, cfg)
+
+
 def vis_data_dict(data_dicts, cfg):
     save_dir = cfg.OUTPUT_DIR
     if not os.path.exists(save_dir):
@@ -97,7 +110,7 @@ def vis_map_data(map_dicts, cfg):
             data_dicts.append(ddict["query"])
     else:
         data_dicts = map_dicts
-    for ddict in data_dicts:
+    for i, ddict in enumerate(data_dicts):
         img = ddict["image"].numpy().transpose(1, 2, 0) * 255
         gt_instances = ddict["instances"]
         img_name = os.path.split(gt_instances.file_name)[-1]
@@ -108,7 +121,7 @@ def vis_map_data(map_dicts, cfg):
             img_vis.draw_box(box)
             id_pos = box[:2]
             img_vis.draw_text(str(pid), id_pos, horizontal_alignment="left", color="w")
-        img_vis.get_output().save(os.path.join(save_dir, img_name))
+        img_vis.get_output().save(os.path.join(save_dir, str(i) + "_" + img_name))
 
 
 if __name__ == "__main__":

@@ -2,20 +2,17 @@ from psd2.modeling.meta_arch.person_search.vit_ps import (
     VitDetPsParallel,
     trunc_normal_,
     VitPSPara,
+    SetCriterion,
 )
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from .base import SearchBase
+
 from ..build import META_ARCH_REGISTRY
 from psd2.config.config import configurable
 from psd2.structures import Boxes, Instances, BoxMode
 from psd2.modeling.id_assign import build_id_assigner
-from psd2.layers.mem_matching_losses import OIMLoss
-from psd2.layers import batched_nms
-from psd2.modeling.matcher import DtHungarianMatcher as HungarianMatcher
-from fvcore.nn import sigmoid_focal_loss_jit as sigmoid_focal_loss
-from torchvision.ops import generalized_box_iou, box_convert
+from psd2.utils.events import get_event_storage
 from psd2.utils import comm
 import math
 import numpy as np
@@ -23,58 +20,19 @@ from functools import partial
 
 from torch.utils import checkpoint
 from copy import deepcopy
+import itertools
 
 
-class ViTDetPsWithTokenGroups(VitDetPsParallel):
-    def finetune_det(
+class ViTDetPsWithExtTokens(VitDetPsParallel):
+    def forward_features_with_tokens(
         self,
-        img_size=[800, 1344],
-        det_token_num=100,
-        det_extgroup_num=2,
-        mid_pe_size=None,
+        feat_seq,
+        imgt_shape,
+        token_seq,
+        init_token_pos,
+        mid_token_pos=None,
+        mid_token_pos_reid=None,
     ):
-        super().finetune_det(img_size, det_token_num, mid_pe_size)
-        self.det_extgroup_num = det_extgroup_num
-        self.det_token_extgroups = nn.Parameter(
-            torch.zeros(1, det_extgroup_num, det_token_num, self.embed_dim)
-        ).to(self.pos_embed.device)
-        self.det_token_extgroups = trunc_normal_(self.det_token_extgroups, std=0.02)
-        det_pos_embed_extgroups = torch.zeros(
-            1,
-            det_extgroup_num,
-            det_token_num,
-            self.embed_dim,
-            device=self.pos_embed.device,
-        )
-        self.det_pos_embed_extgroups = trunc_normal_(det_pos_embed_extgroups, std=0.02)
-        if mid_pe_size is not None:
-            self.mid_tk_pos_embed_extgroups = nn.Parameter(
-                torch.zeros(
-                    self.depth - 1,
-                    1,
-                    det_extgroup_num,
-                    det_token_num,
-                    self.embed_dim,
-                    device=self.pos_embed.device,
-                )
-            )
-            trunc_normal_(self.mid_tk_pos_embed_extgroups, std=0.02)
-            self.mid_tk_pos_embed_reid = nn.Parameter(
-                torch.zeros(
-                    self.depth_reid - 1,
-                    1,
-                    det_extgroup_num,
-                    det_token_num,
-                    self.embed_dim,
-                    device=self.pos_embed.device,
-                )
-            )
-            trunc_normal_(self.mid_tk_pos_embed_reid, std=0.02)
-
-    def forward_features_eval(self, feat_seq, imgt_shape):
-        return super().forward_features(feat_seq, imgt_shape)
-
-    def forward_features(self, feat_seq, imgt_shape):
         # import pdb;pdb.set_trace()
         B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
         x = feat_seq
@@ -85,16 +43,8 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
             )
         else:
             temp_pos_embed = self.pos_embed
-        patch_pos = (
-            temp_pos_embed[:, : -self.det_token_num]
-            .unsqueeze(1)
-            .expand(B, self.det_extgroup_num + 1, -1, -1)
-        )
-        token_pos = temp_pos_embed[:, -self.det_token_num :].unsqueeze(1)
-        token_pos = torch.cat([token_pos, self.det_pos_embed_extgroups], dim=1).expand(
-            B, -1, -1, -1
-        )
-        temp_pos_embed = torch.cat([patch_pos, token_pos], dim=2).flatten(0, 1)
+        patch_pos = temp_pos_embed[:, : -self.det_token_num].expand(B, -1, -1)
+        temp_pos_embed = torch.cat([patch_pos, init_token_pos], dim=1)
 
         # interpolate mid pe
         if self.has_mid_pe:
@@ -105,26 +55,15 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                 )
             else:
                 temp_mid_pos_embed = self.mid_pos_embed
-            patch_pos = (
-                temp_mid_pos_embed[:, :, : -self.det_token_num]
-                .unsqueeze(2)
-                .expand(-1, B, self.det_extgroup_num + 1, -1, -1)
+            patch_pos = temp_mid_pos_embed[:, :, : -self.det_token_num].expand(
+                -1, B, -1, -1
             )
-            token_pos = temp_mid_pos_embed[:, :, -self.det_token_num :].unsqueeze(2)
-            token_pos = torch.cat(
-                [token_pos, self.det_pos_embed_extgroups], dim=2
-            ).expand(-1, B, -1, -1, -1)
-            temp_mid_pos_embed = torch.cat([patch_pos, token_pos], dim=3).flatten(1, 2)
+            temp_mid_pos_embed = torch.cat([patch_pos, mid_token_pos], dim=2)
 
-        cls_tokens = self.cls_token.unsqueeze(1).expand(
-            B * self.det_tkgroup_num, -1, -1
+        cls_tokens = self.cls_token.expand(
+            B, -1, -1
         )  # stole cls_tokens impl from Phil Wang, thanks
-        det_token = (
-            torch.cat([self.det_token.unsqueeze(1), self.det_token_extgroups], dim=1)
-            .expand(B, -1, -1, -1)
-            .flatten(0, 1)
-        )  # batch_size becomes B x (num_ext_groups + 1)
-        x = x.unsqueeze(1).expand(-1, self.det_tkgroup_num, -1, -1).flatten(0, 1)
+        det_token = token_seq
         x = torch.cat((cls_tokens, x, det_token), dim=1)
         x = x + temp_pos_embed
         x = self.pos_drop(x)
@@ -156,16 +95,12 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                 )
             else:
                 temp_mid_pos_embed = self.mid_pos_embed_reid
-            patch_pos = (
-                temp_mid_pos_embed[:, :, : -self.det_token_num]
-                .unsqueeze(2)
-                .expand(-1, B, self.det_extgroup_num + 1, -1, -1)
+            patch_pos = temp_mid_pos_embed[:, :, : -self.det_token_num].expand(
+                -1, B, -1, -1
             )
-            token_pos = temp_mid_pos_embed[:, :, -self.det_token_num :].unsqueeze(2)
-            token_pos = torch.cat(
-                [token_pos, self.det_pos_embed_extgroups], dim=2
-            ).expand(-1, B, -1, -1, -1)
-            temp_mid_pos_embed = torch.cat([patch_pos, token_pos], dim=3).flatten(1, 2)
+            temp_mid_pos_embed = torch.cat(
+                [patch_pos, mid_token_pos_reid], dim=2
+            ).flatten(1, 2)
 
         for i in range(self.depth_reid):
             reid_x = checkpoint.checkpoint(
@@ -176,9 +111,7 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                     reid_x = reid_x + temp_mid_pos_embed[i]
         reid_x = self.norm_reid(reid_x)
 
-        return det_x.reshape((B, self.det_extgroup_num + 1, -1, -1)), reid_x.reshape(
-            (B, self.det_extgroup_num + 1, -1, -1)
-        )
+        return det_x, reid_x
 
     def forward_features_reid(self, feat_seq, imgt_shape):
         # import pdb;pdb.set_trace()
@@ -191,17 +124,6 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
             )
         else:
             temp_pos_embed = self.pos_embed
-        patch_pos = (
-            temp_pos_embed[:, : -self.det_token_num]
-            .unsqueeze(1)
-            .expand(B, self.det_extgroup_num + 1, -1, -1)
-        )
-        token_pos = temp_pos_embed[:, -self.det_token_num :].unsqueeze(1)
-        token_pos = torch.cat([token_pos, self.det_pos_embed_extgroups], dim=1).expand(
-            B, -1, -1, -1
-        )
-        temp_pos_embed = torch.cat([patch_pos, token_pos], dim=2).flatten(0, 1)
-
         # interpolate mid pe
         if self.has_mid_pe:
             # temp_mid_pos_embed = []
@@ -211,26 +133,11 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                 )
             else:
                 temp_mid_pos_embed = self.mid_pos_embed
-            patch_pos = (
-                temp_mid_pos_embed[:, :, : -self.det_token_num]
-                .unsqueeze(2)
-                .expand(-1, B, self.det_extgroup_num + 1, -1, -1)
-            )
-            token_pos = temp_mid_pos_embed[:, :, -self.det_token_num :].unsqueeze(2)
-            token_pos = torch.cat(
-                [token_pos, self.det_pos_embed_extgroups], dim=2
-            ).expand(-1, B, -1, -1, -1)
-            temp_mid_pos_embed = torch.cat([patch_pos, token_pos], dim=3).flatten(1, 2)
 
-        cls_tokens = self.cls_token.unsqueeze(1).expand(
-            B * self.det_tkgroup_num, -1, -1
+        cls_tokens = self.cls_token.expand(
+            B, -1, -1
         )  # stole cls_tokens impl from Phil Wang, thanks
-        det_token = (
-            torch.cat([self.det_token.unsqueeze(1), self.det_token_extgroups], dim=1)
-            .expand(B, -1, -1, -1)
-            .flatten(0, 1)
-        )  # batch_size becomes B x (num_ext_groups + 1)
-        x = x.unsqueeze(1).expand(-1, self.det_tkgroup_num, -1, -1).flatten(0, 1)
+        det_token = self.det_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x, det_token), dim=1)
         x = x + temp_pos_embed
         x = self.pos_drop(x)
@@ -241,8 +148,6 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
             if self.has_mid_pe:
                 if i < (self.depth - 1):
                     x = x + temp_mid_pos_embed[i]
-        det_x = x
-        det_x = self.norm(det_x)
         reid_x = x
         # interpolate mid pe reid
         if self.has_mid_pe_reid:
@@ -255,16 +160,6 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                 )
             else:
                 temp_mid_pos_embed = self.mid_pos_embed_reid
-            patch_pos = (
-                temp_mid_pos_embed[:, :, : -self.det_token_num]
-                .unsqueeze(2)
-                .expand(-1, B, self.det_extgroup_num + 1, -1, -1)
-            )
-            token_pos = temp_mid_pos_embed[:, :, -self.det_token_num :].unsqueeze(2)
-            token_pos = torch.cat(
-                [token_pos, self.det_pos_embed_extgroups], dim=2
-            ).expand(-1, B, -1, -1, -1)
-            temp_mid_pos_embed = torch.cat([patch_pos, token_pos], dim=3).flatten(1, 2)
 
         for i in range(self.depth_reid):
             reid_x = checkpoint.checkpoint(
@@ -275,7 +170,7 @@ class ViTDetPsWithTokenGroups(VitDetPsParallel):
                     reid_x = reid_x + temp_mid_pos_embed[i]
         reid_x = self.norm_reid(reid_x)
 
-        return reid_x.reshape((B, self.det_extgroup_num + 1, -1, -1))
+        return reid_x
 
 
 class DINOHead(nn.Module):
@@ -333,8 +228,9 @@ class DINOLoss(nn.Module):
         ncrops,
         warmup_teacher_temp,
         teacher_temp,
-        warmup_teacher_temp_epochs,
-        nepochs,
+        warmup_teacher_temp_iters,
+        niters,
+        epoch_iters,
         student_temp=0.1,
         center_momentum=0.9,
     ):
@@ -345,6 +241,9 @@ class DINOLoss(nn.Module):
         self.register_buffer("center", torch.zeros(1, out_dim))
         # we apply a warm up for the teacher temperature because
         # a too high temperature makes the training instable at the beginning
+        self.epoch_iters = epoch_iters
+        nepochs = math.ceil(niters / epoch_iters)
+        warmup_teacher_temp_epochs = math.ceil(warmup_teacher_temp_iters / epoch_iters)
         self.teacher_temp_schedule = np.concatenate(
             (
                 np.linspace(
@@ -354,10 +253,11 @@ class DINOLoss(nn.Module):
             )
         )
 
-    def forward(self, student_output, teacher_output, epoch):
+    def forward(self, student_output, teacher_output, iter_idx):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
+        epoch = iter_idx // self.epoch_iters
         student_out = student_output / self.student_temp
         student_out = student_out.chunk(self.ncrops)
 
@@ -405,7 +305,7 @@ class VitPSParaDINO(VitPSPara):
     @configurable()
     def __init__(
         self,
-        num_ext_tkgroups,
+        num_local_tkgroups,
         transformer_teacher,
         head_student,
         head_teacher,
@@ -415,20 +315,80 @@ class VitPSParaDINO(VitPSPara):
     ):
         super().__init__(*args, **kws)
         self.class_embed_ext = nn.ModuleList(
-            [deepcopy(self.class_embed) for _ in range(num_ext_tkgroups)]
+            [deepcopy(self.class_embed) for _ in range(num_local_tkgroups)]
         )
         self.bbox_embed_ext = nn.ModuleList(
-            [deepcopy(self.bbox_embed) for _ in range(num_ext_tkgroups)]
+            [deepcopy(self.bbox_embed) for _ in range(num_local_tkgroups)]
         )
-        self.vit_student = self.transformer
         self.vit_teacher = transformer_teacher
         self.head_student = head_student
         self.head_teacher = head_teacher
         self.dino_loss = dino_loss
+        self.num_local_token_groups = num_local_tkgroups
+        self.bn_neck_teacher = deepcopy(self.bn_neck)
+        self.backbone_teacher = deepcopy(self.backbone)
         for p in self.vit_teacher.parameters():
             p.requires_grad = False
         for p in self.head_teacher.parameters():
             p.requires_grad = False
+        for p in self.bn_neck_teacher.parameters():
+            p.requires_grad = False
+        for p in self.backbone_teacher.parameters():
+            p.requires_grad = False
+        with torch.no_grad():
+            # local tokens
+            self.local_token_groups = nn.Parameter(
+                torch.stack(
+                    [
+                        self.transformer.det_token.clone()
+                        for _ in range(num_local_tkgroups)
+                    ],
+                    dim=1,
+                )
+            )
+            # local token pos
+            self.local_token_pos_init = nn.Parameter(
+                torch.stack(
+                    [
+                        self.transformer.pos_embed[
+                            :, -self.transformer.det_token_num :, :
+                        ].clone()
+                        for _ in range(num_local_tkgroups)
+                    ],
+                    dim=1,
+                )
+            )
+            self.local_token_pos_mid = (
+                nn.Parameter(
+                    torch.stack(
+                        [
+                            self.transformer.mid_pos_embed[
+                                :, :, -self.transformer.det_token_num :, :
+                            ].clone()
+                            for _ in range(num_local_tkgroups)
+                        ],
+                        dim=2,
+                    )
+                )
+                if self.transformer.has_mid_pe
+                else None
+            )
+            self.local_token_pos_mid_reid = (
+                nn.Parameter(
+                    torch.stack(
+                        [
+                            self.transformer.mid_pos_embed_reid[
+                                :, :, -self.transformer.det_token_num :, :
+                            ].clone()
+                            for _ in range(num_local_tkgroups)
+                        ],
+                        dim=2,
+                    )
+                )
+                if self.transformer.has_mid_pe_reid
+                else None
+            )
+
 
     @classmethod
     def from_config(cls, cfg):
@@ -440,8 +400,9 @@ class VitPSParaDINO(VitPSPara):
         ret["criterion"] = SetCriterion(cfg)
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         patch_embed = ret["backbone"]
+        dino_cfg = cfg.PERSON_SEARCH.DINO
         reid_cfg = cfg.PERSON_SEARCH.REID
-        vit = ViTDetPsWithTokenGroups(
+        vit = ViTDetPsWithExtTokens(
             depth_reid=reid_cfg.MODEL.TRANSFORMER.DEPTH,
             pretrain_size=patch_embed.pretrain_img_size,
             patch_size=patch_embed.patch_size[0]
@@ -464,11 +425,16 @@ class VitPSParaDINO(VitPSPara):
         vit.finetune_det(
             img_size=tr_cfg.INIT_PE_SIZE,
             det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
-            det_extgroup_num=det_cfg.MODEL.NUM_EXT_TOKEN_GROUPS,
             mid_pe_size=tr_cfg.MID_PE_SIZE,
         )
         ret["transformer"] = vit
-        vit = ViTDetPsWithTokenGroups(
+        ret["head_student"] = DINOHead(
+            patch_embed.embed_dim,
+            dino_cfg.OUT_DIM,
+            dino_cfg.BN_IN_HEAD,
+            dino_cfg.NORM_LAST_LAYER,
+        )
+        vit = ViTDetPsWithExtTokens(
             depth_reid=reid_cfg.MODEL.TRANSFORMER.DEPTH,
             pretrain_size=patch_embed.pretrain_img_size,
             patch_size=patch_embed.patch_size[0]
@@ -491,24 +457,297 @@ class VitPSParaDINO(VitPSPara):
         vit.finetune_det(
             img_size=tr_cfg.INIT_PE_SIZE,
             det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
-            det_extgroup_num=det_cfg.MODEL.NUM_EXT_TOKEN_GROUPS,
             mid_pe_size=tr_cfg.MID_PE_SIZE,
         )
         ret["transformer_teacher"] = vit
+        ret["transformer_teacher"].load_state_dict(ret["transformer"].state_dict())
+        ret["head_teacher"] = DINOHead(
+            patch_embed.embed_dim,
+            dino_cfg.OUT_DIM,
+            dino_cfg.BN_IN_HEAD,
+        )
+        ret["head_teacher"].load_state_dict(ret["head_student"].state_dict())
+        assert cfg.SOLVER.EPOCH_ITERS > 0, "Invalid SOLVER.EPOCH_ITERS !"
+        ret["dino_loss"] = DINOLoss(
+            dino_cfg.OUT_DIM,
+            dino_cfg.NUM_LOCAL_TOKEN_GROUPS * 2 + 2,
+            dino_cfg.WARMUP_TEACHER_TEMP,
+            dino_cfg.TEACHER_TEMP,
+            dino_cfg.WARMUP_TEACHER_TEMP_ITERS,
+            cfg.SOLVER.MAX_ITER,
+            cfg.SOLVER.EPOCH_ITERS,
+        )
 
-        det_cfg = cfg.PERSON_SEARCH.DET
         ret["num_classes"] = det_cfg.NUM_CLASSES
         ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
         ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
-        reid_cfg = cfg.PERSON_SEARCH.REID
         if reid_cfg.MODEL.BN_NECK:
-            bn_neck = nn.BatchNorm1d(reid_cfg.MODEL.EMB_DIM, eps=1e-6)
-            bn_neck.bias.requires_grad_(False)
-            nn.init.constant_(bn_neck.weight, 1.0)
-            nn.init.constant_(bn_neck.bias, 0.0)
+            bn_neck = nn.BatchNorm1d(reid_cfg.MODEL.EMB_DIM)
         else:
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
         ret["do_nms"] = det_cfg.MODEL.DO_NMS
-        ret["do_cws"] = reid_cfg.CWS
         return ret
+
+    @torch.no_grad()
+    def ema_update(self, momentum):
+        for param_q, param_k in zip(
+            self.vit_student.parameters(), self.vit_teacher.parameters()
+        ):
+            param_k.data.mul_(momentum).add_((1 - momentum) * param_q.detach().data)
+        for param_q, param_k in zip(
+            self.head_student.parameters(), self.head_teacher.parameters()
+        ):
+            param_k.data.mul_(momentum).add_((1 - momentum) * param_q.detach().data)
+        for param_q, param_k in zip(
+            self.backbone.parameters(), self.backbone_teacher.parameters()
+        ):
+            param_k.data.mul_(momentum).add_((1 - momentum) * param_q.detach().data)
+        for param_q, param_k in zip(
+            self.bn_neck.parameters(), self.bn_neck_teacher.parameters()
+        ):
+            param_k.data.mul_(momentum).add_((1 - momentum) * param_q.detach().data)
+
+
+    def load_state_dict(self, state_dict, strict):
+        output = super().load_state_dict(state_dict, strict)
+        if len(output["missing_keys"]) > 0:
+            # not resume, NOTE assume head and ext tokens are not included
+            self.vit_teacher.load_state_dict(self.vit_student)
+            # TODO remove from missing_keys
+        return output
+
+    @property
+    def vit_student(self):
+        return self.transformer
+
+    def forward(self, input_list):
+        """
+        preds:
+            a list of
+            {
+                "pred_boxes": XYXY_ABS Boxes in augmentation range (resizing/cropping/flipping/...) during training
+                            XYXY_ABS Boxes in original range for test
+                "pred_scores": tensor
+                "assign_ids": assigned person identities (during training only)
+                "reid_feats": tensor
+            }
+        """
+        if "query" in input_list[0].keys():
+            q_img_list = self.preprocess_input([qi["query"] for qi in input_list])
+            q_gt_instances = [
+                gti["query"]["instances"].to(self.device) for gti in input_list
+            ]
+            q_outs = self.forward_query(q_img_list, q_gt_instances)
+            return q_outs
+        else:
+            if self.training:
+                input_list = itertools.chain(
+                    item["global"] + item["local"] for item in input_list
+                )
+                gt_instances = [gti["instances"].to(self.device) for gti in input_list]
+                image_list = self.preprocess_input(input_list)
+                preds, feat_maps, losses = self.forward_gallery(
+                    image_list, gt_instances
+                )
+                self.visualize_training(image_list, gt_instances, preds, feat_maps)
+                return losses
+            else:
+                image_list = self.preprocess_input(input_list)
+                gt_instances = [gti["instances"].to(self.device) for gti in input_list]
+                return self.forward_gallery(image_list, gt_instances)  # preds only
+
+    def forward_gallery(self, image_list, gt_instances):
+        if not self.training:
+            return super().forward_gallery(image_list, gt_instances)
+        # NOTE 1. modify local-view annotaions
+        len_per_img = 2 + self.num_local_token_groups
+        num_imgs = len(image_list) // len_per_img
+        local_view_idx = itertools.chain(
+            list(range(i * len_per_img + 2, (i + 1) * len_per_img))
+            for i in range(num_imgs)
+        )
+        for i, idx in enumerate(local_view_idx):
+            view_idx = i % self.num_local_token_groups
+            box_tensor = gt_instances[idx].gt_boxes.tensor
+            box_hs = box_tensor[:, 3] - box_tensor[:, 1]
+            local_box_hs = box_hs / self.num_local_token_groups
+            box_tensor[:, 1] += view_idx * local_box_hs
+            box_tensor[:, 3] = box_tensor[:, 1] + local_box_hs
+
+            org_box_tensor = gt_instances[idx].org_gt_boxes.tensor
+            org_box_hs = org_box_tensor[:, 3] - org_box_tensor[:, 1]
+            local_org_box_hs = org_box_hs / self.num_local_token_groups
+            org_box_tensor[:, 1] += view_idx * local_org_box_hs
+            org_box_tensor[:, 3] = org_box_tensor[:, 1] + local_org_box_hs
+        # NOTE 2. student output
+        features = self.backbone(image_list.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        all_det_tokens = torch.cat(
+            [
+                self.vit_student.det_token.unsqueeze(1),
+                self.vit_student.det_token.unsqueeze(1),
+                self.local_token_groups,
+            ],
+            dim=1,
+        )
+        all_det_tokens = all_det_tokens.expand(num_imgs, -1, -1, -1).flatten(0, 1)
+        all_det_token_init_pos = torch.cat(
+            [
+                self.vit_student.pos_embed[
+                    :, -self.vit_student.det_token_num :
+                ].unsqueeze(1),
+                self.vit_student.pos_embed[
+                    :, -self.vit_student.det_token_num :
+                ].unsqueeze(1),
+                self.local_token_pos_init,
+            ],
+            dim=1,
+        )
+        all_det_token_init_pos = all_det_token_init_pos.expand(
+            num_imgs, -1, -1, -1
+        ).flatten(0, 1)
+        if self.vit_student.has_mid_pe:
+            all_det_token_mid_pos = torch.cat(
+                [
+                    self.vit_student.mid_pos_embed[
+                        :, :, -self.vit_student.det_token_num :
+                    ].unsqueeze(2),
+                    self.vit_student.mid_pos_embed[
+                        :, :, -self.vit_student.det_token_num :
+                    ].unsqueeze(2),
+                    self.local_token_pos_mid,
+                ],
+                dim=2,
+            )
+            all_det_token_mid_pos = all_det_token_mid_pos.expand(
+                -1, num_imgs, -1, -1, -1
+            ).flatten(1, 2)
+            all_det_token_mid_pos_reid = torch.cat(
+                [
+                    self.vit_student.mid_pos_embed_reid[
+                        :, :, -self.vit_student.det_token_num :
+                    ].unsqueeze(2),
+                    self.vit_student.mid_pos_embed_reid[
+                        :, :, -self.vit_student.det_token_num :
+                    ].unsqueeze(2),
+                    self.local_token_pos_mid_reid,
+                ],
+                dim=2,
+            )
+            all_det_token_mid_pos_reid = all_det_token_mid_pos_reid.expand(
+                -1, num_imgs, -1, -1, -1
+            ).flatten(1, 2)
+        else:
+            all_det_token_mid_pos = None
+            all_det_token_mid_pos_reid = None
+
+        out_seq_det, out_seq_reid = self.vit_student.forward_features_with_tokens(
+            feat_seq,
+            image_list.tensor.shape,
+            all_det_tokens,
+            all_det_token_init_pos,
+            all_det_token_mid_pos,
+            all_det_token_mid_pos_reid,
+        )
+        out_seq_det = out_seq_det[:, -self.num_queries :, :]
+        del feat_seq
+        reid_feats, out_feat = (
+            out_seq_reid[:, -self.num_queries :, :],
+            out_seq_reid[
+                :, self.transformer.cls_token.shape[1] : -self.num_queries, :
+            ].detach(),
+        )
+        del out_seq_reid
+        reid_feats = self.bn_neck(reid_feats.transpose(1, 2)).transpose(1, 2)
+        out_feat = out_feat.reshape(
+            (-1, features.shape[-2], features.shape[-1], features.shape[1])
+        ).permute(0, 3, 1, 2)
+        del features
+        # vis_featmap = feat_out.detach()
+        outputs_class, outputs_coord = [], []
+        out_seq_det = out_seq_det.reshape(
+            (-1, len_per_img, out_seq_det.shape[-2], out_seq_det.shape[-1])
+        )
+        for vi in range(2):
+            outputs_class.append(self.class_embed(out_seq_det[:, vi : vi + 1]))
+            outputs_coord.append(self.bbox_embed(out_seq_det[:, vi : vi + 1]).sigmoid())
+        for vi in range(2, len_per_img):
+            outputs_class.append(self.class_embed(out_seq_det[:, vi : vi + 1]))
+            outputs_coord.append(self.bbox_embed(out_seq_det[:, vi : vi + 1]).sigmoid())
+        del out_seq_det
+        outputs_class = outputs_class.flatten(0, 1)
+        outputs_coord = outputs_coord.flatten(0, 1)
+
+        out = {"pred_logits": outputs_class, "pred_boxes": outputs_coord}
+        loss_dict = {}
+        loss_det, matches = self.criterion(out, gt_instances)
+        weight_dict = self.criterion.weight_dict
+        for k in loss_det.keys():
+                if k in weight_dict:
+                    loss_det[k] *= weight_dict[k]
+        loss_dict.update(loss_det)
+        if self.use_focal:
+                det_scores = out["pred_logits"].detach().sigmoid()[..., 0]
+        else:
+                det_scores = out["pred_logits"].detach().softmax(-1)[..., 0]
+        pred_box_xyxy = out["pred_boxes"].clone().detach()
+        pred_box_xyxy[..., :2] -= pred_box_xyxy[..., 2:] / 2
+        pred_box_xyxy[..., 2:] += pred_box_xyxy[..., :2]
+        assign_ids = self.id_assigner(
+                pred_box_xyxy,
+                det_scores,
+                [
+                    inst.gt_boxes.convert_mode(BoxMode.XYXY_REL, inst.image_size).tensor
+                    for inst in gt_instances
+                ],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=matches["matches"],
+            )
+        assign_ids=assign_ids.reshape(-1)
+        reid_feats=reid_feats.reshape(-1, reid_feats.shape[-1])
+        student_out=self.head_student(reid_feats[assign_ids>-2])
+
+        # NOTE 3. teacher output
+        # only global views
+        global_view_idx=list(itertools.chain([i*len_per_img,i*len_per_img+1] for i in range(num_imgs)))
+        image_list_g=image_list_g.select_by_indices(global_view_idx)
+        gt_instances_g=gt_instances[global_view_idx]
+        features = self.backbone_teacher(image_list_g.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        out_seq_reid = self.vit_teacher.forward_features_reid(feat_seq, image_list_g.tensor.shape)
+        reid_feats = out_seq_reid[:, -self.num_queries :, :]
+        del out_seq_reid
+        reid_feats = self.bn_neck_teacher(reid_feats.transpose(1, 2)).transpose(1, 2)
+        reid_feats=reid_feats.reshape(-1, reid_feats.shape[-1])
+        teacher_out=self.head_teacher(reid_feats[assign_ids>-2])
+
+        # NOTE 4. dino loss
+        loss_dict.update({"loss_dino":self.dino_loss(student_out,teacher_out,get_event_storage().iter)})
+        # NOTE 5. visualize     
+        with torch.no_grad():  # for vis only
+                pred_instances_list = []
+                featmap = out_feat  # vis_featmap
+                for bi, (bi_boxes, bi_scores, bi_pids) in enumerate(
+                    zip(
+                        pred_box_xyxy,
+                        det_scores,
+                        assign_ids,
+                    )
+                ):
+                    pred_instances = Instances(
+                        None,
+                        pred_scores=bi_scores,
+                        pred_boxes=Boxes(bi_boxes, BoxMode.XYXY_REL).convert_mode(
+                            BoxMode.XYXY_ABS, gt_instances[bi].image_size
+                        ),
+                        assign_ids=bi_pids,
+                    )
+                    pred_instances_list.append(pred_instances)
+
+        return pred_instances_list, featmap, loss_dict
+        

@@ -158,3 +158,8 @@ class ImageList(object):
 
     def __repr__(self):
         return str(self.tensors)
+
+    def select_by_indices(self, indices):
+        return ImageList(
+            torch.stack([self.tensor[i] for i in indices]), self.image_sizes[indices]
+        )

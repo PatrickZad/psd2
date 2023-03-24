@@ -531,7 +531,7 @@ _C.MODEL.RESNETS.DEFORM_NUM_GROUPS = 1
 # ---------------------------------------------------------------------------- #
 # Person Searcher
 # ---------------------------------------------------------------------------- #
-_C.PERSON_SEARCH = CN()
+_C.PERSON_SEARCH = CN(new_allowed=True)
 _C.PERSON_SEARCH.DET = CN()
 _C.PERSON_SEARCH.DET.NUM_CLASSES = 1
 _C.PERSON_SEARCH.DET.MODEL = CN(new_allowed=True)

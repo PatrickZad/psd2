@@ -122,17 +122,56 @@ class EpochBasedCosineParamScheduler(ParamScheduler):
         end_value: float,
         epoch_base: int,
         max_iters: int,
+        warmup_iters: int = 0,
     ) -> None:
         self._start_value = start_value
         self._end_value = end_value
         self.epoch_base = epoch_base
         self.max_iters = max_iters
-        self.max_epoch = math.ceil(max_iters / epoch_base)
+        self.max_epoch_after_warmup = math.ceil(
+            self.max_iters - warmup_iters / epoch_base
+        )
+        self.warmup_iters = warmup_iters
 
     def __call__(self, where: float) -> float:
-        cur_iter = where * self.max_iters
+        cur_iter = where * self.max_iters - self.warmup_iters
         cur_epoch = cur_iter // self.epoch_base
-        where = cur_epoch / self.max_epoch
+        where = cur_epoch / self.max_epoch_after_warmup
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (
+            1 + math.cos(math.pi * where)
+        )
+
+
+class CosineAfterWarmupParamScheduler(ParamScheduler):
+    """
+    Cosine decay or cosine warmup schedules based on start and end values.
+    The schedule is updated based on the fraction of training progress.
+    The schedule was proposed in 'SGDR: Stochastic Gradient Descent with
+    Warm Restarts' (https://arxiv.org/abs/1608.03983). Note that this class
+    only implements the cosine annealing part of SGDR, and not the restarts.
+
+    Example:
+
+        .. code-block:: python
+
+          CosineParamScheduler(start_value=0.1, end_value=0.0001)
+    """
+
+    def __init__(
+        self,
+        start_value: float,
+        end_value: float,
+        max_iters: int,
+        warmup_iters: int = 0,
+    ) -> None:
+        self._start_value = start_value
+        self._end_value = end_value
+        self.max_iters = max_iters
+        self.warmup_iters = warmup_iters
+
+    def __call__(self, where: float) -> float:
+        cur_iter = where * self.max_iters - self.warmup_iters
+        where = cur_iter / (self.max_iters - self.warmup_iters)
         return self._end_value + 0.5 * (self._start_value - self._end_value) * (
             1 + math.cos(math.pi * where)
         )

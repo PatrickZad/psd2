@@ -90,39 +90,13 @@ def register_cdps_all(datadir):
 
 
 def register_cococh_all(datadir):
-    name = "COCO-CH_Train"
+    name = "COCO-CH_DINO"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
-    MapperCatalog.register(name, mappers.COCOCHMapper)
-    name = "COCO-CH_Val"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "val"))
-    MapperCatalog.register(name, mappers.COCOCHMapper)
-
-
-def register_cococh2v_all(datadir):
-    name = "COCO-CH2v_Train"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
-    MapperCatalog.register(name, mappers.COCOCH2vMapper)
-    name = "COCO-CH2v_Val"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "val"))
-    MapperCatalog.register(name, mappers.COCOCH2vMapper)
-
-
-def register_cococh_ncd_all(datadir):
-    name = "COCO-CH-ncd_Train"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train", False))
-    MapperCatalog.register(name, mappers.COCOCHMapper)
-    name = "COCO-CH-ncd_Val"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "val", False))
-    MapperCatalog.register(name, mappers.COCOCHMapper)
+    MapperCatalog.register(name, mappers.COCOCHDINOMapper)
 
 
 _root = os.getenv("PS_DATASETS", "Data/ReID")
 register_cuhk_sysu_all(os.path.join(_root, "cuhk_sysu"))
 register_prw_all(os.path.join(_root, "PRW"))
-# register_cdps_all(os.path.join(_root, "CDPS_mini_v1.1"))
-# register_cdps_all(os.path.join(_root, "CDPS"))
-# register_ptk21_all(os.path.join(_root, "PoseTrack21"))
-# _root_det = "Data/DetData"
-# register_cococh_all(_root_det)
-# register_cococh_ncd_all(_root_det)
-# register_cococh2v_all(_root_det)
+_root_det = "Data/DetData"
+register_cococh_all(_root_det)
