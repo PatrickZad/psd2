@@ -570,6 +570,7 @@ class OIMLoss(nn.Module):
         pids = pids[pos_mask]
         if pfeats.shape[0] == 0:
             loss_oim = pfeats.new_tensor([0])
+            return {"loss_oim": loss_val * self.loss_weight}
         else:
             if self.do_normalize:
                 pfeats = F.normalize(pfeats, dim=-1)
@@ -584,7 +585,7 @@ class OIMLoss(nn.Module):
             pid_labels = pids.clone()
             pid_labels[pid_labels == -2] = -1
             n_lb_feats = (pid_labels > -1).sum()
-            if lb_matching_scores.shape[0] == 0:
+            if n_lb_feats == 0:
                 loss_oim = lb_matching_scores.new_tensor([0])
             else:
                 if self.use_focal:

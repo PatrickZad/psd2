@@ -9,7 +9,12 @@ from fvcore.common.param_scheduler import CosineParamScheduler, MultiStepParamSc
 
 from psd2.config import CfgNode
 
-from .lr_scheduler import LRMultiplier, WarmupParamScheduler
+from .lr_scheduler import (
+    LRMultiplier,
+    WarmupParamScheduler,
+    EpochBasedCosineParamScheduler,
+    CosineAfterWarmupParamScheduler,
+)
 
 _GradientClipperInput = Union[torch.Tensor, Iterable[torch.Tensor]]
 _GradientClipper = Callable[[_GradientClipperInput], None]
@@ -244,7 +249,24 @@ def build_lr_scheduler(
             num_updates=cfg.SOLVER.MAX_ITER,
         )
     elif name == "WarmupCosineLR":
-        sched = CosineParamScheduler(1, 0)
+        sched = CosineParamScheduler(
+            cfg.SOLVER.COS_LR_MAX_FACTOR, cfg.SOLVER.COS_LR_MIN_FACTOR
+        )
+    elif name == "WarmupCosineAfterWarmupLR":
+        sched = CosineAfterWarmupParamScheduler(
+            cfg.SOLVER.COS_LR_MAX_FACTOR,
+            cfg.SOLVER.COS_LR_MIN_FACTOR,
+            cfg.SOLVER.MAX_ITER,
+            cfg.SOLVER.WARMUP_ITERS,
+        )
+    elif name == "WarmupEpochBasedCosineLR":
+        sched = EpochBasedCosineParamScheduler(
+            cfg.SOLVER.COS_LR_MAX_FACTOR,
+            cfg.SOLVER.COS_LR_MIN_FACTOR,
+            cfg.SOLVER.EPOCH_ITERS,
+            cfg.SOLVER.MAX_ITER,
+            cfg.SOLVER.WARMUP_ITERS,
+        )
     else:
         raise ValueError("Unknown LR scheduler: {}".format(name))
 

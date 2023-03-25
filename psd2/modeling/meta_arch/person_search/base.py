@@ -22,7 +22,7 @@ T_COLORS_BG = {
 
 @META_ARCH_REGISTRY.register()
 class SearchBase(nn.Module):
-    @configurable()
+    @configurable
     def __init__(self, backbone, pix_mean, pix_std, vis_period):
         super().__init__()
         self.backbone = backbone

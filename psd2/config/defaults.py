@@ -140,7 +140,7 @@ _C.MODEL.BACKBONE.FREEZE_AT = 2
 
 
 # ---------------------------------------------------------------------------- #
-# Patch Tokenizer options
+# MS Patch Tokenizer options
 # ---------------------------------------------------------------------------- #
 _C.MODEL.PATCH_TOKENIZER = CN()
 _C.MODEL.PATCH_TOKENIZER.PRETRAIN_IMG_SIZE = 224
@@ -149,6 +149,13 @@ _C.MODEL.PATCH_TOKENIZER.OUT_FEATURES = ["t1", "t2", "t3"]
 _C.MODEL.PATCH_TOKENIZER.STRIDES = [8, 16, 32]
 _C.MODEL.PATCH_TOKENIZER.WEIGHT_INIT = ""
 _C.MODEL.PATCH_TOKENIZER.NEW_NORMS = True
+# ---------------------------------------------------------------------------- #
+# Plain Patch Embedding options
+# ---------------------------------------------------------------------------- #
+_C.MODEL.PATCH_EMBED = CN()
+_C.MODEL.PATCH_EMBED.PRETRAIN_IMG_SIZE = 224
+_C.MODEL.PATCH_EMBED.PATCH_SIZE = 16
+_C.MODEL.PATCH_EMBED.EMBED_DIM = 384
 # ---------------------------------------------------------------------------- #
 # FPN options
 # ---------------------------------------------------------------------------- #
@@ -524,7 +531,7 @@ _C.MODEL.RESNETS.DEFORM_NUM_GROUPS = 1
 # ---------------------------------------------------------------------------- #
 # Person Searcher
 # ---------------------------------------------------------------------------- #
-_C.PERSON_SEARCH = CN()
+_C.PERSON_SEARCH = CN(new_allowed=True)
 _C.PERSON_SEARCH.DET = CN()
 _C.PERSON_SEARCH.DET.NUM_CLASSES = 1
 _C.PERSON_SEARCH.DET.MODEL = CN(new_allowed=True)
@@ -539,7 +546,6 @@ _C.PERSON_SEARCH.REID.ID_ASSIGN.NAME = "det"
 _C.PERSON_SEARCH.REID.LOSS = CN(new_allowed=True)
 _C.PERSON_SEARCH.REID.LOSS.WEIGHTS = CN(new_allowed=True)
 
-_C.PERSON_SEARCH.REID.CWS = False
 _C.INPUT.REA = CN({"ENABLED": False})
 _C.INPUT.REA.PROB = 0.5
 _C.INPUT.REA.VALUE = [0.485 * 255, 0.456 * 255, 0.406 * 255]
@@ -627,6 +633,10 @@ _C.SOLVER.FREEZE_PARAM_REGEX = []
 # To use AMP in inference, run inference under autocast()
 _C.SOLVER.AMP = CN({"ENABLED": False})
 
+# epoch based cfg
+_C.SOLVER.EPOCH_ITERS = -1
+_C.SOLVER.COS_LR_MAX_FACTOR = 1.0
+_C.SOLVER.COS_LR_MIN_FACTOR = 0.0  # NOTE expected min_lr/max_lr
 
 # ---------------------------------------------------------------------------- #
 # Specific test options

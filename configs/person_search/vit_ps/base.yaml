@@ -1,53 +1,51 @@
 MODEL:
-  META_ARCHITECTURE: "PlainDTPS"
+  META_ARCHITECTURE: "VitPS"
+  WEIGHTS: "Data/model_zoo/yolos_small_psd2.pkl"
   PIXEL_MEAN: [0.485, 0.456, 0.406]
   PIXEL_STD: [0.229, 0.224, 0.225]
-  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
   BACKBONE:
-    NAME: "build_resnet_backbone"
-    FREEZE_AT: 2
-  RESNETS:
-    DEPTH: 50
-    NORM: "FrozenBN"
-    RES2_OUT_CHANNELS: 256
-    STRIDE_IN_1X1: False
-    OUT_FEATURES: ["res5"]
+    NAME: "build_patch_embed"
+  PATCH_EMBED:
+    PRETRAIN_IMG_SIZE: 224
+    PATCH_SIZE: 16
+    EMBED_DIM: 384
   ROI_HEADS:
-    IN_FEATURES: ["res5"]
+    IN_FEATURES: ["out"]
 PERSON_SEARCH:
   DET:
     NUM_CLASSES: 1
     MODEL:
+      DO_NMS: False
       NUM_PROPOSALS: 100
       TRANSFORMER:
-        D_MODEL: 256
-        DIM_FEEDFORWARD: 1024
-        DROPOUT: 0.1
-        ACTIVATION: "relu"
-        NHEAD: 8
-        RETURN_INTERMEDIATE_DEC: True
-        NUM_ENCODER_LAYERS: 4
-        NUM_DECODER_LAYERS: 4
+        DEPTH: 12
+        NHEAD: 6
+        MLP_RATIO: 4
+        QKV_BIAS: True
+        DROPOUT: 0.0
+        DROP_PATH: 0.0
+        ATTN_DROPOUT: 0.0
+        DEIT: False
+        INIT_PE_SIZE: [512,864]
+        MID_PE_SIZE: [512,864]
     LOSS:
-      DEEP_SUPERVISION: True
+      DEEP_SUPERVISION: False
       WEIGHTS:
-        CLS: 2.0
+        CLS: 1.0
         GIOU: 2.0
         L1: 5.0
         NO_OBJECT: 0.1
       FOCAL:
-        ENABLE: True
+        ENABLE: False
         ALPHA: 0.25
         GAMMA: 2.0
   REID:
     MODEL:
-      EMB_DIM: 256
-      BN_NECK: False
+      EMB_DIM: 384
+      BN_NECK: True
       TRANSFORMER:
-        QUERY_AUX: False
-        QUERY_POS: True
-        NUM_DECODER_LAYERS: 1
-        WITH_NORM: True
+        DEPTH: 1
+        DEIT: False
     ID_ASSIGN:
       NAME: "det"
     LOSS:
@@ -58,7 +56,7 @@ PERSON_SEARCH:
         ULB_FACTOR: 30
         NUM_LB: 483
         LEN_ULB: 500
-        FEAT_DIM: 256
+        FEAT_DIM: 384
         NORM_FEAT: True
         SYNC_MEMORY: False
         USE_FOCAL: True
@@ -67,12 +65,12 @@ PERSON_SEARCH:
         LOSS_WEIGHT: 1.0
     CWS: False
 INPUT:
-  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 900,1000)
-  MAX_SIZE_TRAIN: 1666
-  MIN_SIZE_TEST: 900
-  MAX_SIZE_TEST: 1500
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
   FORMAT: "RGB"
-  SIZE_DIVISIBILITY: 32
+  SIZE_DIVISIBILITY: 16
 
 DATALOADER:
   NUM_WORKERS: 8
@@ -80,14 +78,14 @@ DATALOADER:
 
 SOLVER:
   OPTIM: "AdamW"
-  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
   WARMUP_ITERS: 0
-  BASE_LR: 1.0e-4
+  BASE_LR: 1.0e-5
   WEIGHT_DECAY: 1.0e-4
   GAMMA: 0.1
   IMS_PER_BATCH: 4
-  LR_FACTORS: [0.1,]
-  LR_GROUP_REGEX: ["backbone.*",]
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.01
   CLIP_GRADIENTS:
     ENABLED: True
     FULL_MODEL: True
@@ -98,7 +96,7 @@ SOLVER:
 TEST:
   IMS_PER_PROC: 4
   DETECTIONS_PER_IMAGE: 100
-  DETECTION_SCORE_TS: [0.2,0.25,0.3]
+  DETECTION_SCORE_TS: [0.3,0.5]
 # SEED: 42
 VIS_PERIOD: 1000
 VERSION: 2

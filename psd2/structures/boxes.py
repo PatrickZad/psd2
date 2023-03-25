@@ -251,7 +251,7 @@ class Boxes:
         x2 = box[:, 2].clamp(min=0, max=w)
         y2 = box[:, 3].clamp(min=0, max=h)
         box = torch.stack((x1, y1, x2, y2), dim=-1)
-        box = BoxMode.convert(self.tensor, mode_temp, self.box_mode)
+        box = BoxMode.convert(box, mode_temp, self.box_mode)
         self.tensor = box
 
     def nonempty(self, threshold: float = 0.0) -> torch.Tensor:

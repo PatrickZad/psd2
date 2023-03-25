@@ -1,7 +1,5 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import logging
-import math
-from bisect import bisect_right
 from typing import List
 import torch
 from fvcore.common.param_scheduler import (
@@ -10,6 +8,7 @@ from fvcore.common.param_scheduler import (
     LinearParamScheduler,
     ParamScheduler,
 )
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -116,126 +115,63 @@ class LRMultiplier(torch.optim.lr_scheduler._LRScheduler):
         return [base_lr * multiplier for base_lr in self.base_lrs]
 
 
-"""
-Content below is no longer needed!
-"""
-
-# NOTE: PyTorch's LR scheduler interface uses names that assume the LR changes
-# only on epoch boundaries. We typically use iteration based schedules instead.
-# As a result, "epoch" (e.g., as in self.last_epoch) should be understood to mean
-# "iteration" instead.
-
-# FIXME: ideally this would be achieved with a CombinedLRScheduler, separating
-# MultiStepLR with WarmupLR but the current LRScheduler design doesn't allow it.
-
-
-class WarmupMultiStepLR(torch.optim.lr_scheduler._LRScheduler):
+class EpochBasedCosineParamScheduler(ParamScheduler):
     def __init__(
         self,
-        optimizer: torch.optim.Optimizer,
-        milestones: List[int],
-        gamma: float = 0.1,
-        warmup_factor: float = 0.001,
-        warmup_iters: int = 1000,
-        warmup_method: str = "linear",
-        last_epoch: int = -1,
-    ):
-        logger.warning(
-            "WarmupMultiStepLR is deprecated! Use LRMultipilier with fvcore ParamScheduler instead!"
-        )
-        if not list(milestones) == sorted(milestones):
-            raise ValueError(
-                "Milestones should be a list of" " increasing integers. Got {}",
-                milestones,
-            )
-        self.milestones = milestones
-        self.gamma = gamma
-        self.warmup_factor = warmup_factor
-        self.warmup_iters = warmup_iters
-        self.warmup_method = warmup_method
-        super().__init__(optimizer, last_epoch)
-
-    def get_lr(self) -> List[float]:
-        warmup_factor = _get_warmup_factor_at_iter(
-            self.warmup_method, self.last_epoch, self.warmup_iters, self.warmup_factor
-        )
-        return [
-            base_lr
-            * warmup_factor
-            * self.gamma ** bisect_right(self.milestones, self.last_epoch)
-            for base_lr in self.base_lrs
-        ]
-
-    def _compute_values(self) -> List[float]:
-        # The new interface
-        return self.get_lr()
-
-
-class WarmupCosineLR(torch.optim.lr_scheduler._LRScheduler):
-    def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
+        start_value: float,
+        end_value: float,
+        epoch_base: int,
         max_iters: int,
-        warmup_factor: float = 0.001,
-        warmup_iters: int = 1000,
-        warmup_method: str = "linear",
-        last_epoch: int = -1,
-    ):
-        logger.warning(
-            "WarmupCosineLR is deprecated! Use LRMultipilier with fvcore ParamScheduler instead!"
-        )
+        warmup_iters: int = 0,
+    ) -> None:
+        self._start_value = start_value
+        self._end_value = end_value
+        self.epoch_base = epoch_base
         self.max_iters = max_iters
-        self.warmup_factor = warmup_factor
-        self.warmup_iters = warmup_iters
-        self.warmup_method = warmup_method
-        super().__init__(optimizer, last_epoch)
-
-    def get_lr(self) -> List[float]:
-        warmup_factor = _get_warmup_factor_at_iter(
-            self.warmup_method, self.last_epoch, self.warmup_iters, self.warmup_factor
+        self.max_epoch_after_warmup = math.ceil(
+            self.max_iters - warmup_iters / epoch_base
         )
-        # Different definitions of half-cosine with warmup are possible. For
-        # simplicity we multiply the standard half-cosine schedule by the warmup
-        # factor. An alternative is to start the period of the cosine at warmup_iters
-        # instead of at 0. In the case that warmup_iters << max_iters the two are
-        # very close to each other.
-        return [
-            base_lr
-            * warmup_factor
-            * 0.5
-            * (1.0 + math.cos(math.pi * self.last_epoch / self.max_iters))
-            for base_lr in self.base_lrs
-        ]
+        self.warmup_iters = warmup_iters
 
-    def _compute_values(self) -> List[float]:
-        # The new interface
-        return self.get_lr()
+    def __call__(self, where: float) -> float:
+        cur_iter = where * self.max_iters - self.warmup_iters
+        cur_epoch = cur_iter // self.epoch_base
+        where = cur_epoch / self.max_epoch_after_warmup
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (
+            1 + math.cos(math.pi * where)
+        )
 
 
-def _get_warmup_factor_at_iter(
-    method: str, iter: int, warmup_iters: int, warmup_factor: float
-) -> float:
+class CosineAfterWarmupParamScheduler(ParamScheduler):
     """
-    Return the learning rate warmup factor at a specific iteration.
-    See :paper:`ImageNet in 1h` for more details.
+    Cosine decay or cosine warmup schedules based on start and end values.
+    The schedule is updated based on the fraction of training progress.
+    The schedule was proposed in 'SGDR: Stochastic Gradient Descent with
+    Warm Restarts' (https://arxiv.org/abs/1608.03983). Note that this class
+    only implements the cosine annealing part of SGDR, and not the restarts.
 
-    Args:
-        method (str): warmup method; either "constant" or "linear".
-        iter (int): iteration at which to calculate the warmup factor.
-        warmup_iters (int): the number of warmup iterations.
-        warmup_factor (float): the base warmup factor (the meaning changes according
-            to the method used).
+    Example:
 
-    Returns:
-        float: the effective warmup factor at the given iteration.
+        .. code-block:: python
+
+          CosineParamScheduler(start_value=0.1, end_value=0.0001)
     """
-    if iter >= warmup_iters:
-        return 1.0
 
-    if method == "constant":
-        return warmup_factor
-    elif method == "linear":
-        alpha = iter / warmup_iters
-        return warmup_factor * (1 - alpha) + alpha
-    else:
-        raise ValueError("Unknown warmup method: {}".format(method))
+    def __init__(
+        self,
+        start_value: float,
+        end_value: float,
+        max_iters: int,
+        warmup_iters: int = 0,
+    ) -> None:
+        self._start_value = start_value
+        self._end_value = end_value
+        self.max_iters = max_iters
+        self.warmup_iters = warmup_iters
+
+    def __call__(self, where: float) -> float:
+        cur_iter = where * self.max_iters - self.warmup_iters
+        where = cur_iter / (self.max_iters - self.warmup_iters)
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (
+            1 + math.cos(math.pi * where)
+        )

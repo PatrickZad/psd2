@@ -1,13 +1,11 @@
-from psd2.layers.shape_spec import ShapeSpec
-from .backbone import Backbone
-from .build import BACKBONE_REGISTRY
 import math
 import warnings
 import torch
 import torch.nn as nn
 from psd2.layers import DropPath
-from functools import partial
 import torch.utils.checkpoint as checkpoint
+from copy import deepcopy
+from functools import partial
 
 
 class Mlp(nn.Module):
@@ -83,6 +81,50 @@ class Attention(nn.Module):
             return x
 
 
+class QMaskAttention(Attention):
+    def __init__(self, len_q, attn_inst=None, *args, **kws):
+        if attn_inst is None:
+            super().__init__(*args, **kws)
+        else:
+            super(Attention, self).__init__()
+            self.num_heads = attn_inst.num_heads
+            self.scale = attn_inst.scale
+
+            self.qkv = deepcopy(attn_inst.qkv)
+            self.attn_drop = deepcopy(attn_inst.attn_drop)
+            self.proj = deepcopy(attn_inst.proj)
+            self.proj_drop = deepcopy(attn_inst.proj_drop)
+        self.len_q = len_q
+
+    def forward(self, x, return_attention=False):
+        B, N, C = x.shape
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )  # 3, B, num_head, N, c
+        q, k, v = (
+            qkv[0],
+            qkv[1],
+            qkv[2],
+        )  # make torchscript happy (cannot use tensor as tuple)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn_mask = attn.new_zeros(attn.shape)
+        attn_mask[..., -self.len_q :] = True
+        attn.masked_fill_(attn_mask.bool(), float("-inf"))
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        if return_attention:
+            return x, attn
+        else:
+            return x
+
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -130,27 +172,61 @@ class Block(nn.Module):
             return x
 
 
-class PatchEmbed(nn.Module):
-    """Image to Patch Embedding"""
+class QMaskBlock(Block):
+    def __init__(
+        self,
+        len_q,
+        dim=None,
+        num_heads=None,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        drop=0.0,
+        attn_drop=0.0,
+        drop_path=0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        block_inst=None,
+    ):
+        super(Block, self).__init__()
+        if block_inst is None:
+            self.norm1 = norm_layer(dim)
+            self.attn = QMaskAttention(
+                len_q,
+                attn_inst=None,
+                dim=dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                attn_drop=attn_drop,
+                proj_drop=drop,
+            )
+            # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+            self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+            self.norm2 = norm_layer(dim)
+            mlp_hidden_dim = int(dim * mlp_ratio)
+            self.mlp = Mlp(
+                in_features=dim,
+                hidden_features=mlp_hidden_dim,
+                act_layer=act_layer,
+                drop=drop,
+            )
+        else:
+            self.norm1 = deepcopy(block_inst.norm1)
+            self.attn = QMaskAttention(len_q, block_inst.attn)
+            # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+            self.drop_path = deepcopy(block_inst.drop_path)
+            self.norm2 = deepcopy(block_inst.norm2)
+            self.mlp = deepcopy(block_inst.mlp)
+        self.len_q = len_q
+        # hack impl
+        self.qsa = None
 
-    def __init__(self, org_img_size=224, patch_size=16, in_chans=3, embed_dim=768):
-        super().__init__()
-        img_size = (org_img_size, org_img_size)
-        patch_size = (patch_size, patch_size)
-        self.patch_size = patch_size
-        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
-        self.num_patches = num_patches
-        self.proj = nn.Conv2d(
-            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-        # FIXME look at relaxing size constraints
-        # assert H == self.img_size[0] and W == self.img_size[1], \
-        #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose(1, 2)
-        return x
+    def forward(self, x, return_attention=False):
+        img_seq, q_seq = torch.split(x, [x.shape[1] - self.len_q, self.len_q], dim=1)
+        q_seq = self.qsa(q_seq)
+        x = torch.cat([img_seq, q_seq], dim=1)
+        return super().forward(x, return_attention)
 
 
 class HybridEmbed(nn.Module):
@@ -222,16 +298,15 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
         return tensor
 
 
-class VisionTransformer(Backbone):
+class VisionTransformer(nn.Module):
     """Vision Transformer with support for patch or hybrid CNN input stage"""
 
     def __init__(
         self,
-        img_size=224,
-        patch_size=16,
-        in_chans=3,
-        num_classes=1000,
-        embed_dim=768,
+        pretrain_size,
+        patch_size,
+        embed_dim,
+        num_patches,
         depth=12,
         num_heads=12,
         mlp_ratio=4.0,
@@ -240,46 +315,28 @@ class VisionTransformer(Backbone):
         drop_rate=0.0,
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
-        hybrid_backbone=None,
-        norm_layer=nn.LayerNorm,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
         is_distill=False,
     ):
         super().__init__()
-
-        self.img_size = (img_size, img_size)
+        self.img_size = pretrain_size
         self.depth = depth
         self.patch_size = patch_size
-        self.in_chans = in_chans
         self.embed_dim = embed_dim
-        self.num_classes = num_classes
-        self.num_features = (
+        self.hidden_dim = (
             self.embed_dim
-        ) = embed_dim  # num_features for consistency with other models
+        )  # num_features for consistency with other models
 
-        if hybrid_backbone is not None:
-            self.patch_embed = HybridEmbed(
-                hybrid_backbone,
-                org_img_size=img_size,
-                in_chans=in_chans,
-                embed_dim=embed_dim,
-            )
-        else:
-            self.patch_embed = PatchEmbed(
-                org_img_size=img_size,
-                patch_size=patch_size,
-                in_chans=in_chans,
-                embed_dim=embed_dim,
-            )
-        self.num_patches = self.patch_embed.num_patches
+        self.num_patches = num_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
         if is_distill:
             self.pos_embed = nn.Parameter(
-                torch.zeros(1, self.num_patches + 2, embed_dim)
+                torch.zeros(1, self.num_patches + 2, self.embed_dim)
             )
         else:
             self.pos_embed = nn.Parameter(
-                torch.zeros(1, self.num_patches + 1, embed_dim)
+                torch.zeros(1, self.num_patches + 1, self.embed_dim)
             )
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -289,7 +346,7 @@ class VisionTransformer(Backbone):
         self.blocks = nn.ModuleList(
             [
                 Block(
-                    dim=embed_dim,
+                    dim=self.embed_dim,
                     num_heads=num_heads,
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
@@ -302,7 +359,7 @@ class VisionTransformer(Backbone):
                 for i in range(depth)
             ]
         )
-        self.norm = norm_layer(embed_dim)
+        self.norm = norm_layer(self.embed_dim)
 
         # NOTE as per official impl, we could have a pre-logits representation dense layer + tanh here
         # self.repr = nn.Linear(embed_dim, representation_size)
@@ -318,9 +375,6 @@ class VisionTransformer(Backbone):
         # set finetune flag
         self.has_mid_pe = False
 
-        # for compatibility
-        self._out_features = ["out"]
-
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
@@ -335,7 +389,6 @@ class VisionTransformer(Backbone):
         img_size=[800, 1344],
         det_token_num=100,
         mid_pe_size=None,
-        use_checkpoint=False,
     ):
         # import pdb;pdb.set_trace()
 
@@ -346,11 +399,15 @@ class VisionTransformer(Backbone):
             self.pos_embed = torch.nn.Parameter(self.pos_embed[:, 1:, :])
 
         self.det_token_num = det_token_num
-        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim))
+        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim)).to(
+            self.pos_embed.device
+        )
         self.det_token = trunc_normal_(self.det_token, std=0.02)
         cls_pos_embed = self.pos_embed[:, 0, :]
         cls_pos_embed = cls_pos_embed[:, None]
-        det_pos_embed = torch.zeros(1, det_token_num, self.embed_dim)
+        det_pos_embed = torch.zeros(
+            1, det_token_num, self.embed_dim, device=self.pos_embed.device
+        )
         det_pos_embed = trunc_normal_(det_pos_embed, std=0.02)
         patch_pos_embed = self.pos_embed[:, 1:, :]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
@@ -382,27 +439,20 @@ class VisionTransformer(Backbone):
                 torch.zeros(
                     self.depth - 1,
                     1,
-                    1 + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2) + 100,
+                    1
+                    + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
+                    + det_token_num,
                     self.embed_dim,
+                    device=self.pos_embed.device
                 )
             )
             trunc_normal_(self.mid_pos_embed, std=0.02)
             self.has_mid_pe = True
             self.mid_pe_size = mid_pe_size
-        self.use_checkpoint = use_checkpoint
 
     @torch.jit.ignore
     def no_weight_decay(self):
         return {"pos_embed", "cls_token", "det_token"}
-
-    def get_classifier(self):
-        return self.head
-
-    def reset_classifier(self, num_classes, global_pool=""):
-        self.num_classes = num_classes
-        self.head = (
-            nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-        )
 
     def InterpolateInitPosEmbed(self, pos_embed, img_size=(800, 1344)):
         # import pdb;pdb.set_trace()
@@ -469,14 +519,10 @@ class VisionTransformer(Backbone):
         )
         return scale_pos_embed
 
-    def forward_features(self, x):
+    def forward_features(self, feat_seq, imgt_shape):
         # import pdb;pdb.set_trace()
-        B, H, W = x.shape[0], x.shape[2], x.shape[3]
-
-        # if (H,W) != self.img_size:
-        #     self.finetune = True
-
-        x = self.patch_embed(x)  # B x N x C
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
         # interpolate init pe
         if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
             temp_pos_embed = self.InterpolateInitPosEmbed(
@@ -503,26 +549,25 @@ class VisionTransformer(Backbone):
         x = self.pos_drop(x)
 
         for i in range(len((self.blocks))):
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
-            else:
-                x = self.blocks[i](x)
+            # x = self.blocks[i](x)
+            x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
             if self.has_mid_pe:
                 if i < (self.depth - 1):
                     x = x + temp_mid_pos_embed[i]
 
         x = self.norm(x)
+        return x
 
-        return x[:, -self.det_token_num :, :]
+        # return x[:, -self.det_token_num :, :]
+        # cls_out, feat_out, det_out = torch.split(
+        #    x, [self.cls_token.shape[1], h_pe * w_pe, self.det_token.shape[1]], dim=1
+        # )
+        # feat_out = feat_out.transpose(1, 2).reshape((B, -1, h_pe, w_pe))
+        # return cls_out, feat_out, det_out
 
-    def forward_return_all_selfattention(self, x):
-        # import pdb;pdb.set_trace()
-        B, H, W = x.shape[0], x.shape[2], x.shape[3]
-
-        # if (H,W) != self.img_size:
-        #     self.finetune = True
-
-        x = self.patch_embed(x)
+    def forward_return_all_selfattention(self, feat_seq, imgt_shape):
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
         # interpolate init pe
         if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
             temp_pos_embed = self.InterpolateInitPosEmbed(
@@ -549,10 +594,7 @@ class VisionTransformer(Backbone):
         x = self.pos_drop(x)
         output = []
         for i in range(len((self.blocks))):
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
-            else:
-                x, attn = self.blocks[i](x, return_attention=True)
+            x, attn = self.blocks[i](x, return_attention=True)
 
             if i == len(self.blocks) - 1:
                 output.append(attn)
@@ -564,23 +606,91 @@ class VisionTransformer(Backbone):
 
         return output
 
-    def forward(self, x, return_attention=False):
+    def forward(self, feat_seq, imgt_shape, return_attention=False):
         if return_attention == True:
             # return self.forward_selfattention(x)
-            return self.forward_return_all_selfattention(x)
+            return self.forward_return_all_selfattention(feat_seq, imgt_shape)
         else:
-            x = self.forward_features(x)
+            x = self.forward_features(feat_seq, imgt_shape)
             return x
 
-    def size_divisibility(self) -> int:
-        return self.patch_size
 
-    def output_shape(self):
-        return {"out": ShapeSpec(channels=self.embed_dim, stride=self.patch_size)}
+class QMaskVisionTransformer(VisionTransformer):
+    def finetune_det(
+        self,
+        det_token_start=0,
+        shared_qsa=True,
+        img_size=[800, 1344],
+        det_token_num=100,
+        mid_pe_size=None,
+    ):
+        # import pdb;pdb.set_trace()
+
+        import math
+
+        g = math.pow(self.pos_embed.size(1) - 1, 0.5)
+        if int(g) - g != 0:
+            self.pos_embed = torch.nn.Parameter(self.pos_embed[:, 1:, :])
+
+        self.det_token_num = det_token_num
+        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim))
+        self.det_token = trunc_normal_(self.det_token, std=0.02)
+        cls_pos_embed = self.pos_embed[:, 0, :]
+        cls_pos_embed = cls_pos_embed[:, None]
+        det_pos_embed = torch.zeros(1, det_token_num, self.embed_dim)
+        det_pos_embed = trunc_normal_(det_pos_embed, std=0.02)
+        patch_pos_embed = self.pos_embed[:, 1:, :]
+        patch_pos_embed = patch_pos_embed.transpose(1, 2)
+        B, E, Q = patch_pos_embed.shape
+        P_H, P_W = (
+            self.img_size[0] // self.patch_size,
+            self.img_size[1] // self.patch_size,
+        )
+        patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
+        H, W = img_size
+        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed,
+            size=(new_P_H, new_P_W),
+            mode="bicubic",
+            align_corners=False,
+        )
+        patch_pos_embed = patch_pos_embed.flatten(2).transpose(1, 2)
+        self.pos_embed = torch.nn.Parameter(
+            torch.cat((cls_pos_embed, patch_pos_embed, det_pos_embed), dim=1)
+        )
+        self.img_size = img_size
+        if mid_pe_size == None:
+            self.has_mid_pe = False
+            print("No mid pe")
+        else:
+            print("Has mid pe")
+            self.mid_pos_embed = nn.Parameter(
+                torch.zeros(
+                    self.depth - 1,
+                    1,
+                    1
+                    + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
+                    + det_token_num,
+                    self.embed_dim,
+                )
+            )
+            trunc_normal_(self.mid_pos_embed, std=0.02)
+            self.has_mid_pe = True
+            self.mid_pe_size = mid_pe_size
+        qsa = deepcopy(self.blocks[torch.randint(0, self.depth, (1,)).item()])
+        for i in range(det_token_start, self.depth):
+            blk = QMaskBlock(det_token_num, block_inst=self.blocks[i])
+            if shared_qsa:
+                blk.qsa = qsa
+            else:
+                blk.qsa = deepcopy(qsa)
+            self.blocks[i] = blk
+        self.shared_qsa = shared_qsa
 
 
-@BACKBONE_REGISTRY.register()
-def build_vit_tiny_backbone(cfg, input_shape):
+"""
+vit_tiny
     model = VisionTransformer(
         patch_size=16,
         embed_dim=192,
@@ -590,11 +700,9 @@ def build_vit_tiny_backbone(cfg, input_shape):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
     )
-    return model
 
 
-@BACKBONE_REGISTRY.register()
-def build_vit_small_backbone(cfg, input_shape):
+vit_small
     model = VisionTransformer(
         patch_size=16,
         embed_dim=384,
@@ -604,25 +712,23 @@ def build_vit_small_backbone(cfg, input_shape):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
     )
-    return model
 
 
-@BACKBONE_REGISTRY.register()
-def build_vit_smallmid_backbone(cfg, input_shape):
+
+vit_smalldwr
     model = VisionTransformer(
+        img_size=240,
         patch_size=16,
-        embed_dim=384,
-        depth=8,
+        embed_dim=330,
+        depth=14,
         num_heads=6,
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
     )
-    return model
 
 
-@BACKBONE_REGISTRY.register()
-def build_vit_base_backbone(cfg, input_shape):
+vit_base
     model = VisionTransformer(
         img_size=384,
         patch_size=16,
@@ -634,20 +740,4 @@ def build_vit_base_backbone(cfg, input_shape):
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         is_distill=True,
     )
-    return model
-
-
-@BACKBONE_REGISTRY.register()
-def build_vit_basemid_backbone(cfg, input_shape):
-    model = VisionTransformer(
-        img_size=384,
-        patch_size=16,
-        embed_dim=768,
-        depth=8,
-        num_heads=12,
-        mlp_ratio=4,
-        qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        is_distill=True,
-    )
-    return model
+"""

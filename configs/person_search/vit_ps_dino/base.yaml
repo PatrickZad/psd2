@@ -1,0 +1,108 @@
+MODEL:
+  META_ARCHITECTURE: "VitPSParaDINO"
+  WEIGHTS: "Data/model_zoo/yolos_small_psd2.pkl"
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+  BACKBONE:
+    NAME: "build_patch_embed"
+  PATCH_EMBED:
+    PRETRAIN_IMG_SIZE: 224
+    PATCH_SIZE: 16
+    EMBED_DIM: 384
+  ROI_HEADS:
+    IN_FEATURES: ["out"]
+PERSON_SEARCH:
+  DINO:
+    # model
+    OUT_DIM: 65536
+    BN_IN_HEAD: False
+    NORM_LAST_LAYER: True
+    NUM_LOCAL_TOKEN_GROUPS: 4
+    WARMUP_TEACHER_TEMP: 0.04
+    TEACHER_TEMP: 0.04
+    WARMUP_TEACHER_TEMP_ITERS: 0
+    MOMEMTUM: 0.996
+    MOMEMTUM_END: 1.0
+    # optim
+    FREEZE_LAST_LAYER_ITERS: 19779
+    WEIGHT_DECAY: 0.04
+    WEIGHT_DECAY_END: 0.4
+
+  DET:
+    NUM_CLASSES: 1
+    MODEL:
+      DO_NMS: False
+      NUM_PROPOSALS: 100
+      TRANSFORMER:
+        DEPTH: 12
+        NHEAD: 6
+        MLP_RATIO: 4
+        QKV_BIAS: True
+        DROPOUT: 0.0
+        DROP_PATH: 0.0
+        ATTN_DROPOUT: 0.0
+        DEIT: False
+        INIT_PE_SIZE: [512,864]
+        MID_PE_SIZE: [512,864]
+    LOSS:
+      DEEP_SUPERVISION: False
+      WEIGHTS:
+        CLS: 1.0
+        GIOU: 2.0
+        L1: 5.0
+        NO_OBJECT: 0.1
+      FOCAL:
+        ENABLE: False
+        ALPHA: 0.25
+        GAMMA: 2.0
+  REID:
+    MODEL:
+      EMB_DIM: 384
+      BN_NECK: False
+      TRANSFORMER:
+        DEPTH: 1
+        DEIT: False
+    ID_ASSIGN:
+      NAME: "det"
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+  FORMAT: "RGB"
+  SIZE_DIVISIBILITY: 16
+
+DATASETS:
+  TRAIN: ("COCO-CH_DINO",) 
+  TEST: ("PRW_Gallery", "PRW_Query","CUHK-SYSU_Gallery", "CUHK-SYSU_TestG50",)
+
+DATALOADER:
+  NUM_WORKERS: 12
+  ASPECT_RATIO_GROUPING: False
+
+SOLVER:
+  MAX_ITER: 1977900
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupCosineAfterWarmupLR"
+  WARMUP_ITERS: 197790
+  BASE_LR: 5.0e-4
+  IMS_PER_BATCH: 4
+  EPOCH_ITERS: 19779
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.002
+  CHECKPOINT_PERIOD: 98895
+  CLIP_GRADIENTS:
+    ENABLED: True
+    FULL_MODEL: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 3.0
+    NORM_TYPE: 2.0
+
+TEST:
+  IMS_PER_PROC: 4
+  DETECTIONS_PER_IMAGE: 100
+  DETECTION_SCORE_TS: [0.3,0.5]
+# SEED: 42
+VIS_PERIOD: 1000
+OUTPUT_DIR: "outputs/vit_ps_dino/vitps_small-coco_dino"
+VERSION: 2

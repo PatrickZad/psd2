@@ -1,0 +1,29 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "QMaskVitPS"
+  WEIGHTS: "Data/model_zoo/yolos_small_psd2.pkl"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        SHARED_QSA: True
+        DET_TOKEN_START: 0
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 483
+        LEN_ULB: 500
+        LOSS_WEIGHT: 0.0
+SOLVER:
+  MAX_ITER: 71300 # 1426 * 50
+  STEPS: (34224,68448)
+  CHECKPOINT_PERIOD: 2852
+  WARMUP_ITERS: 1426
+  IMS_PER_BATCH: 4
+  BASE_LR: 2.5e-5
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery", "PRW_Query",) #
+TEST:
+  EVAL_PERIOD: 2852
+OUTPUT_DIR: "outputs/vit_ps/qmask-vitps_prw_detonly_0"

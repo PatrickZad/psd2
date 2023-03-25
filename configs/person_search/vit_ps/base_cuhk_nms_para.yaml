@@ -1,0 +1,28 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "VitPSPara"
+  WEIGHTS: "Data/model_zoo/yolos_small_psd2.pkl"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      DO_NMS: True
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+SOLVER:
+  LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
+  MAX_ITER: 140050 # 2801 * 50
+  STEPS: (1,)
+  CHECKPOINT_PERIOD: 5602
+  WARMUP_ITERS: 0
+  IMS_PER_BATCH: 4
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.01
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery", "CUHK-SYSU_TestG100",) #
+TEST:
+  EVAL_PERIOD: 5602
+OUTPUT_DIR: "outputs/vit_ps/vitps_cuhk_nms_para"
