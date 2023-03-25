@@ -27,7 +27,7 @@ from psd2.modeling.extend.deformable_transformer import (
 
 @META_ARCH_REGISTRY.register()
 class FP_DTPS(SearchBase):
-    @configurable()
+    @configurable
     def __init__(
         self,
         transformer,
@@ -376,7 +376,7 @@ class SetCriterion(nn.Module):
     NOTE assume pred boxes to be CCWH_REL, gt boxes to be XYXY_ABS
     """
 
-    @configurable()
+    @configurable
     def __init__(
         self,
         num_classes,
@@ -623,7 +623,7 @@ class MLP(nn.Module):
 
 
 class ReidHead(DeformableTransformerQueryEncoder):
-    @configurable()
+    @configurable
     def __init__(
         self,
         decoder_layer,

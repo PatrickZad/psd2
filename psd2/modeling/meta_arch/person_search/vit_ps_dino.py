@@ -1,15 +1,10 @@
-from psd2.modeling.meta_arch.person_search.vit_ps import (
-    VitDetPsParallel,
-    trunc_normal_,
-    VitPSPara,
-    SetCriterion,
-)
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 from ..build import META_ARCH_REGISTRY
-from psd2.config.config import configurable
+from psd2.config import configurable
 from psd2.structures import Boxes, Instances, BoxMode
 from psd2.modeling.id_assign import build_id_assigner
 from psd2.utils.events import get_event_storage
@@ -22,19 +17,89 @@ from torch.utils import checkpoint
 from copy import deepcopy
 import itertools
 
+from psd2.modeling.meta_arch.person_search.vit_ps import (
+    VitDetPsParallel,
+    trunc_normal_,
+    SetCriterion,
+    MLP,
+)
+from .base import SearchBase
+
 
 class ViTDetPsWithExtTokens(VitDetPsParallel):
     def forward_features_with_tokens(
         self,
         feat_seq,
         imgt_shape,
-        token_seq,
-        init_token_pos,
-        mid_token_pos=None,
-        mid_token_pos_reid=None,
+        token_ext,
+        init_pos_ext,
+        mid_pos_ext=None,
+        mid_pos_reid_ext=None,
     ):
         # import pdb;pdb.set_trace()
         B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        len_per_img=2+token_ext.shape[1]
+        num_imgs=B//len_per_img
+        all_det_tokens = torch.cat(
+            [
+                self.det_token.unsqueeze(1),
+                self.det_token.clone().unsqueeze(1),
+                token_ext,
+            ],
+            dim=1,
+        )
+        all_det_tokens = all_det_tokens.expand(num_imgs, -1, -1, -1).flatten(0, 1)
+        all_det_token_init_pos = torch.cat(
+            [
+                self.pos_embed[
+                    :, -self.det_token_num :
+                ].unsqueeze(1),
+                self.pos_embed[
+                    :, -self.det_token_num :
+                ].clone().unsqueeze(1),
+                init_pos_ext,
+            ],
+            dim=1,
+        )
+        all_det_token_init_pos = all_det_token_init_pos.expand(
+            num_imgs, -1, -1, -1
+        ).flatten(0, 1)
+        if self.has_mid_pe:
+            all_det_token_mid_pos = torch.cat(
+                [
+                    self.mid_pos_embed[
+                        :, :, -self.det_token_num :
+                    ].unsqueeze(2),
+                    self.mid_pos_embed[
+                        :, :, -self.det_token_num :
+                    ].clone().unsqueeze(2),
+                    mid_pos_ext,
+                ],
+                dim=2,
+            )
+            all_det_token_mid_pos = all_det_token_mid_pos.expand(
+                -1, num_imgs, -1, -1, -1
+            ).flatten(1, 2)
+        else:
+            all_det_token_mid_pos = None
+        if self.has_mid_pe_reid:
+            all_det_token_mid_pos_reid = torch.cat(
+                [
+                    self.mid_pos_embed_reid[
+                        :, :, -self.det_token_num :
+                    ].unsqueeze(2),
+                    self.mid_pos_embed_reid[
+                        :, :, -self.det_token_num :
+                    ].clone().unsqueeze(2),
+                    mid_pos_reid_ext,
+                ],
+                dim=2,
+            )
+            all_det_token_mid_pos_reid = all_det_token_mid_pos_reid.expand(
+                -1, num_imgs, -1, -1, -1
+            ).flatten(1, 2)
+        else:
+            all_det_token_mid_pos_reid = None
         x = feat_seq
         # interpolate init pe
         if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
@@ -44,7 +109,7 @@ class ViTDetPsWithExtTokens(VitDetPsParallel):
         else:
             temp_pos_embed = self.pos_embed
         patch_pos = temp_pos_embed[:, : -self.det_token_num].expand(B, -1, -1)
-        temp_pos_embed = torch.cat([patch_pos, init_token_pos], dim=1)
+        temp_pos_embed = torch.cat([patch_pos, all_det_token_init_pos], dim=1)
 
         # interpolate mid pe
         if self.has_mid_pe:
@@ -58,12 +123,12 @@ class ViTDetPsWithExtTokens(VitDetPsParallel):
             patch_pos = temp_mid_pos_embed[:, :, : -self.det_token_num].expand(
                 -1, B, -1, -1
             )
-            temp_mid_pos_embed = torch.cat([patch_pos, mid_token_pos], dim=2)
+            temp_mid_pos_embed = torch.cat([patch_pos, all_det_token_mid_pos], dim=2)
 
         cls_tokens = self.cls_token.expand(
             B, -1, -1
         )  # stole cls_tokens impl from Phil Wang, thanks
-        det_token = token_seq
+        det_token = all_det_tokens
         x = torch.cat((cls_tokens, x, det_token), dim=1)
         x = x + temp_pos_embed
         x = self.pos_drop(x)
@@ -99,7 +164,7 @@ class ViTDetPsWithExtTokens(VitDetPsParallel):
                 -1, B, -1, -1
             )
             temp_mid_pos_embed = torch.cat(
-                [patch_pos, mid_token_pos_reid], dim=2
+                [patch_pos, all_det_token_mid_pos_reid], dim=2
             ).flatten(1, 2)
 
         for i in range(self.depth_reid):
@@ -172,6 +237,16 @@ class ViTDetPsWithExtTokens(VitDetPsParallel):
 
         return reid_x
 
+    def forward(self, feat_seq, imgt_shape, return_attention=False,*args,**kws):
+        if return_attention == True:
+            # return self.forward_selfattention(x)
+            return self.forward_return_all_selfattention(feat_seq, imgt_shape)
+        else:
+            if self.training:
+                x=self.forward_features_with_tokens(feat_seq,imgt_shape,*args,**kws)
+            else:
+                x = self.forward_features(feat_seq, imgt_shape)
+            return x
 
 class DINOHead(nn.Module):
     def __init__(
@@ -254,17 +329,25 @@ class DINOLoss(nn.Module):
         )
 
     def forward(self, student_output, teacher_output, iter_idx):
+        #NOTE consider batch dim
         """
+        student_output / teacher_output: 
+            [
+                [v1,i1],
+                [v1,i2],...,
+                [v2,i1],
+                [v2,i2],...
+            ]
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
         epoch = iter_idx // self.epoch_iters
         student_out = student_output / self.student_temp
-        student_out = student_out.chunk(self.ncrops)
+        student_out = student_out.chunk(self.ncrops) # identity-chunk per view
 
         # teacher centering and sharpening
         temp = self.teacher_temp_schedule[epoch]
         teacher_out = F.softmax((teacher_output - self.center) / temp, dim=-1)
-        teacher_out = teacher_out.detach().chunk(2)
+        teacher_out = teacher_out.detach().chunk(2) # identity-chunk per view
 
         total_loss = 0
         n_loss_terms = 0
@@ -274,8 +357,11 @@ class DINOLoss(nn.Module):
                     # we skip cases where student and teacher operate on the same view
                     continue
                 loss = torch.sum(-q * F.log_softmax(student_out[v], dim=-1), dim=-1)
-                total_loss += loss.mean()
-                n_loss_terms += 1
+                total_loss += loss.sum() # .mean(-1)
+                n_loss_terms += loss.shape[0]
+        comm.synchronize()
+        all_loss_terms=comm.all_gather(n_loss_terms)
+        n_loss_terms=max(sum(all_loss_terms)/comm.get_world_size(),1.0)
         total_loss /= n_loss_terms
         self.update_center(teacher_output)
         return total_loss
@@ -286,7 +372,7 @@ class DINOLoss(nn.Module):
         Update center used for teacher output.
         """
         batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
-        num_inst = teacher_output.shape[0]
+        num_inst = teacher_output[0].shape[0]+teacher_output[1].shape[0]
         comm.synchronize()
         all_sum_batch_center = comm.all_gather(batch_center)
         batch_center = sum([emb.to(self.center.device) for emb in all_sum_batch_center])
@@ -301,10 +387,19 @@ class DINOLoss(nn.Module):
 
 
 @META_ARCH_REGISTRY.register()
-class VitPSParaDINO(VitPSPara):
-    @configurable()
+class VitPSParaDINO(SearchBase):
+    @configurable
     def __init__(
         self,
+        cfg,
+        transformer,
+        criterion,
+        num_classes,
+        num_queries,
+        in_features,
+        id_assigner,
+        bn_neck,
+        do_nms,
         num_local_tkgroups,
         transformer_teacher,
         head_student,
@@ -313,7 +408,31 @@ class VitPSParaDINO(VitPSPara):
         *args,
         **kws,
     ):
-        super().__init__(*args, **kws)
+        super().__init__(*args,**kws)
+        # vitpara
+        self.transformer = transformer
+        hidden_dim = transformer.hidden_dim
+        self.use_focal = criterion.use_focal
+        if self.use_focal:
+            self.class_embed = MLP(
+                hidden_dim, hidden_dim, num_classes, 3
+            )  # to avoid loading coco parameters
+        else:
+            self.class_embed = MLP(
+                hidden_dim, hidden_dim, num_classes + 1, 3
+            )  # to avoid loading coco parameters
+        self.bbox_embed = MLP(
+            hidden_dim, hidden_dim, 4, 3
+        )  # to avoid loading coco parameters
+        self.criterion = criterion
+        self.num_classes = num_classes
+        self.num_queries = num_queries
+        self.id_assigner = id_assigner
+        self.bn_neck = bn_neck
+        self.in_features = in_features
+        self.cfg = cfg
+        self.do_nms = do_nms
+
         self.class_embed_ext = nn.ModuleList(
             [deepcopy(self.class_embed) for _ in range(num_local_tkgroups)]
         )
@@ -392,11 +511,10 @@ class VitPSParaDINO(VitPSPara):
 
     @classmethod
     def from_config(cls, cfg):
-        ret = super(VitPSPara, cls).from_config(cfg)
+        ret = super().from_config(cfg)
         ret["cfg"] = cfg
         ret["id_assigner"] = build_id_assigner(cfg)
 
-        ret["oim_loss"] = None
         ret["criterion"] = SetCriterion(cfg)
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         patch_embed = ret["backbone"]
@@ -470,13 +588,14 @@ class VitPSParaDINO(VitPSPara):
         assert cfg.SOLVER.EPOCH_ITERS > 0, "Invalid SOLVER.EPOCH_ITERS !"
         ret["dino_loss"] = DINOLoss(
             dino_cfg.OUT_DIM,
-            dino_cfg.NUM_LOCAL_TOKEN_GROUPS * 2 + 2,
+            dino_cfg.NUM_LOCAL_TOKEN_GROUPS  + 2,
             dino_cfg.WARMUP_TEACHER_TEMP,
             dino_cfg.TEACHER_TEMP,
             dino_cfg.WARMUP_TEACHER_TEMP_ITERS,
             cfg.SOLVER.MAX_ITER,
             cfg.SOLVER.EPOCH_ITERS,
         )
+        ret["num_local_tkgroups"]=dino_cfg.NUM_LOCAL_TOKEN_GROUPS
 
         ret["num_classes"] = det_cfg.NUM_CLASSES
         ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
@@ -511,9 +630,9 @@ class VitPSParaDINO(VitPSPara):
 
     def load_state_dict(self, state_dict, strict):
         output = super().load_state_dict(state_dict, strict)
-        if len(output["missing_keys"]) > 0:
+        if len(output[0]) > 0: #missing_keys
             # not resume, NOTE assume head and ext tokens are not included
-            self.vit_teacher.load_state_dict(self.vit_student)
+            self.vit_teacher.load_state_dict(self.vit_student.state_dict())
             # TODO remove from missing_keys
         return output
 
@@ -542,9 +661,9 @@ class VitPSParaDINO(VitPSPara):
             return q_outs
         else:
             if self.training:
-                input_list = itertools.chain(
-                    item["global"] + item["local"] for item in input_list
-                )
+                input_list = list(itertools.chain(
+                    *[item["global"] + item["local"] for item in input_list]
+                ))
                 gt_instances = [gti["instances"].to(self.device) for gti in input_list]
                 image_list = self.preprocess_input(input_list)
                 preds, feat_maps, losses = self.forward_gallery(
@@ -563,10 +682,10 @@ class VitPSParaDINO(VitPSPara):
         # NOTE 1. modify local-view annotaions
         len_per_img = 2 + self.num_local_token_groups
         num_imgs = len(image_list) // len_per_img
-        local_view_idx = itertools.chain(
-            list(range(i * len_per_img + 2, (i + 1) * len_per_img))
-            for i in range(num_imgs)
-        )
+        local_view_idx = list(itertools.chain(
+            *[list(range(i * len_per_img + 2, (i + 1) * len_per_img))
+            for i in range(num_imgs)]
+        ))
         for i, idx in enumerate(local_view_idx):
             view_idx = i % self.num_local_token_groups
             box_tensor = gt_instances[idx].gt_boxes.tensor
@@ -585,79 +704,23 @@ class VitPSParaDINO(VitPSPara):
         if isinstance(features, dict):
             features = features[list(features.keys())[-1]]
         feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
-        all_det_tokens = torch.cat(
-            [
-                self.vit_student.det_token.unsqueeze(1),
-                self.vit_student.det_token.unsqueeze(1),
-                self.local_token_groups,
-            ],
-            dim=1,
-        )
-        all_det_tokens = all_det_tokens.expand(num_imgs, -1, -1, -1).flatten(0, 1)
-        all_det_token_init_pos = torch.cat(
-            [
-                self.vit_student.pos_embed[
-                    :, -self.vit_student.det_token_num :
-                ].unsqueeze(1),
-                self.vit_student.pos_embed[
-                    :, -self.vit_student.det_token_num :
-                ].unsqueeze(1),
-                self.local_token_pos_init,
-            ],
-            dim=1,
-        )
-        all_det_token_init_pos = all_det_token_init_pos.expand(
-            num_imgs, -1, -1, -1
-        ).flatten(0, 1)
-        if self.vit_student.has_mid_pe:
-            all_det_token_mid_pos = torch.cat(
-                [
-                    self.vit_student.mid_pos_embed[
-                        :, :, -self.vit_student.det_token_num :
-                    ].unsqueeze(2),
-                    self.vit_student.mid_pos_embed[
-                        :, :, -self.vit_student.det_token_num :
-                    ].unsqueeze(2),
-                    self.local_token_pos_mid,
-                ],
-                dim=2,
-            )
-            all_det_token_mid_pos = all_det_token_mid_pos.expand(
-                -1, num_imgs, -1, -1, -1
-            ).flatten(1, 2)
-            all_det_token_mid_pos_reid = torch.cat(
-                [
-                    self.vit_student.mid_pos_embed_reid[
-                        :, :, -self.vit_student.det_token_num :
-                    ].unsqueeze(2),
-                    self.vit_student.mid_pos_embed_reid[
-                        :, :, -self.vit_student.det_token_num :
-                    ].unsqueeze(2),
-                    self.local_token_pos_mid_reid,
-                ],
-                dim=2,
-            )
-            all_det_token_mid_pos_reid = all_det_token_mid_pos_reid.expand(
-                -1, num_imgs, -1, -1, -1
-            ).flatten(1, 2)
-        else:
-            all_det_token_mid_pos = None
-            all_det_token_mid_pos_reid = None
+        
 
-        out_seq_det, out_seq_reid = self.vit_student.forward_features_with_tokens(
+        out_seq_det, out_seq_reid = self.vit_student(
             feat_seq,
             image_list.tensor.shape,
-            all_det_tokens,
-            all_det_token_init_pos,
-            all_det_token_mid_pos,
-            all_det_token_mid_pos_reid,
+            False,
+            self.local_token_groups,
+            self.local_token_pos_init,
+            self.local_token_pos_mid,
+            self.local_token_pos_mid_reid,
         )
         out_seq_det = out_seq_det[:, -self.num_queries :, :]
         del feat_seq
         reid_feats, out_feat = (
             out_seq_reid[:, -self.num_queries :, :],
             out_seq_reid[
-                :, self.transformer.cls_token.shape[1] : -self.num_queries, :
+                :, 1: -self.num_queries, :
             ].detach(),
         )
         del out_seq_reid
@@ -675,11 +738,11 @@ class VitPSParaDINO(VitPSPara):
             outputs_class.append(self.class_embed(out_seq_det[:, vi : vi + 1]))
             outputs_coord.append(self.bbox_embed(out_seq_det[:, vi : vi + 1]).sigmoid())
         for vi in range(2, len_per_img):
-            outputs_class.append(self.class_embed(out_seq_det[:, vi : vi + 1]))
-            outputs_coord.append(self.bbox_embed(out_seq_det[:, vi : vi + 1]).sigmoid())
+            outputs_class.append(self.class_embed_ext[vi-2](out_seq_det[:, vi : vi + 1]))
+            outputs_coord.append(self.bbox_embed_ext[vi-2](out_seq_det[:, vi : vi + 1]).sigmoid())
         del out_seq_det
-        outputs_class = outputs_class.flatten(0, 1)
-        outputs_coord = outputs_coord.flatten(0, 1)
+        outputs_class =torch.cat(outputs_class,dim=1).flatten(0, 1)
+        outputs_coord = torch.cat(outputs_coord,dim=1).flatten(0, 1)
 
         out = {"pred_logits": outputs_class, "pred_boxes": outputs_coord}
         loss_dict = {}
@@ -690,9 +753,9 @@ class VitPSParaDINO(VitPSPara):
                     loss_det[k] *= weight_dict[k]
         loss_dict.update(loss_det)
         if self.use_focal:
-                det_scores = out["pred_logits"].detach().sigmoid()[..., 0]
+            det_scores = out["pred_logits"].detach().sigmoid()[..., 0]
         else:
-                det_scores = out["pred_logits"].detach().softmax(-1)[..., 0]
+            det_scores = out["pred_logits"].detach().softmax(-1)[..., 0]
         pred_box_xyxy = out["pred_boxes"].clone().detach()
         pred_box_xyxy[..., :2] -= pred_box_xyxy[..., 2:] / 2
         pred_box_xyxy[..., 2:] += pred_box_xyxy[..., :2]
@@ -706,15 +769,22 @@ class VitPSParaDINO(VitPSPara):
                 [inst.gt_pids for inst in gt_instances],
                 match_indices=matches["matches"],
             )
-        assign_ids=assign_ids.reshape(-1)
-        reid_feats=reid_feats.reshape(-1, reid_feats.shape[-1])
-        student_out=self.head_student(reid_feats[assign_ids>-2])
+        assign_ids=assign_ids.reshape((num_imgs,len_per_img,-1)).transpose(0,1).flatten(1)
+        reid_feats=reid_feats.reshape((num_imgs,len_per_img,reid_feats.shape[-2],-1)).transpose(0,1).flatten(1,2)
+        pos_feats=[]
+        for vi in range(len_per_img):
+            sorted_idxs_vi=torch.argsort(assign_ids[vi])
+            sorted_feats=reid_feats[vi][sorted_idxs_vi]
+            sorted_ids=assign_ids[vi][sorted_idxs_vi]
+            pos_feats.append(sorted_feats[sorted_ids>-2])
+        pos_feats=torch.cat(pos_feats,dim=0)
+        student_out=self.head_student(pos_feats)
 
         # NOTE 3. teacher output
         # only global views
-        global_view_idx=list(itertools.chain([i*len_per_img,i*len_per_img+1] for i in range(num_imgs)))
-        image_list_g=image_list_g.select_by_indices(global_view_idx)
-        gt_instances_g=gt_instances[global_view_idx]
+        global_view_idx=list(itertools.chain(*[[i*len_per_img,i*len_per_img+1] for i in range(num_imgs)]))
+        image_list_g=image_list.select_by_indices(global_view_idx)
+        assign_ids_g=torch.stack([assign_ids[i] for i in global_view_idx])
         features = self.backbone_teacher(image_list_g.tensor)
         if isinstance(features, dict):
             features = features[list(features.keys())[-1]]
@@ -723,8 +793,17 @@ class VitPSParaDINO(VitPSPara):
         reid_feats = out_seq_reid[:, -self.num_queries :, :]
         del out_seq_reid
         reid_feats = self.bn_neck_teacher(reid_feats.transpose(1, 2)).transpose(1, 2)
-        reid_feats=reid_feats.reshape(-1, reid_feats.shape[-1])
-        teacher_out=self.head_teacher(reid_feats[assign_ids>-2])
+
+        assign_ids_g=assign_ids[:2]
+        reid_feats=reid_feats.reshape((num_imgs,2,reid_feats.shape[-2],-1)).transpose(0,1).flatten(1,2)
+        pos_feats=[]
+        for vi in range(2):
+            sorted_idxs_vi=torch.argsort(assign_ids_g[vi])
+            sorted_feats=reid_feats[vi][sorted_idxs_vi]
+            sorted_ids=assign_ids_g[vi][sorted_idxs_vi]
+            pos_feats.append(sorted_feats[sorted_ids>-2])
+        pos_feats=torch.cat(pos_feats,dim=0)
+        teacher_out=self.head_teacher(pos_feats)
 
         # NOTE 4. dino loss
         loss_dict.update({"loss_dino":self.dino_loss(student_out,teacher_out,get_event_storage().iter)})

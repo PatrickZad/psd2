@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # GeneralizedRCNN as reference
 @META_ARCH_REGISTRY.register()
 class OimBaseline(SearchBase):
-    @configurable()
+    @configurable
     def __init__(
         self,
         proposal_generator,
@@ -164,7 +164,7 @@ class OimBaseline(SearchBase):
                 # back to org scale
                 org_h, org_w = gt_i.org_img_size
                 h, w = gt_i.image_size
-                pred_i.pred_boxes.scale(org_w/w, org_h/h)
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
 
     def forward_query(self, image_list, gt_instances):

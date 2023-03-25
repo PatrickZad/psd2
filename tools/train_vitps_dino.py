@@ -16,10 +16,12 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 import sys
+import os
 
 sys.path.append("./")
 sys.path.append("./tools")
 sys.path.append("./assign_cost_cuda")
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import logging
 import torch
 from psd2.engine import default_argument_parser, launch
@@ -30,6 +32,7 @@ import math
 from psd2.engine import SimpleTrainer
 import time
 from psd2.utils.events import get_event_storage
+from torch.nn.parallel import DistributedDataParallel
 
 
 class VitPSTrainer(Trainer):
@@ -139,11 +142,13 @@ class VitPSTrainer(Trainer):
             WeightDecayScheduler(
                 self.cfg.PERSON_SEARCH.DINO.WEIGHT_DECAY,
                 self.cfg.PERSON_SEARCH.DINO.WEIGHT_DECAY_END,
-            ),
+            )
+        )
+        ret.append(
             MomentumUpdater(
                 self.cfg.PERSON_SEARCH.DINO.MOMEMTUM,
                 self.cfg.PERSON_SEARCH.DINO.MOMEMTUM_END,
-            ),
+            )
         )
         return ret
 
@@ -159,7 +164,7 @@ class WeightDecayScheduler(HookBase):
         wd = self._wd_end + 0.5 * (self._wd_start - self._wd_end) * (
             1 + math.cos(math.pi * cur_iter / max_iter)
         )
-        get_event_storage().put_scalar("weight_decay",wd)
+        get_event_storage().put_scalar("weight_decay", wd)
         for param_group in self.trainer.optimizer.param_groups:
             if "weight_decay" not in param_group or param_group["weight_decay"] != 0:
                 param_group["weight_decay"] = wd
@@ -176,8 +181,11 @@ class MomentumUpdater(HookBase):
         mm = self._mm_end + 0.5 * (self._mm_start - self._mm_end) * (
             1 + math.cos(math.pi * cur_iter / max_iter)
         )
-        get_event_storage().put_scalar("momentum",mm)
-        self.trainer.model.ema_update(mm)
+        get_event_storage().put_scalar("momentum", mm)
+        if isinstance(self.trainer.model, DistributedDataParallel):
+            self.trainer.model.module.ema_update(mm)
+        else:
+            self.trainer.model.ema_update(mm)
 
 
 class SimpleTrainerFreezeLastLayer(SimpleTrainer):

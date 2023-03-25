@@ -161,5 +161,6 @@ class ImageList(object):
 
     def select_by_indices(self, indices):
         return ImageList(
-            torch.stack([self.tensor[i] for i in indices]), self.image_sizes[indices]
+            torch.stack([self.tensor[i] for i in indices]),
+            [self.image_sizes[i] for i in indices],
         )

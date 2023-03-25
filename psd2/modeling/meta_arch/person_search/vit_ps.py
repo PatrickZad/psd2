@@ -26,7 +26,7 @@ from torch.utils import checkpoint
 
 @META_ARCH_REGISTRY.register()
 class VitPS(SearchBase):
-    @configurable()
+    @configurable
     def __init__(
         self,
         cfg,
@@ -446,7 +446,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    @configurable()
+    @configurable
     def __init__(
         self,
         num_classes,
@@ -1098,7 +1098,7 @@ class VitDetPsParallel(VisionTransformer):
         mid_pe_size=None,
     ):
         super().finetune_det(img_size, det_token_num, mid_pe_size)
-        if mid_pe_size == None:
+        if mid_pe_size == None or self.depth_reid == 1:
             self.has_mid_pe_reid = False
             print("No mid pe reid")
         else:
@@ -1191,7 +1191,7 @@ class VitDetPsParallel(VisionTransformer):
 
 @META_ARCH_REGISTRY.register()
 class VitPSPara(SearchBase):
-    @configurable()
+    @configurable
     def __init__(
         self,
         cfg,

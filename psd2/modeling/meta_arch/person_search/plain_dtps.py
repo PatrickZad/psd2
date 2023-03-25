@@ -26,7 +26,7 @@ from psd2.modeling.extend.transformer import (
 
 @META_ARCH_REGISTRY.register()
 class PlainDTPS(SearchBase):
-    @configurable()
+    @configurable
     def __init__(
         self,
         transformer,
