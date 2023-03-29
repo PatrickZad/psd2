@@ -291,3 +291,8 @@ def load_coco_ch(common_dir, subset="train", allow_crowd=True):
     coco_dicts = _load_coco_person(opj(common_dir, "coco"), subset, allow_crowd)
     ch_dicts = _load_crowd_human(opj(common_dir, "crowd_human"), subset, allow_crowd)
     return ch_dicts + coco_dicts
+
+
+def load_coco_p(common_dir, subset="train", allow_crowd=True):
+    coco_dicts = _load_coco_person(opj(common_dir, "coco"), subset, allow_crowd)
+    return coco_dicts

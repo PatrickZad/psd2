@@ -10,7 +10,7 @@ from .cuhk_sysu import subset_names as cuhk_subsets
 from .prw import load_prw
 from .prw import subsets as prw_subsets
 from .ptk21 import load_ptk21
-from .coco_ch import load_coco_ch
+from .coco_ch import load_coco_ch, load_coco_p
 import copy
 
 # TODO change evaluator type to "query"
@@ -92,6 +92,9 @@ def register_cdps_all(datadir):
 def register_cococh_all(datadir):
     name = "COCO-CH_DINO"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
+    MapperCatalog.register(name, mappers.COCOCHDINOMapper)
+    name = "COCO-P_DINO"
+    DatasetCatalog.register(name, lambda: load_coco_p(datadir, "train"))
     MapperCatalog.register(name, mappers.COCOCHDINOMapper)
 
 
