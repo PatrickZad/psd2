@@ -54,7 +54,7 @@ class VitPSTrainer(Trainer):
             {"params": [], "lr": cfg.SOLVER.BASE_LR * lf, "weight_decay": 0}
             for lf in cfg.SOLVER.LR_FACTORS
         ]
-        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token"]
+        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token", "local_token"]
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 

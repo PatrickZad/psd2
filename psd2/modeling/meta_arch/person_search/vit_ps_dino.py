@@ -1252,6 +1252,7 @@ class VitPDWithLocal(SearchBase):
                     )
                     bi_boxes = bi_boxes[keep]
                     bi_scores = bi_scores[keep]
+                    bi_pids = bi_pids[keep]
                 pred_instances = Instances(
                     None,
                     pred_scores=bi_scores,

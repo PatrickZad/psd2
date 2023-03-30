@@ -31,7 +31,7 @@ PERSON_SEARCH:
   DET:
     NUM_CLASSES: 1
     MODEL:
-      DO_NMS: False
+      DO_NMS: True
       NUM_PROPOSALS: 100
       TRANSFORMER:
         DEPTH: 12
@@ -77,7 +77,7 @@ DATASETS:
   TEST: ("PRW_Gallery", "PRW_Query","CUHK-SYSU_Gallery", "CUHK-SYSU_TestG50",)
 
 DATALOADER:
-  NUM_WORKERS: 8
+  NUM_WORKERS: 6
   ASPECT_RATIO_GROUPING: False
 
 SOLVER:
