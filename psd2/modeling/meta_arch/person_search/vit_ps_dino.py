@@ -796,7 +796,7 @@ class VitPSParaDINO(SearchBase):
             )
         )
         image_list_g = image_list.select_by_indices(global_view_idx)
-        assign_ids_g = torch.stack([assign_ids[i] for i in global_view_idx])
+        assign_ids_g = assign_ids[:2]
         features = self.backbone_teacher(image_list_g.tensor)
         if isinstance(features, dict):
             features = features[list(features.keys())[-1]]
@@ -808,7 +808,6 @@ class VitPSParaDINO(SearchBase):
         del out_seq_reid
         reid_feats = self.bn_neck_teacher(reid_feats.transpose(1, 2)).transpose(1, 2)
 
-        assign_ids_g = assign_ids[:2]
         reid_feats = (
             reid_feats.reshape((num_imgs, 2, reid_feats.shape[-2], -1))
             .transpose(0, 1)
