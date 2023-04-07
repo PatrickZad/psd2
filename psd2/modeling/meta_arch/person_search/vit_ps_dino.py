@@ -365,10 +365,11 @@ class DINOLoss(nn.Module):
     @torch.no_grad()
     def update_center(self, teacher_output):
         """
+        teacher_output: (sum num_global_view x num_person on all images in this batch) x num_cluster
         Update center used for teacher output.
         """
         batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
-        num_inst = teacher_output[0].shape[0] + teacher_output[1].shape[0]
+        num_inst = teacher_output.shape[0]
         comm.synchronize()
         all_sum_batch_center = comm.all_gather(batch_center)
         batch_center = sum([emb.to(self.center.device) for emb in all_sum_batch_center])
@@ -1138,9 +1139,60 @@ class VitPDWithLocal(SearchBase):
                 gt_instances = [gti["instances"].to(self.device) for gti in input_list]
                 return self.forward_gallery(image_list, gt_instances)  # preds only
 
+    def forward_query(self, image_list, gt_instances):
+        return [Instances(gt_instances[i].image_size) for i in range(len(gt_instances))]
+
+    def forward_gallery_eval(self, image_list, gt_instances):
+        features = self.backbone(image_list.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        out_seq = self.transformer(feat_seq, image_list.tensor.shape)
+        out_seq = out_seq[:, -self.num_queries :, :]
+        # vis_featmap = feat_out.detach()
+        outputs_class = self.class_embed(out_seq)
+        outputs_coord = self.bbox_embed(out_seq).sigmoid()
+        del out_seq
+        pred_instances_list = []
+        for bi, (bi_boxes, bi_logits) in enumerate(
+            zip(
+                outputs_coord,
+                outputs_class,
+            )
+        ):
+            if self.use_focal:
+                pred_scores = bi_logits.sigmoid()
+            else:
+                pred_scores = bi_logits.softmax(-1)[..., 0]
+            org_h, org_w = gt_instances[bi].org_img_size
+            h, w = gt_instances[bi].image_size
+            pred_boxes = Boxes(bi_boxes, BoxMode.CCWH_REL).convert_mode(
+                BoxMode.XYXY_ABS, gt_instances[bi].image_size
+            )
+            pred_boxes.scale(org_w / w, org_h / h)
+            if self.do_nms:
+                keep = batched_nms(
+                    pred_boxes.tensor,
+                    pred_scores,
+                    torch.zeros_like(pred_scores, dtype=torch.int64),
+                    0.5,
+                )
+                pred_boxes = pred_boxes[keep]
+                pred_scores = pred_scores[keep]
+
+            pred_instances = Instances(
+                None,
+                pred_scores=pred_scores,
+                pred_boxes=pred_boxes,
+                reid_feats=pred_boxes.tensor,  # trivial impl for eval
+            )
+            pred_instances_list.append(pred_instances)
+
+        return pred_instances_list
+
     def forward_gallery(self, image_list, gt_instances):
         if not self.training:
-            return super().forward_gallery(image_list, gt_instances)
+            return self.forward_gallery_eval(image_list, gt_instances)
         # NOTE modify local-view annotaions
         len_per_img = 1 + self.num_local_token_groups
         num_imgs = len(image_list) // len_per_img
@@ -1264,3 +1316,19 @@ class VitPDWithLocal(SearchBase):
                 pred_instances_list.append(pred_instances)
 
         return pred_instances_list, featmap, loss_dict
+
+
+@META_ARCH_REGISTRY.register()
+class VitPDWithLocalStochastic(VitPDWithLocal):
+    @classmethod
+    def from_config(cls, cfg):
+        assert (
+            cfg.SOLVER.IMS_PER_BATCH
+            % (cfg.PERSON_SEARCH.DINO.NUM_LOCAL_TOKEN_GROUPS + 1)
+            == 0
+        ), "Invalid batch size !"
+        ret = super().from_config(cfg)
+        return ret
+
+    def forward(self, input_list):
+        return super(VitPDWithLocal, self).forward(input_list)

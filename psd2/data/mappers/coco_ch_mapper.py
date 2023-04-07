@@ -164,6 +164,70 @@ class COCOCHDINOMapper(object):
         return {"global": [img_1_inst, img_2_inst], "local": img_insts}
 
 
+class COCOCHDINOPreDetMapper(object):
+    # 1 for global, 1 for local, as DINO does
+    # TODO consider instance-wise aug
+    def __init__(self, cfg, is_train) -> None:
+        assert is_train
+        self.is_train = is_train
+        img_mean = cfg.MODEL.PIXEL_MEAN
+        img_std = cfg.MODEL.PIXEL_STD
+        self.augs_box = dT.AugmentationList(
+            [
+                dT.ResizeShortestEdge(
+                    cfg.INPUT.MIN_SIZE_TRAIN,
+                    cfg.INPUT.MAX_SIZE_TRAIN,
+                    size_divisibility=cfg.INPUT.SIZE_DIVISIBILITY,
+                    sample_style="choice",
+                    interp=Image.BICUBIC,
+                ),
+                dT.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+            ]
+        )
+        self.norm = tT.Normalize(mean=img_mean, std=img_std)
+
+        self.to_pil = tT.ToPILImage()
+        self.img_fmt = cfg.INPUT.FORMAT
+
+    def __call__(self, img_dict):
+        return self._common_map(img_dict)
+
+    def _common_map(self, img_dict):
+        img_path = img_dict["file_name"]
+        img_arr = read_image(img_path, self.img_fmt)
+        boxes = []
+        ids = []
+        for ann in img_dict["annotations"]:
+            box_mode = ann["bbox_mode"]
+            boxes.append(
+                Boxes(ann["bbox"], box_mode)
+                .convert_mode(BoxMode.XYXY_ABS, img_arr.shape[:2])
+                .tensor[0]
+                .tolist()
+            )
+            ids.append(ann["person_id"])
+        org_boxes = np.array(boxes, dtype=np.float32)
+        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
+        transforms = self.augs_box(aug_input)
+        aug_img = aug_input.image
+        aug_boxes = aug_input.boxes
+        aug_h, aug_w = aug_img.shape[0], aug_img.shape[1]
+        imgt = tvtF.to_tensor(aug_img.copy())
+        return {
+            "image": imgt,
+            "instances": Instances(
+                (aug_h, aug_w),
+                file_name=img_path,
+                image_id=img_dict["image_id"],
+                gt_boxes=Boxes(aug_boxes, BoxMode.XYXY_ABS),
+                gt_pids=torch.tensor(ids, dtype=torch.int64),
+                gt_classes=torch.zeros(len(ids), dtype=torch.int64),
+                org_img_size=(img_arr.shape[0], img_arr.shape[1]),
+                org_gt_boxes=Boxes(org_boxes, BoxMode.XYXY_ABS),
+            ),
+        }
+
+
 import random
 
 

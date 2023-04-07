@@ -96,6 +96,9 @@ def register_cococh_all(datadir):
     name = "COCO-P_DINO"
     DatasetCatalog.register(name, lambda: load_coco_p(datadir, "train"))
     MapperCatalog.register(name, mappers.COCOCHDINOMapper)
+    name = "COCO-P_DINO_Stochastic"
+    DatasetCatalog.register(name, lambda: load_coco_p(datadir, "train"))
+    MapperCatalog.register(name, mappers.COCOCHDINOPreDetMapper)
 
 
 _root = os.getenv("PS_DATASETS", "Data/ReID")
