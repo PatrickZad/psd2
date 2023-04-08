@@ -1155,7 +1155,7 @@ class VitDetPsParallel(VisionTransformer):
         det_x = x
         for i in range(self.para_start_idx, len(self.blocks)):
             if self.has_mid_pe:
-                detx = detx + temp_mid_pos_embed[i - 1]
+                det_x = det_x + temp_mid_pos_embed[i - 1]
             det_x = checkpoint.checkpoint(
                 self.blocks[i], det_x
             )  # saves mem, takes time
