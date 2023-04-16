@@ -1232,7 +1232,7 @@ class VitDetPsParallel(VisionTransformer):
             print("Has mid pe reid")
             self.mid_pos_embed_reid = nn.Parameter(
                 torch.zeros(
-                    self.depth_reid - 1,
+                    self.depth_reid,
                     1,
                     1
                     + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
@@ -1277,16 +1277,15 @@ class VitDetPsParallel(VisionTransformer):
             # x = self.blocks[i](x)
             x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
             if self.has_mid_pe:
-                if i < (self.depth - 1):
+                if i < (self.para_start_idx - 1):
                     x = x + temp_mid_pos_embed[i]
         det_x = x
         for i in range(self.para_start_idx, len(self.blocks)):
+            if self.has_mid_pe:
+                det_x = det_x + temp_mid_pos_embed[i - 1]
             det_x = checkpoint.checkpoint(
                 self.blocks[i], det_x
             )  # saves mem, takes time
-            if self.has_mid_pe:
-                if i < (self.depth - 1):
-                    det_x = det_x + temp_mid_pos_embed[i]
         det_x = self.norm(det_x)
         reid_x = x
         # interpolate mid pe reid
@@ -1302,12 +1301,11 @@ class VitDetPsParallel(VisionTransformer):
                 temp_mid_pos_embed = self.mid_pos_embed_reid
 
         for i in range(self.depth_reid):
+            if self.has_mid_pe_reid:
+                reid_x = reid_x + temp_mid_pos_embed[i]
             reid_x = checkpoint.checkpoint(
                 self.blocks_reid[i], reid_x
             )  # saves mem, takes time
-            if self.has_mid_pe_reid:
-                if i < (self.depth_reid - 1):
-                    reid_x = reid_x + temp_mid_pos_embed[i]
         reid_x = self.norm_reid(reid_x)
 
         return det_x, reid_x

@@ -1,0 +1,21 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "VitPDWithLocal"
+
+DATASETS:
+  TRAIN: ("COCO-P_DINO",) 
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery",)
+
+SOLVER:
+  MAX_ITER: 1602800
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupCosineAfterWarmupLR"
+  WARMUP_ITERS: 16028
+  BASE_LR: 5.0e-5 # 5.0e-4
+  IMS_PER_BATCH: 4
+  EPOCH_ITERS: 16028
+  CHECKPOINT_PERIOD: 16028
+# SEED: 42
+VIS_PERIOD: 1000
+OUTPUT_DIR: "outputs/vit_ps_dino/vitpd-local_small-coco"
+VERSION: 2

@@ -16,15 +16,20 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 import sys
+import os
 
 sys.path.append("./")
 sys.path.append("./tools")
 sys.path.append("./assign_cost_cuda")
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import logging
 import torch
 from psd2.engine import default_argument_parser, launch
 import re
 from train_ps_net import *
+from psd2.engine import HookBase
+import math
+from psd2.utils.events import get_event_storage
 
 
 class VitPSTrainer(Trainer):
@@ -46,7 +51,7 @@ class VitPSTrainer(Trainer):
             {"params": [], "lr": cfg.SOLVER.BASE_LR * lf, "weight_decay": 0}
             for lf in cfg.SOLVER.LR_FACTORS
         ]
-        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token"]
+        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token", "local_token"]
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 
@@ -58,7 +63,7 @@ class VitPSTrainer(Trainer):
                     match_idx = mi
             return match_idx
 
-        for key, value in model.named_parameters(recurse=True):
+        for key, value in model.named_parameters():
             match_freeze = _find_match(key, freeze_regex)
             if match_freeze > -1:
                 value.requires_grad = False

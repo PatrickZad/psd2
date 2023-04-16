@@ -1,0 +1,35 @@
+_BASE_: "base.yaml"
+MODEL:
+  WEIGHTS: "outputs/vit_ps_dino/vitpd-local-stochastic_small-coco_orgcfg_50x4/model_0280489.pth"
+PERSON_SEARCH:
+  DINO:
+    # optim
+    FREEZE_LAST_LAYER_ITERS: 10686
+  REID:
+    MODEL:
+      TRANSFORMER:
+        DEPTH: 2
+DATASETS:
+  TRAIN: ("COCO-P_DINO",) 
+INPUT:
+  MAX_SIZE_TRAIN: 1152 # 1333
+
+SOLVER:
+  MAX_ITER: 534300 # 50e
+  LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
+  WARMUP_ITERS: 0
+  BASE_LR: 1.0e-5 # 5.0e-4
+  EPOCH_ITERS: 10686
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.01
+  CHECKPOINT_PERIOD: 10686
+  CLIP_GRADIENTS:
+    ENABLED: True
+    FULL_MODEL: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 0.1
+    NORM_TYPE: 2.0
+
+TEST:
+  IMS_PER_PROC: 2
+OUTPUT_DIR: "outputs/vit_ps_dino/vitps-small-dino_detpre_coco_lr-yolos_wd-yolos_clip-yolos"

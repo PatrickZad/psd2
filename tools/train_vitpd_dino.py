@@ -16,15 +16,23 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 import sys
+import os
 
 sys.path.append("./")
 sys.path.append("./tools")
 sys.path.append("./assign_cost_cuda")
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import logging
 import torch
 from psd2.engine import default_argument_parser, launch
 import re
 from train_ps_net import *
+from psd2.engine import HookBase
+import math
+from psd2.engine import SimpleTrainer
+import time
+from psd2.utils.events import get_event_storage
+from torch.nn.parallel import DistributedDataParallel
 
 
 class VitPSTrainer(Trainer):
@@ -46,7 +54,7 @@ class VitPSTrainer(Trainer):
             {"params": [], "lr": cfg.SOLVER.BASE_LR * lf, "weight_decay": 0}
             for lf in cfg.SOLVER.LR_FACTORS
         ]
-        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token"]
+        zero_weight_decay_keys = ["pos_embed", "cls_token", "det_token", "local_token"]
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 
@@ -58,7 +66,7 @@ class VitPSTrainer(Trainer):
                     match_idx = mi
             return match_idx
 
-        for key, value in model.named_parameters(recurse=True):
+        for key, value in model.named_parameters():
             match_freeze = _find_match(key, freeze_regex)
             if match_freeze > -1:
                 value.requires_grad = False
@@ -67,7 +75,7 @@ class VitPSTrainer(Trainer):
                 continue
             match_learn = _find_match(key, lr_group_regex)
             is_zero_wd = False
-            if "class_embed" not in key and "bbox_embed" not in key:  # not head
+            if "transformer" in key:
                 if len(value.shape) == 1 or key.endswith(".bias"):
                     is_zero_wd = True
                 else:
@@ -118,6 +126,33 @@ class VitPSTrainer(Trainer):
             )
         else:
             raise ValueError("Unsupported optimizer {}".format(optim))
+
+    def build_hooks(self):
+        ret = super().build_hooks()
+        ret.append(
+            WeightDecayScheduler(
+                self.cfg.PERSON_SEARCH.DINO.WEIGHT_DECAY,
+                self.cfg.PERSON_SEARCH.DINO.WEIGHT_DECAY_END,
+            )
+        )
+        return ret
+
+
+class WeightDecayScheduler(HookBase):
+    def __init__(self, start=0.04, end=0.4):
+        self._wd_start = start
+        self._wd_end = end
+
+    def before_step(self):
+        cur_iter = self.trainer.iter
+        max_iter = self.trainer.max_iter
+        wd = self._wd_end + 0.5 * (self._wd_start - self._wd_end) * (
+            1 + math.cos(math.pi * cur_iter / max_iter)
+        )
+        get_event_storage().put_scalar("weight_decay", wd)
+        for param_group in self.trainer.optimizer.param_groups:
+            if "weight_decay" not in param_group or param_group["weight_decay"] != 0:
+                param_group["weight_decay"] = wd
 
 
 def main(args):

@@ -129,7 +129,7 @@ class EpochBasedCosineParamScheduler(ParamScheduler):
         self.epoch_base = epoch_base
         self.max_iters = max_iters
         self.max_epoch_after_warmup = math.ceil(
-            self.max_iters - warmup_iters / epoch_base
+            (self.max_iters - warmup_iters) / epoch_base
         )
         self.warmup_iters = warmup_iters
 

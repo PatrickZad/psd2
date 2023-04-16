@@ -16,18 +16,35 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 import sys
+import os
 
 sys.path.append("./")
 sys.path.append("./tools")
 sys.path.append("./assign_cost_cuda")
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import logging
 import torch
 from psd2.engine import default_argument_parser, launch
 import re
 from train_ps_net import *
+from psd2.engine import HookBase
+import math
+from psd2.engine import SimpleTrainer
+import time
+from psd2.utils.events import get_event_storage
+from torch.nn.parallel import DistributedDataParallel
 
 
 class VitPSTrainer(Trainer):
+    def __init__(self, cfg, model_find_unused_parameters=True):
+        super().__init__(cfg, model_find_unused_parameters)
+        self._trainer = SimpleTrainerFreezeLastLayer(
+            self._trainer.model,
+            self._trainer.data_loader,
+            self._trainer.optimizer,
+            cfg.PERSON_SEARCH.DINO.FREEZE_LAST_LAYER_ITERS,
+        )
+
     @classmethod
     def build_optimizer(cls, cfg, model):
         from psd2.solver.build import maybe_add_gradient_clipping
@@ -58,7 +75,7 @@ class VitPSTrainer(Trainer):
                     match_idx = mi
             return match_idx
 
-        for key, value in model.named_parameters(recurse=True):
+        for key, value in model.named_parameters():
             match_freeze = _find_match(key, freeze_regex)
             if match_freeze > -1:
                 value.requires_grad = False
@@ -67,7 +84,7 @@ class VitPSTrainer(Trainer):
                 continue
             match_learn = _find_match(key, lr_group_regex)
             is_zero_wd = False
-            if "class_embed" not in key and "bbox_embed" not in key:  # not head
+            if "transformer" in key:
                 if len(value.shape) == 1 or key.endswith(".bias"):
                     is_zero_wd = True
                 else:
@@ -118,6 +135,84 @@ class VitPSTrainer(Trainer):
             )
         else:
             raise ValueError("Unsupported optimizer {}".format(optim))
+
+    def build_hooks(self):
+        ret = super().build_hooks()
+        ret.append(
+            MomentumUpdater(
+                self.cfg.PERSON_SEARCH.DINO.MOMEMTUM,
+                self.cfg.PERSON_SEARCH.DINO.MOMEMTUM_END,
+            )
+        )
+        return ret
+
+
+class MomentumUpdater(HookBase):
+    def __init__(self, start=0.996, end=1.0):
+        self._mm_start = start
+        self._mm_end = end
+
+    def after_step(self):
+        cur_iter = self.trainer.iter
+        max_iter = self.trainer.max_iter
+        mm = self._mm_end + 0.5 * (self._mm_start - self._mm_end) * (
+            1 + math.cos(math.pi * cur_iter / max_iter)
+        )
+        get_event_storage().put_scalar("momentum", mm)
+        if isinstance(self.trainer.model, DistributedDataParallel):
+            self.trainer.model.module.ema_update(mm)
+        else:
+            self.trainer.model.ema_update(mm)
+
+
+class SimpleTrainerFreezeLastLayer(SimpleTrainer):
+    def __init__(self, model, data_loader, optimizer, freeze_iters):
+        super().__init__(model, data_loader, optimizer)
+        self.f_iters = freeze_iters
+
+    def run_step(self):
+        """
+        Implement the standard training logic described above.
+        """
+        assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
+        start = time.perf_counter()
+        """
+        If you want to do something with the data, you can wrap the dataloader.
+        """
+        data = next(self._data_loader_iter)
+        data_time = time.perf_counter() - start
+
+        """
+        If you want to do something with the losses, you can wrap the model.
+        """
+        loss_dict = self.model(data)
+        if isinstance(loss_dict, torch.Tensor):
+            losses = loss_dict
+            loss_dict = {"total_loss": loss_dict}
+        else:
+            losses = sum(loss_dict.values())
+
+        """
+        If you need to accumulate gradients or do something similar, you can
+        wrap the optimizer with your custom `zero_grad()` method.
+        """
+        self.optimizer.zero_grad()
+        losses.backward()
+
+        self._write_metrics(loss_dict, data_time)
+
+        """
+        If you need gradient clipping/scaling or other processing, you can
+        wrap the optimizer with your custom `step()` method. But it is
+        suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
+        """
+        # NOTE freeze last layer
+        if self.iter < self.f_iters:
+            for n, p in self.model.named_parameters():
+                if "head_student.last_layer" in n:
+                    p.grad = None
+
+        self.optimizer.step()
 
 
 def main(args):

@@ -765,7 +765,7 @@ class DDTPS(DTPS):
         return ret
 
     def _init_mapper(self, hidden_dim):
-        assert self.num_feature_levels in [1, 2, 3]
+        assert self.num_feature_levels in [1, 3]
         backbone_outshapes = self.backbone.output_shape()
         input_proj_list = []
         for in_name in self.in_features:
@@ -775,9 +775,8 @@ class DDTPS(DTPS):
                     nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
                     nn.Identity()
                     if backbone_outshapes[in_name].stride <= 16
-                    else nn.Upsample(
+                    else InterpolateModule(
                         scale_factor=backbone_outshapes[in_name].stride // 16,
-                        mode="nearest",
                     ),
                     DeformConvPack(
                         hidden_dim,
@@ -1049,3 +1048,12 @@ class DDTPS(DTPS):
                 pred_instances_list.append(pred_instances)
 
             return pred_instances_list
+
+
+class InterpolateModule(nn.Module):
+    def __init__(self, scale_factor):
+        super().__init__()
+        self.sf = scale_factor
+
+    def forward(self, x):
+        return F.interpolate(x, scale_factor=self.sf, mode="nearest")
