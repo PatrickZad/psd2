@@ -1187,6 +1187,137 @@ class VitDetPsParallel(VisionTransformer):
         raise NotImplementedError
 
 
+from torch.nn import Dropout
+
+
+class VitDetPsParallelWithPrompt(VitDetPsParallel):
+    def __init__(self, num_prompts, *args, **kws):
+        super().__init__(*args, **kws)
+        self.prompts = nn.Parameter(
+            torch.zeros(self.depth, 1, num_prompts, self.embed_dim)
+        ).to(self.pos_embed.device)
+        self.prompts = trunc_normal_(self.prompts, std=0.02)
+        self.prompts_reid = nn.Parameter(
+            torch.zeros(self.depth_reid, 1, num_prompts, self.embed_dim)
+        ).to(self.pos_embed.device)
+        self.prompts_reid = trunc_normal_(self.prompts_reid, std=0.02)
+        self.prompts_dropout = Dropout(0.1)
+        self.num_prompts = num_prompts
+
+    def train(self, mode=True):
+        self.training = mode
+        if mode:
+            # training:
+            for module in self.children():
+                if module not in [
+                    self.prompts,
+                    self.prompts_reid,
+                    self.prompts_dropout,
+                ]:
+                    module.eval()
+                else:
+                    module.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
+    def get_prompts(self, b, layer_prompts):
+        return self.prompts_dropout(layer_prompts.expand(b, -1, -1))
+
+    def forward_features(self, feat_seq, imgt_shape):
+        # import pdb;pdb.set_trace()
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
+        # interpolate init pe
+        if (self.pos_embed.shape[1] - 1 - self.det_token_num) != x.shape[1]:
+            temp_pos_embed = self.InterpolateInitPosEmbed(
+                self.pos_embed, img_size=(H, W)
+            )
+        else:
+            temp_pos_embed = self.pos_embed
+        # interpolate mid pe
+        if self.has_mid_pe:
+            # temp_mid_pos_embed = []
+            if (self.mid_pos_embed.shape[2] - 1 - self.det_token_num) != x.shape[1]:
+                temp_mid_pos_embed = self.InterpolateMidPosEmbed(
+                    self.mid_pos_embed, img_size=(H, W)
+                )
+            else:
+                temp_mid_pos_embed = self.mid_pos_embed
+
+        cls_tokens = self.cls_token.expand(
+            B, -1, -1
+        )  # stole cls_tokens impl from Phil Wang, thanks
+        det_token = self.det_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x, det_token), dim=1)
+        x = x + temp_pos_embed
+        x = self.pos_drop(x)
+
+        for i in range(self.para_start_idx):
+            # x = self.blocks[i](x)
+            x = torch.cat(
+                [x[:, :1, :], self.get_prompts(B, self.prompts[i]), x[:, 1:, :]], dim=1
+            )
+            x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
+            x = torch.cat([x[:, :1, :], x[:, self.num_prompts + 1 :, :]], dim=1)
+            if self.has_mid_pe:
+                if i < (self.para_start_idx - 1):
+                    x = x + temp_mid_pos_embed[i]
+        det_x = x
+        for i in range(self.para_start_idx, len(self.blocks)):
+            if self.has_mid_pe:
+                det_x = det_x + temp_mid_pos_embed[i - 1]
+            det_x = torch.cat(
+                [
+                    det_x[:, :1, :],
+                    self.get_prompts(B, self.prompts[i]),
+                    det_x[:, 1:, :],
+                ],
+                dim=1,
+            )
+            det_x = checkpoint.checkpoint(
+                self.blocks[i], det_x
+            )  # saves mem, takes time
+            det_x = torch.cat(
+                [det_x[:, :1, :], det_x[:, self.num_prompts + 1 :, :]], dim=1
+            )
+        det_x = self.norm(det_x)
+        reid_x = x
+        # interpolate mid pe reid
+        if self.has_mid_pe_reid:
+            # temp_mid_pos_embed = []
+            if (
+                self.mid_pos_embed_reid.shape[2] - 1 - self.det_token_num
+            ) != reid_x.shape[1]:
+                temp_mid_pos_embed = self.InterpolateMidPosEmbed(
+                    self.mid_pos_embed_reid, img_size=(H, W)
+                )
+            else:
+                temp_mid_pos_embed = self.mid_pos_embed_reid
+
+        for i in range(self.depth_reid):
+            if self.has_mid_pe_reid:
+                reid_x = reid_x + temp_mid_pos_embed[i]
+            reid_x = torch.cat(
+                [
+                    reid_x[:, :1, :],
+                    self.get_prompts(B, self.prompts_reid[i]),
+                    reid_x[:, 1:, :],
+                ],
+                dim=1,
+            )
+            reid_x = checkpoint.checkpoint(
+                self.blocks_reid[i], reid_x
+            )  # saves mem, takes time
+            reid_x = torch.cat(
+                [reid_x[:, :1, :], reid_x[:, self.num_prompts + 1 :, :]], dim=1
+            )
+        reid_x = self.norm_reid(reid_x)
+
+        return det_x, reid_x
+
+
 @META_ARCH_REGISTRY.register()
 class VitPSPara(SearchBase):
     @configurable
@@ -1392,9 +1523,6 @@ class VitPSPara(SearchBase):
                     pred_boxes = pred_boxes[keep]
                     pred_scores = pred_scores[keep]
                     bi_reid_feats = bi_reid_feats[keep]
-                if self.do_cws:
-                    # TODO disable cws on query features
-                    bi_reid_feats = bi_reid_feats * pred_scores.unsqueeze(-1)
 
                 pred_instances = Instances(
                     None,
@@ -1408,3 +1536,66 @@ class VitPSPara(SearchBase):
 
     def forward_query(self, image_list, gt_instances):
         return [Instances(gt_instances[i].image_size) for i in range(len(gt_instances))]
+
+
+@META_ARCH_REGISTRY.register()
+class VitPSParaWithPrompts(VitPSPara):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        patch_embed = ret["backbone"]
+        reid_cfg = cfg.PERSON_SEARCH.REID
+        vit = VitDetPsParallelWithPrompt(
+            num_prompts=cfg.PERSON_SEARCH.NUM_PROMPTS,
+            depth_reid=reid_cfg.MODEL.TRANSFORMER.DEPTH,
+            pretrain_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            embed_dim=patch_embed.embed_dim,
+            num_patches=patch_embed.num_patches,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            is_distill=tr_cfg.DEIT,
+        )
+        det_cfg = cfg.PERSON_SEARCH.DET
+        vit.finetune_det(
+            img_size=tr_cfg.INIT_PE_SIZE,
+            det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+            mid_pe_size=tr_cfg.MID_PE_SIZE,
+        )
+        ret["transformer"] = vit
+
+        return ret
+
+    def train(self, mode=True):
+        self.training = mode
+        if mode:
+            # training:
+            self.transformer.train()
+            self.class_embed.eval()
+            self.bbox_embed.eval()
+            self.bn_neck.eval()
+            self.backbone.eval()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)

@@ -670,9 +670,76 @@ class VitPSParaDINO(SearchBase):
                 gt_instances = [gti["instances"].to(self.device) for gti in input_list]
                 return self.forward_gallery(image_list, gt_instances)  # preds only
 
+    def forward_query(self, image_list, gt_instances):
+        return [Instances(gt_instances[i].image_size) for i in range(len(gt_instances))]
+    def forward_gallery_eval(self, image_list, gt_instances):
+        features = self.backbone(image_list.tensor)
+        if isinstance(features, dict):
+            features = features[list(features.keys())[-1]]
+        feat_seq = features.flatten(2).transpose(1, 2)  # B x N x C
+        out_seq_det, out_seq_reid = self.transformer(feat_seq, image_list.tensor.shape)
+        out_seq_det = out_seq_det[:, -self.num_queries :, :]
+        del feat_seq
+        reid_feats, out_feat = (
+            out_seq_reid[:, -self.num_queries :, :],
+            out_seq_reid[
+                :, self.transformer.cls_token.shape[1] : -self.num_queries, :
+            ].detach(),
+        )
+        del out_seq_reid
+        reid_feats = self.bn_neck(reid_feats.transpose(1, 2)).transpose(1, 2)
+        if not self.training:
+            reid_feats = F.normalize(reid_feats, dim=-1)
+        out_feat = out_feat.reshape(
+            (-1, features.shape[-2], features.shape[-1], features.shape[1])
+        ).permute(0, 3, 1, 2)
+        del features
+        # vis_featmap = feat_out.detach()
+        outputs_class = self.class_embed(out_seq_det)
+        outputs_coord = self.bbox_embed(out_seq_det).sigmoid()
+        del out_seq_det
+        pred_instances_list = []
+        for bi, (bi_boxes, bi_logits, bi_reid_feats) in enumerate(
+            zip(
+                outputs_coord,
+                outputs_class,
+                reid_feats,
+            )
+        ):
+            if self.use_focal:
+                pred_scores = bi_logits.sigmoid()
+            else:
+                pred_scores = bi_logits.softmax(-1)[..., 0]
+            org_h, org_w = gt_instances[bi].org_img_size
+            h, w = gt_instances[bi].image_size
+            pred_boxes = Boxes(bi_boxes, BoxMode.CCWH_REL).convert_mode(
+                BoxMode.XYXY_ABS, gt_instances[bi].image_size
+            )
+            pred_boxes.scale(org_w / w, org_h / h)
+            if self.do_nms:
+                keep = batched_nms(
+                    pred_boxes.tensor,
+                    pred_scores,
+                    torch.zeros_like(pred_scores, dtype=torch.int64),
+                    0.5,
+                )
+                pred_boxes = pred_boxes[keep]
+                pred_scores = pred_scores[keep]
+                bi_reid_feats = bi_reid_feats[keep]
+
+            pred_instances = Instances(
+                None,
+                pred_scores=pred_scores,
+                pred_boxes=pred_boxes,
+                reid_feats=bi_reid_feats,
+            )
+            pred_instances_list.append(pred_instances)
+
+        return pred_instances_list
+
     def forward_gallery(self, image_list, gt_instances):
         if not self.training:
-            return super().forward_gallery(image_list, gt_instances)
+            return self.forward_gallery_eval(image_list, gt_instances)
         # NOTE 1. modify local-view annotaions
         len_per_img = 2 + self.num_local_token_groups
         num_imgs = len(image_list) // len_per_img

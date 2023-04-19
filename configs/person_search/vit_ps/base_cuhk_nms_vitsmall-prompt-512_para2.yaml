@@ -1,0 +1,33 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "VitPSParaWithPrompts"
+  WEIGHTS: "outputs/vit_ps_dino/vitps-small-dino_detpre_coco_lr-yolos_wd-yolos_clip-yolos/model_0203033.pth"
+PERSON_SEARCH:
+  NUM_PROMPTS: 256
+  DET:
+    MODEL:
+      DO_NMS: True
+  REID:
+    MODEL:
+      TRANSFORMER:
+        DEPTH: 2
+      BN_NECK: False
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+SOLVER:
+  LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
+  MAX_ITER: 140050 # 2801 * 50
+  STEPS: (1,)
+  CHECKPOINT_PERIOD: 5602
+  WARMUP_ITERS: 0
+  IMS_PER_BATCH: 4
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.01
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery", "CUHK-SYSU_TestG100",) #
+TEST:
+  EVAL_PERIOD: 5602
+OUTPUT_DIR: "outputs/vit_ps/vitps-prompt-512_cuhk_nms_para2"

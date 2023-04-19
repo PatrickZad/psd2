@@ -245,6 +245,6 @@ class EvaluatorDataset(Dataset):
                 y_score_cws = y_score_cws[inds]
                 y_true_cws = y_true[inds]
                 rst_accs_cws[dst].append(
-                    [min(1, sum(y_true_cws[:k])) for k in self.topks]
+                    [min(1, sum(y_true_cws[:k])) for k in self.eval_ref.topks]
                 )
         return rst_aps, rst_accs, rst_aps_cws, rst_accs_cws

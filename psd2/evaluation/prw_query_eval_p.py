@@ -167,12 +167,12 @@ class EvaluatorDataset(Dataset):
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
-            y_scores_cws = {dst: [] for dst in self.det_score_thresh}
+            y_scores_cws = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             count_tps = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             y_trues_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
-            y_scores_cws_mlv = {dst: [] for dst in self.det_score_thresh}
+            y_scores_cws_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts_mlv = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             count_tps_mlv = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             # Find all occurence of this query
@@ -355,7 +355,7 @@ class EvaluatorDataset(Dataset):
                 inds = np.argsort(y_score_cws_mlv)[::-1]
                 y_score_cws_mlv = y_score_cws_mlv[inds]
                 y_true_cws_mlv = y_true_mlv[inds]
-                rst_accs_cws[dst].append(
+                rst_accs_cws_mlv[dst].append(
                     [min(1, sum(y_true_cws_mlv[:k])) for k in self.eval_ref.topks]
                 )
                 # 3. Save vis

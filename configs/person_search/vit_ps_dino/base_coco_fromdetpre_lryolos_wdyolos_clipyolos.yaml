@@ -1,6 +1,6 @@
 _BASE_: "base.yaml"
 MODEL:
-  WEIGHTS: "outputs/vit_ps_dino/vitpd-local-stochastic_small-coco_orgcfg_50x4/model_0280489.pth"
+  WEIGHTS: "outputs/vit_ps_dino/vitpd-local-stochastic_small-coco_orgcfg_50x4/model_0304531.pth"
 PERSON_SEARCH:
   DINO:
     # optim
@@ -11,6 +11,7 @@ PERSON_SEARCH:
         DEPTH: 2
 DATASETS:
   TRAIN: ("COCO-P_DINO",) 
+  TEST: ("PRW_Gallery", "PRW_Query","CUHK-SYSU_Gallery", "CUHK-SYSU_TestG50",) #
 INPUT:
   MAX_SIZE_TRAIN: 1152 # 1333
 
@@ -31,5 +32,6 @@ SOLVER:
     NORM_TYPE: 2.0
 
 TEST:
-  IMS_PER_PROC: 2
+  IMS_PER_PROC: 1
+  EVAL_PERIOD: 21372
 OUTPUT_DIR: "outputs/vit_ps_dino/vitps-small-dino_detpre_coco_lr-yolos_wd-yolos_clip-yolos"

@@ -267,7 +267,7 @@ class PrwQueryEvaluator(QueryEvaluator):
                 inds = np.argsort(y_score_cws_mlv)[::-1]
                 y_score_cws_mlv = y_score_cws_mlv[inds]
                 y_true_cws_mlv = y_true_mlv[inds]
-                self.accs_cws[dst].append(
+                self.accs_cws_mlv[dst].append(
                     [min(1, sum(y_true_cws_mlv[:k])) for k in self.topks]
                 )
                 # 3. Save vis
@@ -287,8 +287,8 @@ class PrwQueryEvaluator(QueryEvaluator):
             comm.synchronize()
             aps_all = comm.gather(self.aps_mlv, dst=0)
             accs_all = comm.gather(self.accs_mlv, dst=0)
-            aps_cws_all = comm.gather(self.aps_mlv, dst=0)
-            accs_cws_all = comm.gather(self.accs_mlv, dst=0)
+            aps_cws_all = comm.gather(self.aps_cws_mlv, dst=0)
+            accs_cws_all = comm.gather(self.accs_cws_mlv, dst=0)
             if not comm.is_main_process():
                 return {}
             aps = {}
@@ -326,11 +326,11 @@ class PrwQueryEvaluator(QueryEvaluator):
                 mix_eval_results["search"].update(
                     {"top{:2d}_{:.2f}_mlv".format(k, dst): v}
                 )
-            acc_cws = np.mean(np.array(accs_cws[dst]), axis=0)
+            acc_cws = np.mean(accs_cws[dst], axis=0)
             for i, v in enumerate(acc_cws.tolist()):
                 # logger.info("{:.2f} on {} acc. ".format(v, i))
                 k = self.topks[i]
                 mix_eval_results["search"].update(
-                    {"top{:2d}_{:.2f}_cws".format(k, dst): v}
+                    {"top{:2d}_{:.2f}_cws_mlv".format(k, dst): v}
                 )
         return copy.deepcopy(mix_eval_results)
