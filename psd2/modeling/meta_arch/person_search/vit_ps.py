@@ -422,6 +422,133 @@ class VitPD(VitPS):
         raise NotImplementedError
 
 
+class VisionTransformerDetPrompt(VisionTransformer):
+    def InterpolateInitPosEmbed(self, pos_embed, img_size=(800, 1344)):
+        # import pdb;pdb.set_trace()
+        # NOTE only learn det pos embedding
+        cls_pos_embed = pos_embed[:, 0, :].detach()
+        cls_pos_embed = cls_pos_embed[:, None]
+        det_pos_embed = pos_embed[:, -self.det_token_num :, :]
+        patch_pos_embed = pos_embed[:, 1 : -self.det_token_num, :].detach()
+        patch_pos_embed = patch_pos_embed.transpose(1, 2)
+        B, E, Q = patch_pos_embed.shape
+
+        P_H, P_W = (
+            self.img_size[0] // self.patch_size,
+            self.img_size[1] // self.patch_size,
+        )
+        patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
+
+        # P_H, P_W = self.img_size[0] // self.patch_size, self.img_size[1] // self.patch_size
+        # patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
+
+        H, W = img_size
+        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed,
+            size=(new_P_H, new_P_W),
+            mode="bicubic",
+            align_corners=False,
+        )
+        patch_pos_embed = patch_pos_embed.flatten(2).transpose(1, 2)
+        scale_pos_embed = torch.cat(
+            (cls_pos_embed, patch_pos_embed, det_pos_embed), dim=1
+        )
+        return scale_pos_embed
+
+    def InterpolateMidPosEmbed(self, pos_embed, img_size=(800, 1344)):
+        # NOTE only learn det pos embedding
+        # import pdb;pdb.set_trace()
+        cls_pos_embed = pos_embed[:, :, 0, :].detach()
+        cls_pos_embed = cls_pos_embed[:, None]
+        det_pos_embed = pos_embed[:, :, -self.det_token_num :, :]
+        patch_pos_embed = pos_embed[:, :, 1 : -self.det_token_num, :].detach()
+        patch_pos_embed = patch_pos_embed.transpose(2, 3)
+        D, B, E, Q = patch_pos_embed.shape
+
+        P_H, P_W = (
+            self.mid_pe_size[0] // self.patch_size,
+            self.mid_pe_size[1] // self.patch_size,
+        )
+        patch_pos_embed = patch_pos_embed.view(D * B, E, P_H, P_W)
+        H, W = img_size
+        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed,
+            size=(new_P_H, new_P_W),
+            mode="bicubic",
+            align_corners=False,
+        )
+        patch_pos_embed = (
+            patch_pos_embed.flatten(2)
+            .transpose(1, 2)
+            .contiguous()
+            .view(D, B, new_P_H * new_P_W, E)
+        )
+        scale_pos_embed = torch.cat(
+            (cls_pos_embed, patch_pos_embed, det_pos_embed), dim=2
+        )
+        return scale_pos_embed
+
+
+@META_ARCH_REGISTRY.register()
+class VitPDPrompt(VitPD):
+    """
+    Treating det tokens as prompts for a re-id pre-trained vit
+    """
+
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        for p in self.backbone.parameters:  # freeze patch embedding
+            p.requires_grad = False
+    @classmethod
+    def from_config(cls, cfg):
+        ret = SearchBase.from_config(cfg)
+        ret["cfg"] = cfg
+        ret["id_assigner"] = None
+
+        ret["oim_loss"] = None
+        ret["criterion"] = SetCriterion(cfg)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        patch_embed = ret["backbone"]
+        vit = VisionTransformerDetPrompt(
+            pretrain_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            embed_dim=patch_embed.embed_dim,
+            num_patches=patch_embed.num_patches,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            is_distill=tr_cfg.DEIT,
+        )
+        det_cfg = cfg.PERSON_SEARCH.DET
+        vit.finetune_det(
+            img_size=tr_cfg.INIT_PE_SIZE,
+            det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+            mid_pe_size=tr_cfg.MID_PE_SIZE,
+        )
+        ret["transformer"] = vit
+
+        ret["num_classes"] = det_cfg.NUM_CLASSES
+        ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
+        ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        ret["reid_head"] = None
+        ret["do_nms"] = det_cfg.MODEL.DO_NMS
+        return ret
+
 class MLP(nn.Module):
     """Very simple multi-layer perceptron (also called FFN)"""
 
