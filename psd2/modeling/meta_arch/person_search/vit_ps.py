@@ -39,7 +39,6 @@ class VitPS(SearchBase):
         reid_head,
         oim_loss,
         do_nms,
-        do_cws,
         *args,
         **kws,
     ):
@@ -244,9 +243,6 @@ class VitPS(SearchBase):
                     pred_boxes = pred_boxes[keep]
                     pred_scores = pred_scores[keep]
                     bi_reid_feats = bi_reid_feats[keep]
-                if self.do_cws:
-                    # TODO disable cws on query features
-                    bi_reid_feats = bi_reid_feats * pred_scores.unsqueeze(-1)
 
                 pred_instances = Instances(
                     None,
@@ -292,7 +288,7 @@ class VitPD(VitPS):
 
     @classmethod
     def from_config(cls, cfg):
-        ret = super(VitPS, cls).from_config(cfg)
+        ret = SearchBase.from_config(cfg)
         ret["cfg"] = cfg
         ret["id_assigner"] = None
 
@@ -423,19 +419,36 @@ class VitPD(VitPS):
 
 
 class VisionTransformerDetPrompt(VisionTransformer):
+    def train(self, mode=True):
+        # TODO re-consider the dropout train and eval
+        self.training = mode
+        if mode:
+            # training:
+            for module in self.children():
+                if module not in [
+                    self.det_token,
+                    self.det_pos_embed,
+                    self.det_mid_pos_embed,
+                ]:
+                    module.eval()
+                else:
+                    module.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
     def InterpolateInitPosEmbed(self, pos_embed, img_size=(800, 1344)):
-        # import pdb;pdb.set_trace()
-        # NOTE only learn det pos embedding
-        cls_pos_embed = pos_embed[:, 0, :].detach()
-        cls_pos_embed = cls_pos_embed[:, None]
-        det_pos_embed = pos_embed[:, -self.det_token_num :, :]
-        patch_pos_embed = pos_embed[:, 1 : -self.det_token_num, :].detach()
+        patch_pos_embed = pos_embed[:, 1:]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
         B, E, Q = patch_pos_embed.shape
-
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
         P_H, P_W = (
-            self.img_size[0] // self.patch_size,
-            self.img_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
 
@@ -443,7 +456,7 @@ class VisionTransformerDetPrompt(VisionTransformer):
         # patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
 
         H, W = img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
@@ -451,44 +464,115 @@ class VisionTransformerDetPrompt(VisionTransformer):
             align_corners=False,
         )
         patch_pos_embed = patch_pos_embed.flatten(2).transpose(1, 2)
-        scale_pos_embed = torch.cat(
-            (cls_pos_embed, patch_pos_embed, det_pos_embed), dim=1
-        )
-        return scale_pos_embed
+        return torch.cat([pos_embed[:, :1], patch_pos_embed], dim=1)
 
-    def InterpolateMidPosEmbed(self, pos_embed, img_size=(800, 1344)):
-        # NOTE only learn det pos embedding
-        # import pdb;pdb.set_trace()
-        cls_pos_embed = pos_embed[:, :, 0, :].detach()
+    def finetune_det(
+        self,
+        img_size=[800, 1344],
+        det_token_num=100,
+        mid_pe_size=None,
+    ):
+        # NOTE should be compatible with orginally pre-trained vit
+
+        self.det_token_num = det_token_num
+        self.det_token = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim)).to(
+            self.pos_embed.device
+        )
+        self.det_token = trunc_normal_(self.det_token, std=0.02)
+
+        det_pos_embed = torch.zeros(
+            1, det_token_num, self.embed_dim, device=self.pos_embed.device
+        )
+        det_pos_embed = trunc_normal_(det_pos_embed, std=0.02)
+        self.det_pos_embed = nn.Parameter(det_pos_embed)
+
+        self.finetune_img_size = img_size
+        if mid_pe_size == None:
+            self.has_mid_pe = False
+            print("No mid pe")
+        else:
+            print("Has mid pe for det tokens")
+            self.det_mid_pos_embed = nn.Parameter(
+                torch.zeros(
+                    self.depth - 1,
+                    1,
+                    det_token_num,
+                    self.embed_dim,
+                    device=self.pos_embed.device,
+                )
+            )
+            trunc_normal_(self.det_mid_pos_embed, std=0.02)
+            self.has_mid_pe = True
+            self.mid_pe_size = mid_pe_size
+
+    def interpolate_pos_after_loading(self):
+        cls_pos_embed = self.pos_embed[:, 0, :]
         cls_pos_embed = cls_pos_embed[:, None]
-        det_pos_embed = pos_embed[:, :, -self.det_token_num :, :]
-        patch_pos_embed = pos_embed[:, :, 1 : -self.det_token_num, :].detach()
-        patch_pos_embed = patch_pos_embed.transpose(2, 3)
-        D, B, E, Q = patch_pos_embed.shape
-
+        patch_pos_embed = self.pos_embed[:, 1:, :]
+        patch_pos_embed = patch_pos_embed.transpose(1, 2)
+        B, E, Q = patch_pos_embed.shape
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
         P_H, P_W = (
-            self.mid_pe_size[0] // self.patch_size,
-            self.mid_pe_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
-        patch_pos_embed = patch_pos_embed.view(D * B, E, P_H, P_W)
-        H, W = img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
+        H, W = self.finetune_img_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
             mode="bicubic",
             align_corners=False,
         )
-        patch_pos_embed = (
-            patch_pos_embed.flatten(2)
-            .transpose(1, 2)
-            .contiguous()
-            .view(D, B, new_P_H * new_P_W, E)
+        patch_pos_embed = patch_pos_embed.flatten(2).transpose(1, 2)
+        self.pos_embed = torch.nn.Parameter(
+            torch.cat((cls_pos_embed, patch_pos_embed), dim=1)
         )
-        scale_pos_embed = torch.cat(
-            (cls_pos_embed, patch_pos_embed, det_pos_embed), dim=2
-        )
-        return scale_pos_embed
+        self.img_size = self.finetune_img_size
+
+    def forward_features(self, feat_seq, imgt_shape):
+        # import pdb;pdb.set_trace()
+        B, H, W = imgt_shape[0], imgt_shape[2], imgt_shape[3]
+        x = feat_seq
+        # interpolate init pe
+        if (self.pos_embed.shape[1] - 1) != x.shape[1]:
+            cls_patch_pos_embed = self.InterpolateInitPosEmbed(
+                self.pos_embed, img_size=(H, W)
+            )
+        else:
+            cls_patch_pos_embed = self.pos_embed
+        temp_pos_embed = torch.cat([cls_patch_pos_embed, self.det_pos_embed], dim=1)
+        # interpolate mid pe
+        if self.has_mid_pe:
+            # temp_mid_pos_embed = []
+            cls_patch_mid_pos_embed = cls_patch_pos_embed.unsqueeze(0).expand(
+                self.depth - 1, -1, -1, -1
+            )
+            temp_mid_pos_embed = torch.cat(
+                [cls_patch_mid_pos_embed, self.det_mid_pos_embed], dim=2
+            )
+
+        cls_tokens = self.cls_token.expand(
+            B, -1, -1
+        )  # stole cls_tokens impl from Phil Wang, thanks
+        det_token = self.det_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x, det_token), dim=1)
+        x = x + temp_pos_embed
+        x = self.pos_drop(x)
+
+        for i in range(len((self.blocks))):
+            # x = self.blocks[i](x)
+            x = checkpoint.checkpoint(self.blocks[i], x)  # saves mem, takes time
+            if self.has_mid_pe:
+                if i < (self.depth - 1):
+                    x = x + temp_mid_pos_embed[i]
+
+        x = self.norm(x)
+        return x
 
 
 @META_ARCH_REGISTRY.register()
@@ -504,8 +588,14 @@ class VitPDPrompt(VitPD):
         **kws,
     ):
         super().__init__(*args, **kws)
-        for p in self.backbone.parameters:  # freeze patch embedding
+        for k, p in self.transformer.named_parameters():
+            # NOTE this should be done here for the prameters are not created in vit __init__
+            # NOTE training parameters: det_token, det_pos_embed, det_mid_pos_embed
+            if "det" not in k:
+                p.requires_grad = False
+        for p in self.backbone.parameters():
             p.requires_grad = False
+
     @classmethod
     def from_config(cls, cfg):
         ret = SearchBase.from_config(cfg)
@@ -548,6 +638,26 @@ class VitPDPrompt(VitPD):
         ret["reid_head"] = None
         ret["do_nms"] = det_cfg.MODEL.DO_NMS
         return ret
+
+    def load_state_dict(self, *args, **kws):
+        ret = super().load_state_dict(*args, **kws)
+        self.transformer.interpolate_pos_after_loading()
+        self.transformer.pos_embed.requires_grad = False
+        return ret
+
+    def train(self, mode=True):
+        self.training = mode
+        if mode:
+            # training:
+            self.transformer.train()
+            self.class_embed.train()
+            self.bbox_embed.train()
+            self.backbone.eval()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
 
 class MLP(nn.Module):
     """Very simple multi-layer perceptron (also called FFN)"""
@@ -873,13 +983,17 @@ class ReidHead(VisionTransformer):
         patch_pos_embed = self.pos_embed[:, 1:, :]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
         B, E, Q = patch_pos_embed.shape
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
         P_H, P_W = (
-            self.img_size[0] // self.patch_size,
-            self.img_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
         H, W = input_img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
@@ -897,7 +1011,7 @@ class ReidHead(VisionTransformer):
                     self.depth - 1,
                     1,
                     1
-                    + (input_img_size[0] * input_img_size[1] // self.patch_size ** 2)
+                    + (input_img_size[0] * input_img_size[1] // (ph*pw))
                     + num_queies,
                     self.embed_dim,
                 )
@@ -1116,13 +1230,17 @@ class QMaskReidHead(QMaskVisionTransformer):
         patch_pos_embed = self.pos_embed[:, 1:, :]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
         B, E, Q = patch_pos_embed.shape
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
         P_H, P_W = (
-            self.img_size[0] // self.patch_size,
-            self.img_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
         H, W = input_img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
@@ -1140,7 +1258,7 @@ class QMaskReidHead(QMaskVisionTransformer):
                     self.depth - 1,
                     1,
                     1
-                    + (input_img_size[0] * input_img_size[1] // self.patch_size ** 2)
+                    + (input_img_size[0] * input_img_size[1] // (ph*pw))
                     + num_queies,
                     self.embed_dim,
                 )
@@ -1230,13 +1348,15 @@ class VitDetPsParallel(VisionTransformer):
             print("No mid pe reid")
         else:
             print("Has mid pe reid")
+            if isinstance(self.patch_size, int):
+                ph, pw = self.patch_size, self.patch_size
+            else:
+                ph, pw = self.patch_size
             self.mid_pos_embed_reid = nn.Parameter(
                 torch.zeros(
                     self.depth_reid,
                     1,
-                    1
-                    + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
-                    + det_token_num,
+                    1 + (mid_pe_size[0] * mid_pe_size[1] // (ph * pw)) + det_token_num,
                     self.embed_dim,
                     device=self.pos_embed.device,
                 )
@@ -1674,8 +1794,12 @@ class VitPSParaWithPrompts(VitPSPara):
         **kws,
     ):
         super().__init__(*args, **kws)
-        for p in self.backbone.parameters():
-            p.requires_grad = False
+        for m in [self.backbone, self.class_embed, self.bbox_embed, self.bn_neck]:
+            for p in m.parameters():
+                p.requires_grad = False
+        for k, p in self.transformer.named_parameters():
+            if "prompts" not in k:
+                p.requires_grad = False
 
     @classmethod
     def from_config(cls, cfg):

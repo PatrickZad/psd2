@@ -412,13 +412,17 @@ class VisionTransformer(nn.Module):
         patch_pos_embed = self.pos_embed[:, 1:, :]
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
         B, E, Q = patch_pos_embed.shape
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
         P_H, P_W = (
-            self.img_size[0] // self.patch_size,
-            self.img_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
         H, W = img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
@@ -440,7 +444,7 @@ class VisionTransformer(nn.Module):
                     self.depth - 1,
                     1,
                     1
-                    + (mid_pe_size[0] * mid_pe_size[1] // self.patch_size ** 2)
+                    + (mid_pe_size[0] * mid_pe_size[1] // (ph*pw))
                     + det_token_num,
                     self.embed_dim,
                     device=self.pos_embed.device
@@ -463,9 +467,14 @@ class VisionTransformer(nn.Module):
         patch_pos_embed = patch_pos_embed.transpose(1, 2)
         B, E, Q = patch_pos_embed.shape
 
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
+
         P_H, P_W = (
-            self.img_size[0] // self.patch_size,
-            self.img_size[1] // self.patch_size,
+            self.img_size[0] // ph,
+            self.img_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
 
@@ -473,7 +482,7 @@ class VisionTransformer(nn.Module):
         # patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
 
         H, W = img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),
@@ -494,14 +503,18 @@ class VisionTransformer(nn.Module):
         patch_pos_embed = pos_embed[:, :, 1 : -self.det_token_num, :]
         patch_pos_embed = patch_pos_embed.transpose(2, 3)
         D, B, E, Q = patch_pos_embed.shape
+        if isinstance(self.patch_size, int):
+            ph, pw = self.patch_size, self.patch_size
+        else:
+            ph, pw = self.patch_size
 
         P_H, P_W = (
-            self.mid_pe_size[0] // self.patch_size,
-            self.mid_pe_size[1] // self.patch_size,
+            self.mid_pe_size[0] // ph,
+            self.mid_pe_size[1] // pw,
         )
         patch_pos_embed = patch_pos_embed.view(D * B, E, P_H, P_W)
         H, W = img_size
-        new_P_H, new_P_W = H // self.patch_size, W // self.patch_size
+        new_P_H, new_P_W = H // ph, W // pw
         patch_pos_embed = nn.functional.interpolate(
             patch_pos_embed,
             size=(new_P_H, new_P_W),

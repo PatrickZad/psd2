@@ -153,8 +153,8 @@ _C.MODEL.PATCH_TOKENIZER.NEW_NORMS = True
 # Plain Patch Embedding options
 # ---------------------------------------------------------------------------- #
 _C.MODEL.PATCH_EMBED = CN()
-_C.MODEL.PATCH_EMBED.PRETRAIN_IMG_SIZE = 224
-_C.MODEL.PATCH_EMBED.PATCH_SIZE = 16
+_C.MODEL.PATCH_EMBED.PRETRAIN_IMG_SIZE = [224, 224]
+_C.MODEL.PATCH_EMBED.PATCH_SIZE = [16, 16]
 _C.MODEL.PATCH_EMBED.EMBED_DIM = 384
 # ---------------------------------------------------------------------------- #
 # FPN options

@@ -6,8 +6,8 @@ MODEL:
   BACKBONE:
     NAME: "build_patch_embed"
   PATCH_EMBED:
-    PRETRAIN_IMG_SIZE: 224
-    PATCH_SIZE: 16
+    PRETRAIN_IMG_SIZE: [224,224]
+    PATCH_SIZE: [16,16]
     EMBED_DIM: 384
   ROI_HEADS:
     IN_FEATURES: ["out"]
