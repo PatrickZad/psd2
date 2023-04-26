@@ -26,7 +26,7 @@ except:
 from .backbone import Backbone
 from .build import BACKBONE_REGISTRY
 from psd2.layers import Conv2d, ShapeSpec
-
+from psd2.layers import get_norm
 
 class PatchEmbed_(nn.Module):
     """2D Image to Patch Embedding"""
@@ -318,5 +318,16 @@ def build_patch_embed(cfg, input_shape):
         input_shape.channels,
         pt_cfg.EMBED_DIM,
         norm_layer=None,
+        flatten=False,
+    )
+@BACKBONE_REGISTRY.register()
+def build_patch_embed_ln(cfg, input_shape):
+    pt_cfg = cfg.MODEL.PATCH_EMBED
+    return PatchEmbed(
+        pt_cfg.PRETRAIN_IMG_SIZE,
+        pt_cfg.PATCH_SIZE,
+        input_shape.channels,
+        pt_cfg.EMBED_DIM,
+        norm_layer=nn.LayerNorm,
         flatten=False,
     )

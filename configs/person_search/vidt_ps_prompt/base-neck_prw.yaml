@@ -1,0 +1,36 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "VidtPromptPDWithNeck"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      BOX_REFINE: True
+      NECK:
+        NHEADS: 8
+        NUM_DEC_LAYERS: 6
+        DIM_FEEDFORWARD: 1024
+        DROPOUT: 0.1
+        NUM_FEATURE_LEVELS: 4
+        DEC_N_POINTS: 4
+    LOSS:
+      DEEP_SUPERVISION: True
+      WEIGHTS:
+        CLS: 2.0
+        GIOU: 2.0
+        L1: 5.0
+        NO_OBJECT: 0.1
+      FOCAL:
+        ENABLE: True
+        ALPHA: 0.25
+        GAMMA: 2.0
+SOLVER:
+  MAX_ITER: 71300 # 1426 * 50
+  CHECKPOINT_PERIOD: 2852
+  EPOCH_ITERS: 1426
+  IMS_PER_BATCH: 4
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery",) #
+TEST:
+  EVAL_PERIOD: 2852
+OUTPUT_DIR: "outputs/vidt_ps/vidt-neck_prompt_pd_prw"

@@ -14,7 +14,7 @@ from .resnet import (
     BottleneckBlock,
 )
 
-from .patch_tokenizer import build_patch_tokenizerms, build_patch_embed
+from .patch_tokenizer import build_patch_tokenizerms, build_patch_embed,build_patch_embed_ln
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]
 # TODO can expose more resnet blocks after careful consideration

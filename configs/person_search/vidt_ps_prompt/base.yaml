@@ -1,0 +1,81 @@
+MODEL:
+  META_ARCHITECTURE: "VidtPromptPD"
+  WEIGHTS: "Data/model_zoo/swin_small_solider_d2.pkl"
+  PIXEL_MEAN: [0.485, 0.456, 0.406]
+  PIXEL_STD: [0.229, 0.224, 0.225]
+  BACKBONE:
+    NAME: "build_patch_embed_ln"
+  PATCH_EMBED:
+    PRETRAIN_IMG_SIZE: [256,128]
+    PATCH_SIZE: [4,4]
+    EMBED_DIM: 96
+  ROI_HEADS:
+    IN_FEATURES: ["out"]
+PERSON_SEARCH:
+  DET:
+    NUM_CLASSES: 1
+    MODEL:
+      NUM_PROPOSALS: 100
+      REDUCED_DIM: 256
+      TRANSFORMER:
+        DEPTH: [2,2,18,2]
+        NHEAD: [3, 6, 12, 24]
+        WIN_SIZE: 7
+        MLP_RATIO: 4
+        QKV_BIAS: True
+        DROPOUT: 0.0
+        DROP_PATH: 0.3
+        ATTN_DROPOUT: 0.0
+        DET_POS_DIM: 256
+        DET_CROSS_INDICES: [3,]
+        SEMANTIC_WEIGHT: 0.6
+    LOSS:
+      DEEP_SUPERVISION: False
+      WEIGHTS:
+        CLS: 1.0
+        GIOU: 2.0
+        L1: 5.0
+        NO_OBJECT: 0.1
+      FOCAL:
+        ENABLE: False
+        ALPHA: 0.25
+        GAMMA: 2.0
+  REID:
+    ID_ASSIGN:
+      NAME: "det"
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+  FORMAT: "RGB"
+  SIZE_DIVISIBILITY: 32
+
+DATALOADER:
+  NUM_WORKERS: 8
+  ASPECT_RATIO_GROUPING: True
+
+SOLVER:
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupEpochBasedCosineLR"
+  WARMUP_ITERS: 0
+  BASE_LR: 2.5e-5 # 1.0e-4 / 4
+  WEIGHT_DECAY: 1.0e-4
+  GAMMA: 0.1
+  IMS_PER_BATCH: 4
+  COS_LR_MAX_FACTOR: 1.0
+  COS_LR_MIN_FACTOR: 0.001
+  CLIP_GRADIENTS:
+    ENABLED: True
+    FULL_MODEL: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 0.1
+    NORM_TYPE: 2.0
+
+TEST:
+  IMS_PER_PROC: 4
+  DETECTIONS_PER_IMAGE: 100
+  DETECTION_SCORE_TS: [0.3,0.5]
+# SEED: 42
+VIS_PERIOD: 1000
+VERSION: 2

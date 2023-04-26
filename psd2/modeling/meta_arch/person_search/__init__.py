@@ -5,3 +5,5 @@ from .dtps import DTPS
 from .plain_dtps import PlainDTPS
 from .vit_ps import VitPS, QMaskVitPS, VitPSPara
 from .vit_ps_dino import VitPSParaDINO, VitPDWithLocal
+from .vidt_ps import VidtPromptPD
+from .vidt_neck_ps import VidtPromptPDWithNeck
