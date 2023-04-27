@@ -33,4 +33,5 @@ DATASETS:
   TEST: ("CUHK-SYSU_Gallery",) #
 TEST:
   EVAL_PERIOD: 5604
+  DETECTION_SCORE_TS: [0.2,0.3]
 OUTPUT_DIR: "outputs/vidt_ps/vidt-neck_prompt_pd_cuhk"

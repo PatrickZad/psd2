@@ -6,6 +6,11 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 from psd2.structures import Instances, Boxes, BoxMode
 import torch
+from .mapper import SearchMapper
+
+class COCOCHMapper(SearchMapper):
+    def __init__(self, cfg, is_train) -> None:
+        super().__init__(cfg, is_train)
 
 
 class COCOCHDINOMapper(object):

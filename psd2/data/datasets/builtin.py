@@ -90,6 +90,9 @@ def register_cdps_all(datadir):
 
 
 def register_cococh_all(datadir):
+    name = "COCO-CH"
+    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
+    MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-CH_DINO"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
     MapperCatalog.register(name, mappers.COCOCHDINOMapper)

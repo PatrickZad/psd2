@@ -386,7 +386,7 @@ class SetCriterion(nn.Module):
 
         if det_cfg.LOSS.DEEP_SUPERVISION:
             aux_weight_dict = {}
-            for i in range(det_cfg.MODEL.NECK.NUM_DEC_LAYERS - 1):
+            for i in range(det_cfg.MODEL.NECK.NUM_DEC_LAYERS - 1+1):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
 
