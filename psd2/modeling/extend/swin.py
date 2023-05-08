@@ -1187,7 +1187,113 @@ class SwinTransformerWithSemanticCtrl(SwinTransformer):
         det_pos = det_pos.permute(0, 2, 1)
 
         return patch_outs, det_tgt, det_pos
-    
+
+
+class SwinTransformerWithAllSemanticCtrl(SwinTransformerWithSemanticCtrl):
+    def __init__(self, *args,**kws):
+        super().__init__(*args,**kws)
+        self.last_downsample=PatchMerging(dim=int(self.embed_dim * 2 ** (self.num_layers-1)),norm_layer=kws["norm_layer"],expand=False)
+        
+    def finetune_det(self, *args,**kws):
+        super().finetune_det(*args,**kws)
+        self.layers[-1].downsample = None
+        self.last_downsample.det_token_num=self.det_token_num
+
+    def forward(self, x, mask, img_shape):
+        """Forward function.
+
+        Parameters:
+            x:  # output of patch_embed
+            mask: input padding masks [0: rgb values, 1: padded values]
+
+        Returns:
+            patch_outs: multi-scale [PATCH] tokens (four scales are used)
+                these tokens are the first input of the neck decoder
+            det_tgt: final [DET] tokens obtained at the last stage
+                this tokens are the second input of the neck decoder
+            det_pos: the learnable pos encoding for [DET] tokens.
+                these encodings are used to generate reference points in deformable attention
+        """
+
+        w = torch.ones(x.shape[0],1) * self.semantic_weight
+        w = torch.cat([w, 1-w], axis=-1)
+        semantic_weight = w.cuda()
+
+        # original input shape
+        B,ori_C, ori_H, ori_W = img_shape
+
+        Wh, Ww = x.size(2), x.size(3)
+        x = x.flatten(2).transpose(1, 2)
+        x = self.pos_drop(x)
+
+        # expand det_token for all examples in the batch
+        det_token = self.det_token.expand(B, -1, -1)
+
+        # det pos encoding -> will be projected in each block
+        det_pos = self.det_pos_embed
+
+        # prepare a mask for cross attention
+        mask = F.interpolate(
+            mask[None].float(), size=(Wh // self.mask_divisor, Ww // self.mask_divisor)
+        ).to(torch.bool)[0]
+
+        patch_outs = []
+        for stage in range(self.num_layers):
+            layer = self.layers[stage]
+
+            # whether to use cross-attention
+            cross_attn = True if stage in self.cross_indices else False
+
+            # concat input
+            x = torch.cat([x, det_token], dim=1)
+
+            # inference
+            x_out, H, W, x, Wh, Ww = layer( # x_out: before downsampling, x: after downsampling
+                x,
+                Wh,
+                Ww,
+                # additional input for VIDT
+                input_mask=mask,
+                det_pos=det_pos,
+                cross_attn=cross_attn,
+            )
+
+            x, det_token = (
+                x[:, : -self.det_token_num, :],
+                x[:, -self.det_token_num :, :],
+            )
+            if self.semantic_weight >= 0 : 
+                sw = self.semantic_embed_w[stage](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[stage](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+            # Aggregate intermediate outputs
+            if stage > 0:
+                patch_out = (
+                    x_out[:, : -self.det_token_num, :]
+                    .view(B, H, W, -1)
+                    .permute(0, 3, 1, 2)
+                )
+                patch_outs.append(patch_out)
+            
+            # NOTE vidt doesn't use the output norms
+
+        # patch token reduced from last stage output
+        x=self.last_downsample(torch.cat([x,det_token],dim=1),Wh,Ww)
+        x, det_token = (
+                x[:, : -self.det_token_num, :],
+                x[:, -self.det_token_num :, :],
+            )
+        Wh, Ww = (Wh + 1) // 2, (Ww + 1) // 2
+        patch_outs.append(x.view(B, Wh, Ww, -1).permute(0, 3, 1, 2))
+
+        # det token
+        det_tgt = x_out[:, -self.det_token_num :, :].permute(0, 2, 1)
+
+        # det token pos encoding
+        det_pos = det_pos.permute(0, 2, 1)
+
+        return patch_outs, det_tgt, det_pos
+     
 
 def trunc_normal_init(module: nn.Module,
                       mean: float = 0,

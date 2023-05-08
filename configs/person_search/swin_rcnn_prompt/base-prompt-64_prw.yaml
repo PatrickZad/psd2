@@ -1,0 +1,30 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "PromptedSwinF4RCNN"
+  WEIGHTS: "outputs/swin_rcnn/prompt_pd_cococh/model_0356039.pth"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        PROMPT_START_STAGE: 4
+        NUM_PROMPTS: 64
+        PROMPT_DROP_RATE: 0.0
+SOLVER:
+  STEPS: (19000,38000)
+  BASE_LR: 0.0003
+  MAX_ITER: 47500 # 950 * 50
+  CHECKPOINT_PERIOD: 950
+  GAMMA: 0.1
+  IMS_PER_BATCH: 6
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 900)
+  MAX_SIZE_TRAIN: 1500
+  MIN_SIZE_TEST: 900
+  MAX_SIZE_TEST: 1500
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery",) #
+TEST:
+  EVAL_PERIOD: 1900
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/base-prompt-64_pd_prw_cococh-pretrain_3lr"

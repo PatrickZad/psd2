@@ -13,7 +13,7 @@ from torchvision.ops import generalized_box_iou, box_convert
 from psd2.utils import comm
 import math
 from functools import partial
-from psd2.modeling.extend.swin import SwinTransformerWithSemanticCtrl
+from psd2.modeling.extend.swin import SwinTransformerWithSemanticCtrl,SwinTransformerWithAllSemanticCtrl
 from torch.utils import checkpoint
 from fvcore.nn import sigmoid_focal_loss_jit as sigmoid_focal_loss
 
@@ -111,11 +111,30 @@ class VidtPromptPDWithNeck(SearchBase):
         self.cfg = cfg
         self.id_assigner = id_assigner
 
-        for n, p in self.transformer.named_parameters():
-            if "det" not in n and "layers.3.downsample" not in n: # Vidt add another downsampling module
-                p.requires_grad = False
-        for  p in self.backbone.parameters():
-            p.requires_grad = False
+        self.freeze_params()
+
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training=mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.transformer.eval()
+            self.transformer.layers[-1].downsample.train()
+            for n,m in self.transformer.named_modules():
+                if "det" in n:
+                    m.train()
+            self.det_neck.train()
+            self.input_proj.train()
+            self.tgt_proj.train()
+            self.query_pos_proj.train()
+            self.class_embed.train()
+            self.bbox_embed.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+                
 
     @classmethod
     def from_config(cls, cfg):
@@ -178,6 +197,15 @@ class VidtPromptPDWithNeck(SearchBase):
 
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+    def freeze_params(self):
+        for n, p in self.transformer.named_parameters():
+            if "det" not in n and "layers.3.downsample" not in n: # Vidt add another downsampling module
+                p.requires_grad = False
+        for  p in self.backbone.parameters():
+            p.requires_grad = False
+        self.backbone.eval()
+        self.transformer.eval()
+        self.transformer.layers[-1].downsample.train()
     def forward_gallery(self, image_list, gt_instances):
         features = self.backbone(image_list.tensor)
         img_padding_mask = image_list.mask
@@ -317,8 +345,92 @@ class VidtPromptPDWithNeck(SearchBase):
     def forward_query(self, image_list, gt_instances):
         raise NotImplementedError
 
-
-
+@META_ARCH_REGISTRY.register()
+class VidtPromptPDWithNeckLastSemantic(VidtPromptPDWithNeck):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        ret["cfg"] = cfg
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret["criterion"] = SetCriterion(cfg)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        patch_embed = ret["backbone"]
+        swin = SwinTransformerWithAllSemanticCtrl(
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size[0]
+            if isinstance(patch_embed.patch_size, tuple)
+            else patch_embed.patch_size,
+            embed_dim=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            norm_layer=nn.LayerNorm,
+        )
+        det_cfg = cfg.PERSON_SEARCH.DET
+        swin.finetune_det(
+            method="vidt",
+            det_token_num=det_cfg.MODEL.NUM_PROPOSALS,
+            pos_dim=tr_cfg.DET_POS_DIM,
+            cross_indices=tr_cfg.DET_CROSS_INDICES,
+        )
+        ret["transformer"] = swin
+        neck=DeformableTransformer(
+            d_model=det_cfg.MODEL.REDUCED_DIM,
+            nhead=det_cfg.MODEL.NECK.NHEADS,
+            num_decoder_layers=det_cfg.MODEL.NECK.NUM_DEC_LAYERS,
+            dim_feedforward=det_cfg.MODEL.NECK.DIM_FEEDFORWARD,
+            dropout=det_cfg.MODEL.NECK.DROPOUT,
+            activation="relu",
+            return_intermediate_dec=True,
+            num_feature_levels=det_cfg.MODEL.NECK.NUM_FEATURE_LEVELS,
+            dec_n_points=det_cfg.MODEL.NECK.DEC_N_POINTS,
+            token_label=False,
+        )
+        ret["det_neck"]=neck
+        ret["box_refine"]=det_cfg.MODEL.BOX_REFINE
+        ret["aux_loss"]=det_cfg.LOSS.DEEP_SUPERVISION
+        ret["num_classes"] = det_cfg.NUM_CLASSES
+        ret["num_queries"] = det_cfg.MODEL.NUM_PROPOSALS
+        ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        return ret
+    
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training=mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.transformer.eval()
+            self.transformer.last_downsample.train()
+            for n,m in self.transformer.named_module():
+                if "det" in n:
+                    m.train()
+            self.det_neck.train()
+            self.input_proj.train()
+            self.tgt_proj.train()
+            self.query_pos_proj.train()
+            self.class_embed.train()
+            self.bbox_embed.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+    def freeze_params(self):
+        for n, p in self.transformer.named_parameters():
+            if "det" not in n and "last_downsample" not in n: # Vidt add another downsampling module
+                p.requires_grad = False
+        for  p in self.backbone.parameters():
+            p.requires_grad = False
+        self.backbone.eval()
+        self.transformer.eval()
+        self.transformer.last_downsample.train()
 
 class MLP(nn.Module):
     """Very simple multi-layer perceptron (also called FFN)"""

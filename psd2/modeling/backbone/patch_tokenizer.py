@@ -258,7 +258,7 @@ def to_2tuple(x):
     return tuple(repeat(x, 2))
 
 
-# YOLOS
+# YOLOS / swin
 class PatchEmbed(PatchEmbed_, Backbone):
     def __init__(self, *args, **kws):
         PatchEmbed_.__init__(self, *args, **kws)

@@ -426,17 +426,10 @@ class Res5ROIHeads(ROIHeads):
             cls._build_res5_block = classmethod(cls._build_res5_block)
 
         ret["res5"], out_channels = cls._build_res5_block(cfg)
-        ret["box_predictor"] = (
-            FastRCNNOutputLayers(
+        ret["box_predictor"] = FastRCNNOutputLayers(
                 cfg, ShapeSpec(channels=out_channels, height=1, width=1)
             )
-            if cfg.MODEL.ROI_BOX_HEAD.BOX_NORM == ""
-            else FastRCNNOutputLayersNorm(
-                cfg,
-                ShapeSpec(channels=out_channels, height=1, width=1),
-                box_norm=cfg.MODEL.ROI_BOX_HEAD.BOX_NORM,
-            )
-        )
+
 
         if mask_on:
             ret["mask_head"] = build_mask_head(

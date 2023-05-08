@@ -93,6 +93,9 @@ def register_cococh_all(datadir):
     name = "COCO-CH"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
     MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCO-P"
+    DatasetCatalog.register(name, lambda: load_coco_p(datadir, "train"))
+    MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-CH_DINO"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
     MapperCatalog.register(name, mappers.COCOCHDINOMapper)

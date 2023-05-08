@@ -1,0 +1,15 @@
+_BASE_: "base.yaml"
+SOLVER:
+  STEPS: (160300,320600)
+  BASE_LR: 0.0003
+  MAX_ITER: 400750 # 8015 * 50
+  CHECKPOINT_PERIOD: 8015
+  GAMMA: 0.1
+  IMS_PER_BATCH: 8
+DATASETS:
+  TRAIN: ("COCO-P",) 
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery",) #
+TEST:
+  EVAL_PERIOD: 16030
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/pd_coco-p"
