@@ -1462,27 +1462,24 @@ def tsne_embs(embs, labels):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
-    """plot_img_np = get_img_from_fig(fig)
-    uniq_lbs = sorted(list(set(labels.tolist())))
-    if len(uniq_lbs) <= len(mt_colors):
-        uniq_clrs = random.sample(mt_colors, len(uniq_lbs))
-    else:
-        uniq_clrs = random.choices(mt_colors, len(uniq_lbs))
-    for li, lb in enumerate(uniq_lbs):
-        mask = labels_arr == lb
-        datas = embs_tsne[mask]
-        plt.scatter(datas[:, 0], datas[:, 1], c=uniq_clrs[li], alpha=0.5, label=str(lb))
-    canvas = FigureCanvasAgg(plt.gcf())
-    canvas.draw()
-    w, h = canvas.get_width_height()
-    buf = np.fromstring(canvas.tostring_argb(), dtype=np.uint8)
-    buf.shape = (w, h, 4)
-    buf = np.roll(buf, 3, axis=2)
-    image = Image.frombytes("RGBA", (w, h), buf.tostring())
-    image = np.asarray(image, dtype=np.float32)
-    rgb_image = image[:, :, :3]
-    return rgb_image"""
+def mat_heatmap(matrix,vmin,vmax):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import io
+    import cv2
 
+    mat_data=matrix.cpu().numpy()
+    fig = plt.figure()
+    sns.heatmap(mat_data,vmin=vmin,vmax=vmax)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=180)
+    buf.seek(0)
+    img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+    buf.close()
+    plt.close()
+    img = cv2.imdecode(img_arr, 1)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return img
 
 def domain_hist_img(d_vals, nbins, ignore=0.1):
     """

@@ -7,11 +7,11 @@ PERSON_SEARCH:
     MODEL:
       TRANSFORMER:
         PROMPT_START_STAGE: 4
-        NUM_PROMPTS: 32
+        NUM_PROMPTS: 16
         PROMPT_DROP_RATE: 0.0
 SOLVER:
-  STEPS: (25668, 34224) # (14260,28520)
-  BASE_LR: 0.0003
+  STEPS: (17112, 34224) # (14260,28520)
+  BASE_LR: 0.001
   MAX_ITER: 35650 # 713 * 50
   CHECKPOINT_PERIOD: 713
   GAMMA: 0.1
@@ -27,4 +27,4 @@ DATASETS:
 TEST:
   EVAL_PERIOD: 1426
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/base-prompt-32_pd_prw_cococh-pretrain_3lr"
+OUTPUT_DIR: "outputs/swin_rcnn/base-prompt-16_pd_prw_cococh-pretrain_10lr"

@@ -7,4 +7,4 @@ from .vit_ps import VitPS, QMaskVitPS, VitPSPara
 from .vit_ps_dino import VitPSParaDINO, VitPDWithLocal
 from .vidt_ps import VidtPromptPD
 from .vidt_neck_ps import VidtPromptPDWithNeck,VidtPromptPDWithNeckLastSemantic
-from .swin_rcnn import SwinF4RCNN,SwinF4RCNN2,SwinF4RCNN3,PromptedSwinF4RCNN
+from .swin_rcnn import *

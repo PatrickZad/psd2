@@ -1271,12 +1271,11 @@ class SwinTransformer(BaseModule):
         x = torch.flatten(x, 1)
         return x, outs
 
-
+# NOTE these are for creating the swin blocks. forward operations and prompt embeddings are managed outside
 class PromptedSwinTransformer(BaseModule):
     def __init__(self,
                  prompt_start_stage,# [1,2,3,4]
                  num_prompts,
-                 prompt_drop_rate,
                  pretrain_img_size=224,
                  in_channels=3,
                  embed_dims=96,
@@ -1354,13 +1353,16 @@ class PromptedSwinTransformer(BaseModule):
                     out_channels=2 * in_channels,
                     stride=strides[i + 1],
                     norm_cfg=norm_cfg if patch_norm else None,
-                    init_cfg=None) if i < prompt_start_stage-1 else PatchMerging(
+                    init_cfg=None)
+                """
+                if i < prompt_start_stage-1 else PromptedPatchMerging(
                     num_prompts=num_prompts,
                     in_channels=in_channels,
                     out_channels=2 * in_channels,
                     stride=strides[i + 1],
                     norm_cfg=norm_cfg if patch_norm else None,
                     init_cfg=None)
+                """
             else:
                 downsample = None
 
@@ -1425,54 +1427,10 @@ class PromptedSwinTransformer(BaseModule):
                 self.semantic_embed_w.append(semantic_embed_w)
                 self.semantic_embed_b.append(semantic_embed_b)
             self.softplus = nn.Softplus()
-        self.prompt_dropout = nn.Dropout(prompt_drop_rate)
         self.num_prompts=num_prompts
-        # for "prepend"
-        val = math.sqrt(6. / float(3 * reduce(mul, (patch_size,patch_size), 1) + embed_dims))  # noqa
-        self.prompt_embeddings = nn.Parameter(torch.zeros(
-                    1, num_prompts, embed_dims))
-        nn.init.uniform_(self.prompt_embeddings.data, -val, val)
-        # NOTE: only for 4 layers, need to be more flexible
-        self.deep_prompt_embeddings_0 = nn.Parameter(
-                        torch.zeros(
-                            depths[0] - 1, num_prompts, embed_dims
-                    ))
-        nn.init.uniform_(
-                        self.deep_prompt_embeddings_0.data, -val, val)
-        self.deep_prompt_embeddings_1 = nn.Parameter(
-                        torch.zeros(
-                            depths[1], num_prompts, embed_dims * 2
-                    ))
-        nn.init.uniform_(
-                        self.deep_prompt_embeddings_1.data, -val, val)
-        self.deep_prompt_embeddings_2 = nn.Parameter(
-                        torch.zeros(
-                            depths[2], num_prompts, embed_dims * 4
-                    ))
-        nn.init.uniform_(
-                        self.deep_prompt_embeddings_2.data, -val, val)
-        self.deep_prompt_embeddings_3 = nn.Parameter(
-                        torch.zeros(
-                            depths[3], num_prompts, embed_dims * 8
-                    ))
-        nn.init.uniform_(
-                        self.deep_prompt_embeddings_3.data, -val, val)
-    def incorporate_prompt(self, x):
-        # combine prompt embeddings with image-patch embeddings
-        B = x.shape[0]
-
-        # "prepend":
-        prompt_embd = self.prompt_dropout(
-                self.prompt_embeddings.expand(B, -1, -1))
-        x = torch.cat((
-                    prompt_embd, x
-                ), dim=1)
-            # (batch_size, n_prompt + n_patches, hidden_dim)
-
-
-        return x
 
     def forward(self, x, semantic_weight=None):
+        """
         if self.semantic_weight >= 0 and semantic_weight == None:
             w = torch.ones(x.shape[0],1) * self.semantic_weight
             w = torch.cat([w, 1-w], axis=-1)
@@ -1512,6 +1470,8 @@ class PromptedSwinTransformer(BaseModule):
         x = self.avgpool(outs[-1])
         x = torch.flatten(x, 1)
         return x, outs
+        """
+        raise NotImplementedError
 class PromptedSwinBlockSequence(BaseModule):
     def __init__(self,
                  num_prompts,
@@ -1561,31 +1521,15 @@ class PromptedSwinBlockSequence(BaseModule):
         self.downsample = downsample
         self.num_prompts=num_prompts
     def forward(self, x, hw_shape, deep_prompt_embd=None):
+        # NOTE make it compatible with no prompt versions
         # add the prompt embed before each blk call
         B = x.shape[0]  # batchsize
         num_blocks = len(self.blocks)
-        if deep_prompt_embd.shape[0] != num_blocks:
-                # first layer
-                for i in range(num_blocks):
-                    if i == 0:
-                        x = self.blocks[i](x,hw_shape)
-
-                    else:
-                        prompt_emb = deep_prompt_embd[i-1].expand(B, -1, -1)
-                        x = torch.cat(
-                            (prompt_emb, x[:, self.num_prompts:, :]),
-                            dim=1
-                        )
-                        x = self.blocks[i](x,hw_shape)
-        else:
-                # other layers
-                for i in range(num_blocks):
-                    prompt_emb = deep_prompt_embd[i].expand(B, -1, -1)
-                    x = torch.cat(
-                        (prompt_emb, x[:, self.num_prompts:, :]),
-                        dim=1
-                    )
-                    x = self.blocks[i](x,hw_shape)
+        for i in range(num_blocks):
+            prompt_emb = deep_prompt_embd[i].expand(B, -1, -1)
+            x = torch.cat([prompt_emb, x],dim=1)
+            x = self.blocks[i](x,hw_shape)
+            x=x[:, self.num_prompts:, :]
 
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
@@ -1916,7 +1860,424 @@ class PromptedPatchMerging(PatchMerging):
         x = self.norm(x) if self.norm else x
         x = self.reduction(x)
         return x, output_size
-    
+
+# NOTE these are for creating the swin blocks. forward operations and prompt embeddings are managed outside
+class PrefixPromptedSwinTransformer(BaseModule):
+    def __init__(self,
+                 prompt_start_stage,# [1,2,3,4]
+                 num_prompts,
+                 pretrain_img_size=224,
+                 in_channels=3,
+                 embed_dims=96,
+                 patch_size=4,
+                 window_size=7,
+                 mlp_ratio=4,
+                 depths=(2, 2, 6, 2),
+                 num_heads=(3, 6, 12, 24),
+                 strides=(4, 2, 2, 2),
+                 out_indices=(0, 1, 2, 3),
+                 qkv_bias=True,
+                 qk_scale=None,
+                 patch_norm=True,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 drop_path_rate=0.1,
+                 use_abs_pos_embed=False,
+                 act_cfg=dict(type='GELU'),
+                 norm_cfg=dict(type='LN'),
+                 with_cp=False,
+                 pretrained=None,
+                 init_cfg=None,
+                 semantic_weight=0.0):
+        if isinstance(pretrain_img_size, int):
+            pretrain_img_size = to_2tuple(pretrain_img_size)
+        elif isinstance(pretrain_img_size, tuple):
+            if len(pretrain_img_size) == 1:
+                pretrain_img_size = to_2tuple(pretrain_img_size[0])
+            assert len(pretrain_img_size) == 2, \
+                f'The size of image should have length 1 or 2, ' \
+                f'but got {len(pretrain_img_size)}'
+
+        assert not (init_cfg and pretrained), \
+            'init_cfg and pretrained cannot be specified at the same time'
+        if isinstance(pretrained, str):
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+        elif pretrained is None:
+            self.init_cfg = init_cfg
+        else:
+            raise TypeError('pretrained must be a str or None')
+
+        super(PrefixPromptedSwinTransformer, self).__init__()
+
+        num_layers = len(depths)
+        self.out_indices = out_indices
+        self.use_abs_pos_embed = use_abs_pos_embed
+
+        assert strides[0] == patch_size, 'Use non-overlapping patch embed.'
+
+
+        if self.use_abs_pos_embed:
+            patch_row = pretrain_img_size[0] // patch_size
+            patch_col = pretrain_img_size[1] // patch_size
+            num_patches = patch_row * patch_col
+            self.absolute_pos_embed = nn.Parameter(
+                torch.zeros((1, num_patches, embed_dims)))
+
+        self.drop_after_pos = nn.Dropout(p=drop_rate)
+
+        # set stochastic depth decay rule
+        total_depth = sum(depths)
+        dpr = [
+            x.item() for x in torch.linspace(0, drop_path_rate, total_depth)
+        ]
+
+        self.stages = ModuleList()
+        self.promt_start_stage=prompt_start_stage
+        in_channels = embed_dims
+        for i in range(num_layers):
+            if i < num_layers - 1:
+                downsample = PatchMerging(
+                    in_channels=in_channels,
+                    out_channels=2 * in_channels,
+                    stride=strides[i + 1],
+                    norm_cfg=norm_cfg if patch_norm else None,
+                    init_cfg=None)
+            else:
+                downsample = None
+
+            stage = SwinBlockSequence(
+                embed_dims=in_channels,
+                num_heads=num_heads[i],
+                feedforward_channels=mlp_ratio * in_channels,
+                depth=depths[i],
+                window_size=window_size,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                drop_rate=drop_rate,
+                attn_drop_rate=attn_drop_rate,
+                drop_path_rate=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                downsample=downsample,
+                act_cfg=act_cfg,
+                norm_cfg=norm_cfg,
+                with_cp=with_cp,
+                init_cfg=None) if i < prompt_start_stage-1 else PrefixPromptedSwinBlockSequence(
+                num_prompts=num_prompts,
+                embed_dims=in_channels,
+                num_heads=num_heads[i],
+                feedforward_channels=mlp_ratio * in_channels,
+                depth=depths[i],
+                window_size=window_size,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                drop_rate=drop_rate,
+                attn_drop_rate=attn_drop_rate,
+                drop_path_rate=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                downsample=downsample,
+                act_cfg=act_cfg,
+                norm_cfg=norm_cfg,
+                with_cp=with_cp,
+                init_cfg=None)
+            self.stages.append(stage)
+            if downsample:
+                in_channels = downsample.out_channels
+
+        self.num_features = [int(embed_dims * 2**i) for i in range(num_layers)]
+        self.strides=[reduce(lambda x,y:x*y,([1]+list(strides))[:i+2]) for i in range(len(strides))]
+        # Add a norm layer for each output
+        for i in out_indices:
+            layer = build_norm_layer(norm_cfg, self.num_features[i])[1]
+            layer_name = f'norm{i}'
+            self.add_module(layer_name, layer)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+
+        # semantic embedding
+        self.semantic_weight = semantic_weight
+        if self.semantic_weight >= 0:
+            self.semantic_embed_w = ModuleList()
+            self.semantic_embed_b = ModuleList()
+            for i in range(len(depths)):
+                if i >= len(depths) - 1:
+                    i = len(depths) - 2
+                semantic_embed_w = nn.Linear(2, self.num_features[i+1])
+                semantic_embed_b = nn.Linear(2, self.num_features[i+1])
+                trunc_normal_init(semantic_embed_w, std=.02, bias=0.)
+                trunc_normal_init(semantic_embed_b, std=.02, bias=0.)
+                self.semantic_embed_w.append(semantic_embed_w)
+                self.semantic_embed_b.append(semantic_embed_b)
+            self.softplus = nn.Softplus()
+        self.num_prompts=num_prompts
+
+    def forward(self, x, semantic_weight=None):
+        """
+        if self.semantic_weight >= 0 and semantic_weight == None:
+            w = torch.ones(x.shape[0],1) * self.semantic_weight
+            w = torch.cat([w, 1-w], axis=-1)
+            semantic_weight = w.cuda()
+        hw_shape=x.shape[2:]
+        x=x.flatten(2).transpose(1, 2)
+
+        if self.use_abs_pos_embed:
+            x = x + self.absolute_pos_embed
+        x = self.drop_after_pos(x)
+        if self.promt_start_stage==0:
+            x=self.incorporate_prompt(x)
+
+        outs = []
+        for i, (stage,deep_prompt_embd) in enumerate(zip(self.stages, [
+                    self.deep_prompt_embeddings_0,
+                    self.deep_prompt_embeddings_1,
+                    self.deep_prompt_embeddings_2,
+                    self.deep_prompt_embeddings_3
+                ])):
+            deep_prompt_embd = self.prompt_dropout(deep_prompt_embd)
+            if i<self.promt_start_stage-1:
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape,deep_prompt_embd)
+            if self.semantic_weight >= 0:
+                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.softplus(sw) + sb
+            if i in self.out_indices:
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(out)
+                out = out.view(-1, *out_hw_shape,
+                               self.num_features[i]).permute(0, 3, 1,
+                                                             2).contiguous()
+                outs.append(out)
+        x = self.avgpool(outs[-1])
+        x = torch.flatten(x, 1)
+        return x, outs
+        """
+        raise NotImplementedError
+class PrefixPromptedSwinBlockSequence(PromptedSwinBlockSequence):
+    def __init__(self,
+                 num_prompts,
+                 embed_dims,
+                 num_heads,
+                 feedforward_channels,
+                 depth,
+                 window_size=7,
+                 qkv_bias=True,
+                 qk_scale=None,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 drop_path_rate=0.,
+                 downsample=None,
+                 act_cfg=dict(type='GELU'),
+                 norm_cfg=dict(type='LN'),
+                 with_cp=False,
+                 init_cfg=None):
+        super(PromptedSwinBlockSequence,self).__init__()
+
+        if isinstance(drop_path_rate, list):
+            drop_path_rates = drop_path_rate
+            assert len(drop_path_rates) == depth
+        else:
+            drop_path_rates = [deepcopy(drop_path_rate) for _ in range(depth)]
+
+        self.blocks = ModuleList()
+        for i in range(depth):
+            block = PrefixPromptedSwinBlock(
+                num_prompts=num_prompts,
+                embed_dims=embed_dims,
+                num_heads=num_heads,
+                feedforward_channels=feedforward_channels,
+                window_size=window_size,
+                shift=False if i % 2 == 0 else True,
+                qkv_bias=qkv_bias,
+                qk_scale=qk_scale,
+                drop_rate=drop_rate,
+                attn_drop_rate=attn_drop_rate,
+                drop_path_rate=drop_path_rates[i],
+                act_cfg=act_cfg,
+                norm_cfg=norm_cfg,
+                with_cp=with_cp,
+                init_cfg=None)
+            self.blocks.append(block)
+
+        self.downsample = downsample
+        self.num_prompts=num_prompts
+
+class PrefixPromptedSwinBlock(BaseModule):
+    def __init__(self,
+                 num_prompts,
+                 embed_dims,
+                 num_heads,
+                 feedforward_channels,
+                 window_size=7,
+                 shift=False,
+                 qkv_bias=True,
+                 qk_scale=None,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 drop_path_rate=0.,
+                 act_cfg=dict(type='GELU'),
+                 norm_cfg=dict(type='LN'),
+                 with_cp=False,
+                 init_cfg=None):
+
+        super(PrefixPromptedSwinBlock, self).__init__()
+
+        self.init_cfg = init_cfg
+        self.with_cp = with_cp
+        self.num_prompts=num_prompts
+
+        self.norm1 = build_norm_layer(norm_cfg, embed_dims)[1]
+        self.attn = PrefixPromptedShiftWindowMSA(
+            num_prompts=num_prompts,
+            embed_dims=embed_dims,
+            num_heads=num_heads,
+            window_size=window_size,
+            shift_size=window_size // 2 if shift else 0,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop_rate=attn_drop_rate,
+            proj_drop_rate=drop_rate,
+            dropout_layer=dict(type='DropPath', drop_prob=drop_path_rate),
+            init_cfg=None)
+
+        self.norm2 = build_norm_layer(norm_cfg, embed_dims)[1]
+        self.ffn = FFN(
+            embed_dims=embed_dims,
+            feedforward_channels=feedforward_channels,
+            num_fcs=2,
+            ffn_drop=drop_rate,
+            dropout_layer=dict(type='DropPath', drop_prob=drop_path_rate),
+            act_cfg=act_cfg,
+            add_identity=True,
+            init_cfg=None)
+    def forward(self, x, hw_shape):
+
+        def _inner_forward(x):
+            prompts,x=x[:,:self.num_prompts,:],x[:,self.num_prompts:,:]
+            identity = x
+            x = self.norm1(x)
+            x = self.attn(torch.cat([prompts,x],dim=1), hw_shape)
+            x=x[:,self.num_prompts:,:]
+            x = x + identity
+
+            identity = x
+            x = self.norm2(x)
+            x = self.ffn(x, identity=identity)
+            # add them back for compatibility
+            return torch.cat([prompts,x],dim=1)
+
+        if self.with_cp and x.requires_grad:
+            x = cp.checkpoint(_inner_forward, x)
+        else:
+            x = _inner_forward(x)
+
+        return x
+class PrefixPromptedShiftWindowMSA(PromptedShiftWindowMSA):
+    def __init__(self,
+                 num_prompts,
+                 embed_dims,
+                 num_heads,
+                 window_size,
+                 shift_size=0,
+                 qkv_bias=True,
+                 qk_scale=None,
+                 attn_drop_rate=0,
+                 proj_drop_rate=0,
+                 dropout_layer=dict(type='DropPath', drop_prob=0.),
+                 init_cfg=None):
+        super(ShiftWindowMSA,self).__init__()
+        self.num_prompts = num_prompts
+        self.window_size = window_size
+        self.shift_size = shift_size
+        assert 0 <= self.shift_size < self.window_size
+
+        self.w_msa = PrefixPromptedWindowMSA(
+            num_prompts=num_prompts,
+            embed_dims=embed_dims,
+            num_heads=num_heads,
+            window_size=to_2tuple(window_size),
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop_rate=attn_drop_rate,
+            proj_drop_rate=proj_drop_rate,
+            init_cfg=None)
+
+        self.drop = build_dropout(dropout_layer)
+        self.prompt_location = "prepend"
+class PrefixPromptedWindowMSA(PromptedWindowMSA):
+    def forward(self, x, mask=None):
+        """
+        Args:
+            x (tensor): input features with shape of (num_windows*B, N, C)
+            mask (tensor | None, Optional): mask with shape of (num_windows,
+                Wh*Ww, Wh*Ww), value should be between (-inf, 0].
+        """
+        prompts=x[:,:self.num_prompts,:]
+        x=x[:,self.num_prompts:,:]
+
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
+                                  C // self.num_heads).permute(2, 0, 3, 1, 4)
+        # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2] # B, n_heads, N (win len), C // n_heads
+
+        len_pk=int(prompts.shape[1]/2)
+        pk,pv=prompts[:,:len_pk,:],prompts[:,len_pk:,:]
+        pk = pk.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        pv = pv.reshape(B, -1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = torch.cat((pk,k), dim=2)# B, n_heads, len_p + len_win, C // n_heads
+        v = torch.cat((pv,v), dim=2)
+
+        q = q * self.scale
+        attn = (q @ k.transpose(-2, -1)) # B, n_heads, len_win, len_p + len_win
+
+        relative_position_bias = self.relative_position_bias_table[
+            self.relative_position_index.view(-1)].view(
+                self.window_size[0] * self.window_size[1],
+                self.window_size[0] * self.window_size[1],
+                -1)  # Wh*Ww,Wh*Ww,nH
+        # n_heads, len_win, len_win
+        relative_position_bias = relative_position_bias.permute(
+            2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+        
+        # account for prompt nums for relative_position_bias
+        # attn: [1920, 6, 649, 649]
+        # relative_position_bias: [6, 49, 49])
+
+        if self.prompt_location == "prepend":
+            # expand relative_position_bias
+            _C, _H, _W = relative_position_bias.shape
+
+            relative_position_bias = torch.cat((
+                torch.zeros(_C, _H, len_pk, device=attn.device),
+                relative_position_bias
+                ), dim=-1) # n_heads, len_win, len_p + len_win
+
+        attn = attn + relative_position_bias.unsqueeze(0)
+
+        if mask is not None:
+            nW = mask.shape[0]
+            if self.prompt_location == "prepend":
+                # expand relative_position_bias
+                mask = torch.cat((
+                    torch.zeros(
+                        nW, _H, len_pk,
+                        device=attn.device),
+                    mask), dim=-1)
+            attn = attn.view(B // nW, nW, self.num_heads, N,
+                             -1) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N+len_pk)
+        attn = self.softmax(attn)
+
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return torch.cat([prompts,x],dim=1) # add them back for compatibility
+class PrefixPromptedPatchMerging(PromptedPatchMerging):
+    pass
+
 def swin_base_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., **kwargs):
     model = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
     return model
@@ -1928,3 +2289,91 @@ def swin_small_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0
 def swin_tiny_patch4_window7_224(img_size=224,drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0., **kwargs):
     model = SwinTransformer(pretrain_img_size = img_size, patch_size=4, window_size=7, embed_dims=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, **kwargs)
     return model
+from copy import deepcopy
+class SideSwinTransformer(SwinTransformer):
+
+    def __init__(self,
+                 side_start_stage,#[1,2,3,4]
+                 *args,**kws):
+        super().__init__(*args,**kws)
+        self.side_start_stage=side_start_stage
+        self.init_side()
+        
+    def init_side(self):
+        self.side_stages = ModuleList()
+        if self.semantic_weight >= 0:
+            self.side_semantic_embed_w=ModuleList()
+            self.side_semantic_embed_b=ModuleList()
+        for i in range(self.side_start_stage-1,len(self.stages)):
+            stage = deepcopy(self.stages[i])
+            self.side_stages.append(stage)
+            if hasattr(self,f'norm{i}'):
+                layer = deepcopy(getattr(self,f'norm{i}'))
+                layer_name = f'side_norm{i}'
+                self.add_module(layer_name, layer)
+            # semantic embedding
+            if self.semantic_weight >= 0:
+                self.side_semantic_embed_w.append(deepcopy(self.semantic_embed_w[i]))
+                self.side_semantic_embed_b.append(deepcopy(self.semantic_embed_b[i]))
+    def load_side(self, state_dict):
+        resume=False
+        for k in state_dict:
+            if "side_stages" in k:
+                resume=True
+                break
+        if not resume:
+            stages_params=OrderedDict()
+            norm_params={i : OrderedDict() for i in range(0,len(self.stages)) if hasattr(self,f'side_norm{i}')}
+            semantic_emb_w_params=OrderedDict()
+            semantic_emb_b_params=OrderedDict()
+            for k,v in state_dict.items():
+                if k.startswith("swin."):
+                    k=k[len("swin."):]
+                if k.startswith("stages.") :
+                    k_kws=k.split(".")
+                    idx=int(k_kws[1])
+                    if idx +1>=self.side_start_stage:
+                        n_idx=idx-self.side_start_stage+1
+                        n_k=".".join([str(n_idx)]+k_kws[2:])
+                        stages_params[n_k]=v                    
+                elif k.startswith("norm"):
+                    idx=int(k[4])
+                    if idx +1>=self.side_start_stage and hasattr(self,f'side_norm{idx}'):
+                        k_kws=k.split(".")
+                        nk=".".join(k_kws[1:])
+                        norm_params[idx][nk]=v
+                elif k.startswith("semantic_embed_w."):
+                    k_kws=k.split(".")
+                    idx=int(k_kws[1])
+                    if idx +1>=self.side_start_stage:
+                        n_idx=idx-self.side_start_stage+1
+                        n_k=".".join([str(n_idx)]+k_kws[2:])
+                        semantic_emb_w_params[n_k]=v 
+                elif k.startswith("semantic_embed_b."):
+                    k_kws=k.split(".")
+                    idx=int(k_kws[1])
+                    if idx +1>=self.side_start_stage:
+                        n_idx=idx-self.side_start_stage+1
+                        n_k=".".join([str(n_idx)]+k_kws[2:])
+                        semantic_emb_b_params[n_k]=v 
+            self.side_stages.load_state_dict(stages_params)
+            print("parameters of *side_stages* haved been loaded")
+            for i,p in norm_params.items():
+                getattr(self,f'side_norm{i}').load_state_dict(p)
+                print(f"parameters of *side_norm{i}* haved been loaded")
+            self.side_semantic_embed_w.load_state_dict(semantic_emb_w_params)
+            print("parameters of *side_semantic_embed_w* haved been loaded")
+            self.side_semantic_embed_b.load_state_dict(semantic_emb_b_params)
+            print("parameters of *side_semantic_embed_b* haved been loaded")
+
+class SidePromptedSwinTransformer(SideSwinTransformer,PromptedSwinTransformer):
+    def __init__(self, side_start_stage, *args, **kws):
+        PromptedSwinTransformer.__init__(self, *args, **kws)
+        self.side_start_stage=side_start_stage
+        self.init_side()
+    
+class SidePrefixPromptedSwinTransformer(SideSwinTransformer,PrefixPromptedSwinTransformer):
+    def __init__(self, side_start_stage, *args, **kws):
+        PrefixPromptedSwinTransformer.__init__(self, *args, **kws)
+        self.side_start_stage=side_start_stage
+        self.init_side()
