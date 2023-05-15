@@ -1,0 +1,21 @@
+_BASE_: "l2p-ps_prw.yaml"
+MODEL:
+  WEIGHTS: "outputs/swin_rcnn/l2p-ps_prw/model_final.pth"
+PERSON_SEARCH:
+  PROMPT:
+    CURRECT_TASK: 1
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+SOLVER:
+  STEPS: (44832,89664)
+  MAX_ITER: 93400 # 1868 * 50
+  CHECKPOINT_PERIOD: 3736
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("PRW_Gallery","PRW_Query","CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") #
+TEST:
+  EVAL_PERIOD: 3736
+OUTPUT_DIR: "outputs/swin_rcnn/l2p-ps_prw2cuhk"

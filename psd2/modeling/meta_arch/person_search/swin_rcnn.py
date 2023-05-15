@@ -602,7 +602,7 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         patch_embed = ret["backbone"]
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg=cfg.PERSON_SEARCH.PROMPT
-        if prompt_cfg.PROMPT_TYPE=="L2P":
+        if "L2P" in prompt_cfg.PROMPT_TYPE:
             num_prompts=prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
         else:
             num_prompts=prompt_cfg.NUM_PROMPTS
@@ -644,6 +644,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD
                     )
+            elif prompt_cfg.PROMPT_TYPE=="L2PO":
+                prompt_stage=prompts.L2POrg(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD
+                    )
             else: # CODAPrompt
                 prompt_stage=prompts.CodaPrompt(
                     emb_d=swin.num_features[si],
@@ -660,6 +672,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         side_stage_prompts=nn.ModuleList()
         if prompt_cfg.PROMPT_TYPE=="L2P":
             prompt_stage=prompts.L2P(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD
+                    )
+        elif prompt_cfg.PROMPT_TYPE=="L2PO":
+            prompt_stage=prompts.L2POrg(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -949,7 +973,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         patch_embed = ret["backbone"]
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg=cfg.PERSON_SEARCH.PROMPT
-        if prompt_cfg.PROMPT_TYPE=="L2P":
+        if "L2P" in prompt_cfg.PROMPT_TYPE:
             num_prompts=prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
         else:
             num_prompts=prompt_cfg.NUM_PROMPTS
@@ -991,6 +1015,18 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD
                     )
+            elif prompt_cfg.PROMPT_TYPE=="L2PO":
+                prompt_stage=prompts.L2POrg(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD
+                    )
             else: # CODAPrompt
                 prompt_stage=prompts.CodaPrompt(
                     emb_d=swin.num_features[si],
@@ -1007,6 +1043,18 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         side_stage_prompts=nn.ModuleList()
         if prompt_cfg.PROMPT_TYPE=="L2P":
             prompt_stage=prompts.L2P(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD
+                    )
+        elif prompt_cfg.PROMPT_TYPE=="L2PO":
+            prompt_stage=prompts.L2POrg(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,

@@ -1,0 +1,7 @@
+_BASE_: "l2p-ps_prw.yaml"
+PERSON_SEARCH:
+  PROMPT:
+    PROMPT_TYPE: "L2PO"
+    POOL_SIZE: 8 # 4 x 2
+    LOSS_WEIGHT: 0.5
+OUTPUT_DIR: "outputs/swin_rcnn/l2po-ps_prw"
