@@ -60,7 +60,7 @@ PERSON_SEARCH:
         ATTN_DROPOUT: 0.0
         SEMANTIC_WEIGHT: 0.6
         OUT_CHANNELS: 768
-        WITH_CP: False
+        WITH_CP: True
   REID:
     ID_ASSIGN:
       NAME: "det"

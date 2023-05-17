@@ -1,0 +1,22 @@
+_BASE_: "l2p-ps_prw.yaml"
+MODEL:
+  META_ARCHITECTURE: "PrefixPromptedSwinF4RCNNPS"
+PERSON_SEARCH:
+  PROMPT: 
+    # TODO: stage-wise 
+    NUM_PROMPTS: 16
+    PROMPT_TYPE: "Fixed"
+  REID:
+    LOSS:
+      OIM:
+        LOSS_WEIGHT: 1.0
+SOLVER:
+  STEPS: (8568,17136)
+  BASE_LR: 0.002
+  MAX_ITER: 21420 # 357 * 60
+  CHECKPOINT_PERIOD: 714
+  GAMMA: 0.1
+  IMS_PER_BATCH: 16
+TEST:
+  EVAL_PERIOD: 714
+OUTPUT_DIR: "outputs/swin_rcnn/prompt-ps-prefix-16_prw"

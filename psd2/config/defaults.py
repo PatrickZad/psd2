@@ -532,13 +532,13 @@ _C.MODEL.RESNETS.DEFORM_NUM_GROUPS = 1
 # Person Searcher
 # ---------------------------------------------------------------------------- #
 _C.PERSON_SEARCH = CN(new_allowed=True)
-_C.PERSON_SEARCH.DET = CN()
+_C.PERSON_SEARCH.DET = CN(new_allowed=True)
 _C.PERSON_SEARCH.DET.NUM_CLASSES = 1
 _C.PERSON_SEARCH.DET.MODEL = CN(new_allowed=True)
 _C.PERSON_SEARCH.DET.LOSS = CN(new_allowed=True)
 _C.PERSON_SEARCH.DET.LOSS.LOSS_WEIGHTS = CN(new_allowed=True)
 
-_C.PERSON_SEARCH.REID = CN()
+_C.PERSON_SEARCH.REID = CN(new_allowed=True)
 _C.PERSON_SEARCH.REID.MODEL = CN(new_allowed=True)
 _C.PERSON_SEARCH.REID.MODEL.EMB_DIM = 256
 _C.PERSON_SEARCH.REID.ID_ASSIGN = CN(new_allowed=True)
