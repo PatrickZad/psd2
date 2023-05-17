@@ -356,6 +356,52 @@ class L2POrg(nn.Module):
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
         
         return p_return, p_loss
+class L2POrgCos(L2POrg):
+    def forward(self, x_query, vis_mark,train=False, task_id=None):
+        """
+        select all layers in one pass
+        NOTE assume x_query to be batch_size * num_layer * c
+        """
+        B, nL, C = x_query.shape
+        assert nL == len(self.e_layers)
+        # e prompts
+        p_return=[]
+        p_loss=0
+        vis_attn=[]
+        for l in range(nL):
+            K = getattr(self,f'e_k_{l}') # 0 based indexing here
+            p = getattr(self,f'e_p_{l}') # 0 based indexing here
+            
+            # cosine similarity to match keys/querries
+            n_K = nn.functional.normalize(K, dim=1)
+            q = nn.functional.normalize(x_query[:,l], dim=1).detach()
+            cos_sim = torch.einsum('bj,kj->bk', q, n_K)
+            if train:
+                vis_attn.append(cos_sim.detach())
+                start = self.task_count * self.top_k
+                end = (self.task_count + 1) * self.top_k
+                single_prompt_mask = torch.arange(start, end).to(x_query.device)
+                prompt_mask = single_prompt_mask.unsqueeze(0).expand(B, -1)
+                P_ = p[prompt_mask].reshape(B,self.top_k*self.e_p_length,-1)
+                selected_k=n_K[prompt_mask] # B, top_k, key_d
+                sim=(selected_k*q.unsqueeze(1)).sum(dim=-1) # cos sim: B, top_k
+                reduced_loss=torch.sum(1.0-sim) / q.shape[0]
+                p_loss+=reduced_loss
+            else:
+                top_k = torch.topk(cos_sim, self.top_k, dim=1)
+                k_idx = top_k.indices
+                P_ = p[k_idx].reshape(B,self.top_k*self.e_p_length,-1)
+            p_return.append(P_)
+        p_return=torch.stack(p_return,dim=0)
+        if self.vis_period > 0:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img=mat_heatmap(torch.cat(vis_attn,dim=-1),vmin=-1.0,vmax=1.0)
+                vis_img=torch.tensor(vis_img,dtype=torch.float32).permute(2, 0, 1)/255.0
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        
+        return p_return, p_loss
+
 # note - ortho init has not been found to help l2p/dual prompt
 def tensor_prompt(*dims, ortho=False):
     p = torch.nn.Parameter(torch.FloatTensor(*dims), requires_grad=True)
