@@ -1,0 +1,4 @@
+_BASE_: "base-ps_prw.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4RCNNPS2"
+OUTPUT_DIR: "outputs/swin_rcnn/base-ps2_prw"

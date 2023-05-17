@@ -1,0 +1,16 @@
+_BASE_: "base-ps_prw.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4RCNNPS2BoxAug"
+PERSON_SEARCH:
+  REID:
+    BOX_AUGMENTATION:
+      NAME: "dn_detr"
+      H_CENTER: 0.4
+      H_SCALE: 0.2
+      NUM_LABELED: 9
+      APPEND_GT: True
+      NUM_UNLABLED: 9
+    LOSS:
+      OIM:
+        LOSS_WEIGHT: 1.0
+OUTPUT_DIR: "outputs/swin_rcnn/base-ps2_prw_box-aug_1oim"
