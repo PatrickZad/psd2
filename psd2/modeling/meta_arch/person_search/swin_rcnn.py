@@ -87,7 +87,8 @@ class SwinF4RCNN(SearchBase):
 
     def load_state_dict(self, state_dict, strict):
         out = super().load_state_dict(state_dict, strict)
-        self.swin.load_side(state_dict)
+        with torch.no_grad():
+            self.swin.load_side(state_dict)
         return out
 
     @classmethod

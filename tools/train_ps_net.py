@@ -23,7 +23,7 @@ import logging
 import os
 from collections import OrderedDict
 import torch
-
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import psd2.utils.comm as comm
 from psd2.checkpoint import DetectionCheckpointer
 from psd2.config import get_cfg
