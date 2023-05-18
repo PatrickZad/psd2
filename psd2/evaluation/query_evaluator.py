@@ -63,8 +63,6 @@ class QueryEvaluator(DatasetEvaluator):
         self.ignore_cam_id = False
         self.aps = {st: [] for st in self.det_score_thresh}
         self.accs = {st: [] for st in self.det_score_thresh}
-        self.aps_cws = {st: [] for st in self.det_score_thresh}
-        self.accs_cws = {st: [] for st in self.det_score_thresh}
         # make vis dirs
         self.vis = vis
         if not vis:
@@ -109,24 +107,16 @@ class QueryEvaluator(DatasetEvaluator):
             comm.synchronize()
             aps_all = comm.gather(self.aps, dst=0)
             accs_all = comm.gather(self.accs, dst=0)
-            aps_cws_all = comm.gather(self.aps_cws, dst=0)
-            accs_cws_all = comm.gather(self.accs_cws, dst=0)
             if self.vis:
                 scores_all = comm.gather(self.score_statistics)
             if not comm.is_main_process():
                 return {}
             aps = {}
             accs = {}
-            aps_cws = {}
-            accs_cws = {}
             score_statistics = {}
             for dst in self.det_score_thresh:
                 aps[dst] = list(itertools.chain(*[ap[dst] for ap in aps_all]))
                 accs[dst] = list(itertools.chain(*[acc[dst] for acc in accs_all]))
-                aps_cws[dst] = list(itertools.chain(*[ap[dst] for ap in aps_cws_all]))
-                accs_cws[dst] = list(
-                    itertools.chain(*[acc[dst] for acc in accs_cws_all])
-                )
                 if self.vis:
                     score_statistics[dst] = {"pos": [], "neg": []}
                     for sub_stat in scores_all:
@@ -153,8 +143,6 @@ class QueryEvaluator(DatasetEvaluator):
         else:
             aps = self.aps
             accs = self.accs
-            aps_cws = self.aps_cws
-            accs_cws = self.accs_cws
             score_statistics = {}
             if self.vis:
                 for dst in self.det_score_thresh:
@@ -182,22 +170,13 @@ class QueryEvaluator(DatasetEvaluator):
         for dst in self.det_score_thresh:
             logger.info("Search eval_{:.2f} on {} queries. ".format(dst, len(aps[dst])))
             mAP = np.mean(aps[dst])
-            mAP_cws = np.mean(aps_cws[dst])
             search_result["search"].update({"mAP_{:.2f}".format(dst): mAP})
-            search_result["search"].update({"mAP_{:.2f}_cws".format(dst): mAP_cws})
             acc = np.mean(np.array(accs[dst]), axis=0)
             # logger.info(str(acc))
             for i, v in enumerate(acc.tolist()):
                 # logger.info("{:.2f} on {} acc. ".format(v, i))
                 k = self.topks[i]
                 search_result["search"].update({"top{:2d}_{:.2f}".format(k, dst): v})
-            acc_cws = np.mean(np.array(accs_cws[dst]), axis=0)
-            for i, v in enumerate(acc_cws.tolist()):
-                # logger.info("{:.2f} on {} acc. ".format(v, i))
-                k = self.topks[i]
-                search_result["search"].update(
-                    {"top{:2d}_{:.2f}_cws".format(k, dst): v}
-                )
         if self.vis:
             for st, scores in score_statistics.items():
                 pos_scores = scores["pos"]

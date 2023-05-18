@@ -27,16 +27,12 @@ class PrwQueryEvaluatorP(QueryEvaluator):
         super().__init__(*args, **kws)
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
-        self.aps_cws_mlv = {st: [] for st in self.det_score_thresh}
-        self.accs_cws_mlv = {st: [] for st in self.det_score_thresh}
         self.inf_results = []
 
     def reset(self):
         super().reset()
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
-        self.aps_cws_mlv = {st: [] for st in self.det_score_thresh}
-        self.accs_cws_mlv = {st: [] for st in self.det_score_thresh}
 
     def process(self, inputs, outputs):
         """
@@ -90,28 +86,18 @@ class PrwQueryEvaluatorP(QueryEvaluator):
                 (
                     rst_aps,
                     rst_accs,
-                    rst_aps_cws,
-                    rst_accs_cws,
                     rst_aps_mlv,
                     rst_accs_mlv,
-                    rst_aps_cws_mlv,
-                    rst_accs_cws_mlv,
                 ) = b_rst[0]
                 for st in self.det_score_thresh:
                     self.aps[st].extend(rst_aps[st])
                     self.accs[st].extend(rst_accs[st])
                     self.aps_mlv[st].extend(rst_aps_mlv[st])
                     self.accs_mlv[st].extend(rst_accs_mlv[st])
-                    self.aps_cws[st].extend(rst_aps_cws[st])
-                    self.accs_cws[st].extend(rst_accs_cws[st])
-                    self.aps_cws_mlv[st].extend(rst_aps_cws_mlv[st])
-                    self.accs_cws_mlv[st].extend(rst_accs_cws_mlv[st])
                 pbar.update(1)
         mix_eval_results = super().evaluate()
         aps = self.aps_mlv
         accs = self.accs_mlv
-        aps_cws = self.aps_cws_mlv
-        accs_cws = self.accs_cws_mlv
 
         for dst in self.det_score_thresh:
             logger.info(
@@ -120,9 +106,7 @@ class PrwQueryEvaluatorP(QueryEvaluator):
                 )
             )
             mAP = np.mean(aps[dst])
-            mAP_cws = np.mean(aps_cws[dst])
             mix_eval_results["search"].update({"mAP_{:.2f}_mlv".format(dst): mAP})
-            mix_eval_results["search"].update({"mAP_{:.2f}_cws".format(dst): mAP_cws})
             acc = np.mean(accs[dst], axis=0)
             # logger.info(str(acc))
             for i, v in enumerate(acc.tolist()):
@@ -130,13 +114,6 @@ class PrwQueryEvaluatorP(QueryEvaluator):
                 k = self.topks[i]
                 mix_eval_results["search"].update(
                     {"top{:2d}_{:.2f}_mlv".format(k, dst): v}
-                )
-            acc_cws = np.mean(np.array(accs_cws[dst]), axis=0)
-            for i, v in enumerate(acc_cws.tolist()):
-                # logger.info("{:.2f} on {} acc. ".format(v, i))
-                k = self.topks[i]
-                mix_eval_results["search"].update(
-                    {"top{:2d}_{:.2f}_cws".format(k, dst): v}
                 )
         return copy.deepcopy(mix_eval_results)
 
@@ -155,10 +132,6 @@ class EvaluatorDataset(Dataset):
         rst_accs_mlv = {st: [] for st in self.eval_ref.det_score_thresh}
         rst_aps = {st: [] for st in self.eval_ref.det_score_thresh}
         rst_accs = {st: [] for st in self.eval_ref.det_score_thresh}
-        rst_aps_cws_mlv = {st: [] for st in self.eval_ref.det_score_thresh}
-        rst_accs_cws_mlv = {st: [] for st in self.eval_ref.det_score_thresh}
-        rst_aps_cws = {st: [] for st in self.eval_ref.det_score_thresh}
-        rst_accs_cws = {st: [] for st in self.eval_ref.det_score_thresh}
         for bi, in_dict in enumerate(inputs):
             q_gt_instances, q_pred_instances = in_dict
             q_imgid = q_gt_instances.image_id
@@ -167,12 +140,10 @@ class EvaluatorDataset(Dataset):
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores = {dst: [] for dst in self.eval_ref.det_score_thresh}
-            y_scores_cws = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             count_tps = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             y_trues_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
             y_scores_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
-            y_scores_cws_mlv = {dst: [] for dst in self.eval_ref.det_score_thresh}
             count_gts_mlv = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             count_tps_mlv = {dst: 0 for dst in self.eval_ref.det_score_thresh}
             # Find all occurence of this query
@@ -243,7 +214,6 @@ class EvaluatorDataset(Dataset):
                     det, feat_g = self.eval_ref._get_gallery_dets(
                         gallery_imname, dst
                     ), self.eval_ref._get_gallery_feats(gallery_imname, dst)
-                    feat_g_cws = feat_g * det[:, 4:5]
                     # no detection in this gallery, skip it
                     if det.shape[0] == 0:
                         continue
@@ -253,11 +223,9 @@ class EvaluatorDataset(Dataset):
                     sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
                         1
                     )  # n x 1 -> n
-                    sim_cws = torch.mm(feat_g_cws, feat_q.view(-1)[:, None]).squeeze(1)
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
-                    name2sim[gallery_imname + "cws"] = sim_cws
                     # save for vis
                     g_img_ids.append(gallery_imname)
 
@@ -282,23 +250,16 @@ class EvaluatorDataset(Dataset):
                                 if q_cid != g_cid:
                                     count_tps_mlv[dst] += 1
                                 break
-                        inds = torch.argsort(sim_cws)
-                        inds = inds.tolist()[::-1]
-                        inds = torch.tensor(inds, dtype=torch.long)
-                        sim_cws = name2sim[gallery_imname + "cws"][inds]
                     y_trues[dst].extend(label.tolist())
                     y_scores[dst].extend(sim.tolist())
-                    y_scores_cws[dst].extend(sim_cws.tolist())
                     # multi view
                     if g_cid != q_cid:
                         y_trues_mlv[dst].extend(label.tolist())
                         y_scores_mlv[dst].extend(sim.tolist())
-                        y_scores_cws_mlv[dst].extend(sim_cws.tolist())
 
                 # 2. Compute AP for this probe (need to scale by recall rate)
 
                 y_score = np.asarray(y_scores[dst])
-                y_score_cws = np.asarray(y_scores_cws[dst])
                 y_true = np.asarray(y_trues[dst])
                 assert count_tps[dst] <= count_gts[dst]
                 recall_rate = count_tps[dst] * 1.0 / count_gts[dst]
@@ -307,28 +268,15 @@ class EvaluatorDataset(Dataset):
                     if count_tps[dst] == 0
                     else average_precision_score(y_true, y_score) * recall_rate
                 )
-                ap_cws = (
-                    0
-                    if count_tps[dst] == 0
-                    else average_precision_score(y_true, y_score_cws) * recall_rate
-                )
                 rst_aps[dst].append(ap)
-                rst_aps_cws[dst].append(ap_cws)
                 inds = np.argsort(y_score)[::-1]
                 y_score = y_score[inds]
                 y_true = y_true[inds]
                 rst_accs[dst].append(
                     [min(1, sum(y_true[:k])) for k in self.eval_ref.topks]
                 )
-                inds = np.argsort(y_score_cws)[::-1]
-                y_score_cws = y_score_cws[inds]
-                y_true_cws = y_true[inds]
-                rst_accs_cws[dst].append(
-                    [min(1, sum(y_true_cws[:k])) for k in self.eval_ref.topks]
-                )
                 # mlv
                 y_score_mlv = np.asarray(y_scores_mlv[dst])
-                y_score_cws_mlv = np.asarray(y_scores_cws_mlv[dst])
                 y_true_mlv = np.asarray(y_trues_mlv[dst])
                 assert count_tps_mlv[dst] <= count_gts_mlv[dst]
                 recall_rate_mlv = count_tps_mlv[dst] * 1.0 / count_gts_mlv[dst]
@@ -338,25 +286,13 @@ class EvaluatorDataset(Dataset):
                     else average_precision_score(y_true_mlv, y_score_mlv)
                     * recall_rate_mlv
                 )
-                ap_cws_mlv = (
-                    0
-                    if count_tps_mlv[dst] == 0
-                    else average_precision_score(y_true_mlv, y_score_cws_mlv)
-                    * recall_rate_mlv
-                )
+
                 rst_aps_mlv[dst].append(ap_mlv)
-                rst_aps_cws_mlv[dst].append(ap_cws_mlv)
                 inds_mlv = np.argsort(y_score_mlv)[::-1]
                 y_score_mlv = y_score_mlv[inds_mlv]
-                y_true_mlv_o = y_true_mlv[inds_mlv]
+                y_true_mlv = y_true_mlv[inds_mlv]
                 rst_accs_mlv[dst].append(
-                    [min(1, sum(y_true_mlv_o[:k])) for k in self.eval_ref.topks]
-                )
-                inds = np.argsort(y_score_cws_mlv)[::-1]
-                y_score_cws_mlv = y_score_cws_mlv[inds]
-                y_true_cws_mlv = y_true_mlv[inds]
-                rst_accs_cws_mlv[dst].append(
-                    [min(1, sum(y_true_cws_mlv[:k])) for k in self.eval_ref.topks]
+                    [min(1, sum(y_true_mlv[:k])) for k in self.eval_ref.topks]
                 )
                 # 3. Save vis
                 self.eval_ref._vis_search(
@@ -371,10 +307,7 @@ class EvaluatorDataset(Dataset):
         return (
             rst_aps,
             rst_accs,
-            rst_aps_cws,
-            rst_accs_cws,
             rst_aps_mlv,
             rst_accs_mlv,
-            rst_aps_cws_mlv,
-            rst_accs_cws_mlv,
+
         )

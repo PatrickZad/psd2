@@ -1,0 +1,14 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4PSReidFrozen"
+  WEIGHTS: "Data/model_zoo/swin_tiny_patch4_window7_224_22k_d2.pkl"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        DEPTH: [2,2,6,2]
+        SEMANTIC_WEIGHT: 0.0
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery","PRW_Query") #
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-tinyign-frozen_prw"

@@ -6,8 +6,6 @@ based on
 """
 import torch
 from torch import nn
-from psd2.config import configurable
-from psd2.utils import comm
 
 
 def normalize(x, axis=-1):
@@ -98,30 +96,20 @@ def hard_example_mining(dist_mat, labels1, labels2, return_inds=False):
     return dist_ap, dist_an
 
 
-# this is to support taking unlabeled persons as negtives only
 class TripletLoss(object):
     """Modified from Tong Xiao's open-reid (https://github.com/Cysu/open-reid).
     Related Triplet Loss theory can be found in paper 'In Defense of the Triplet
     Loss for Person Re-Identification'."""
 
-    @configurable
-    def __init__(self, margin=None, do_norm=False):
+    def __init__(self, margin=None, reduction="none"):
         self.margin = margin
-        self.do_norm = do_norm
         if margin is not None:
-            self.ranking_loss = nn.MarginRankingLoss(margin=margin, reduction="none")
+            self.ranking_loss = nn.MarginRankingLoss(margin=margin, reduction=reduction)
         else:
-            self.ranking_loss = nn.SoftMarginLoss(reduction="none")
+            self.ranking_loss = nn.SoftMarginLoss(reduction=reduction)
 
-    @classmethod
-    def from_config(cls, loss_cfg):
-        assert hasattr(loss_cfg, "TRI")
-        tri_cfg = loss_cfg.TRI
-        return {"margin": tri_cfg.MARGIN, "do_norm": tri_cfg.NORM_FEAt}
-
-    def __call__(self, feats1, feats2, labels1, labels2):
-        # feats1 are anchors
-        if self.norm:
+    def __call__(self, feats1, feats2, labels1, labels2, normalize_feature=False):
+        if normalize_feature:
             feats1 = normalize(feats1, axis=-1)
             feats2 = normalize(feats2, axis=-1)
         dist_mat = torch.cdist(feats1[None], feats2[None]).squeeze(
@@ -133,14 +121,44 @@ class TripletLoss(object):
             loss = self.ranking_loss(dist_an, dist_ap, y)
         else:
             loss = self.ranking_loss(dist_an - dist_ap, y)
-        num_anchors = feats1.shape[0]
-        comm.synchronize()
-        all_num_a = comm.all_gather(num_anchors)
-        num_a = sum([num.to("cpu") for num in all_num_a])
-        num_a = torch.clamp(num_a / comm.get_world_size(), min=1).item()
-        loss_val = loss.sum() / num_a
         return {
-            "loss_triplet": loss_val,
+            "loss_triplet": loss,
             "dist_ap": dist_ap.mean(),
             "dist_an": dist_an.mean(),
         }
+
+
+class CrossEntropyLabelSmooth(nn.Module):
+    """Cross entropy loss with label smoothing regularizer.
+
+    Reference:
+    Szegedy et al. Rethinking the Inception Architecture for Computer Vision. CVPR 2016.
+    Equation: y = (1 - epsilon) * y + epsilon / K.
+
+    Args:
+        num_classes (int): number of classes.
+        epsilon (float): weight.
+    """
+
+    def __init__(self, num_classes, epsilon=0.1, use_gpu=True):
+        super(CrossEntropyLabelSmooth, self).__init__()
+        self.num_classes = num_classes
+        self.epsilon = epsilon
+        self.use_gpu = use_gpu
+        self.logsoftmax = nn.LogSoftmax(dim=1)
+
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: prediction matrix (before softmax) with shape (batch_size, num_classes)
+            targets: ground truth labels with shape (num_classes)
+        """
+        log_probs = self.logsoftmax(inputs)
+        targets = torch.zeros(log_probs.size()).scatter_(
+            1, targets.unsqueeze(1).data.cpu(), 1
+        )
+        if self.use_gpu:
+            targets = targets.cuda()
+        targets = (1 - self.epsilon) * targets + self.epsilon / self.num_classes
+        loss = (-targets * log_probs).mean(0).sum()
+        return loss

@@ -35,15 +35,11 @@ class PrwQueryEvaluator(QueryEvaluator):
         )
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
-        self.aps_cws_mlv = {st: [] for st in self.det_score_thresh}
-        self.accs_cws_mlv = {st: [] for st in self.det_score_thresh}
 
     def reset(self):
         super().reset()
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
-        self.aps_cws_mlv = {st: [] for st in self.det_score_thresh}
-        self.accs_cws_mlv = {st: [] for st in self.det_score_thresh}
 
     def process(self, inputs, outputs):
         """
@@ -84,12 +80,10 @@ class PrwQueryEvaluator(QueryEvaluator):
             q_cid = _get_img_cid(q_imgid)
             y_trues = {dst: [] for dst in self.det_score_thresh}
             y_scores = {dst: [] for dst in self.det_score_thresh}
-            y_scores_cws = {dst: [] for dst in self.det_score_thresh}
             count_gts = {dst: 0 for dst in self.det_score_thresh}
             count_tps = {dst: 0 for dst in self.det_score_thresh}
             y_trues_mlv = {dst: [] for dst in self.det_score_thresh}
             y_scores_mlv = {dst: [] for dst in self.det_score_thresh}
-            y_scores_cws_mlv = {dst: [] for dst in self.det_score_thresh}
             count_gts_mlv = {dst: 0 for dst in self.det_score_thresh}
             count_tps_mlv = {dst: 0 for dst in self.det_score_thresh}
             # Find all occurence of this query
@@ -156,7 +150,6 @@ class PrwQueryEvaluator(QueryEvaluator):
                     det, feat_g = self._get_gallery_dets(
                         gallery_imname, dst
                     ), self._get_gallery_feats(gallery_imname, dst)
-                    feat_g_cws = feat_g * det[:, 4:5]
                     # no detection in this gallery, skip it
                     if det.shape[0] == 0:
                         continue
@@ -166,11 +159,9 @@ class PrwQueryEvaluator(QueryEvaluator):
                     sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
                         1
                     )  # n x 1 -> n
-                    sim_cws = torch.mm(feat_g_cws, feat_q.view(-1)[:, None]).squeeze(1)
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
-                    name2sim[gallery_imname + "cws"] = sim_cws
                     # save for vis
                     g_img_ids.append(gallery_imname)
 
@@ -195,23 +186,16 @@ class PrwQueryEvaluator(QueryEvaluator):
                                 if q_cid != g_cid:
                                     count_tps_mlv[dst] += 1
                                 break
-                        inds = torch.argsort(sim_cws)
-                        inds = inds.tolist()[::-1]
-                        inds = torch.tensor(inds, dtype=torch.long)
-                        sim_cws = name2sim[gallery_imname + "cws"][inds]
                     y_trues[dst].extend(label.tolist())
                     y_scores[dst].extend(sim.tolist())
-                    y_scores_cws[dst].extend(sim_cws.tolist())
                     # multi view
                     if g_cid != q_cid:
                         y_trues_mlv[dst].extend(label.tolist())
                         y_scores_mlv[dst].extend(sim.tolist())
-                        y_scores_cws_mlv[dst].extend(sim_cws.tolist())
 
                 # 2. Compute AP for this probe (need to scale by recall rate)
 
                 y_score = np.asarray(y_scores[dst])
-                y_score_cws = np.asarray(y_scores_cws[dst])
                 y_true = np.asarray(y_trues[dst])
                 assert count_tps[dst] <= count_gts[dst]
                 recall_rate = count_tps[dst] * 1.0 / count_gts[dst]
@@ -220,27 +204,13 @@ class PrwQueryEvaluator(QueryEvaluator):
                     if count_tps[dst] == 0
                     else average_precision_score(y_true, y_score) * recall_rate
                 )
-                ap_cws = (
-                    0
-                    if count_tps[dst] == 0
-                    else average_precision_score(y_true, y_score_cws) * recall_rate
-                )
                 self.aps[dst].append(ap)
-                self.aps_cws[dst].append(ap_cws)
                 inds = np.argsort(y_score)[::-1]
                 y_score = y_score[inds]
                 y_true = y_true[inds]
-                y_true_o = y_true[inds]
-                self.accs[dst].append([min(1, sum(y_true_o[:k])) for k in self.topks])
-                inds = np.argsort(y_score_cws)[::-1]
-                y_score_cws = y_score_cws[inds]
-                y_true_cws = y_true[inds]
-                self.accs_cws[dst].append(
-                    [min(1, sum(y_true_cws[:k])) for k in self.topks]
-                )
+                self.accs[dst].append([min(1, sum(y_true[:k])) for k in self.topks])
                 # mlv
                 y_score_mlv = np.asarray(y_scores_mlv[dst])
-                y_score_cws_mlv = np.asarray(y_scores_cws_mlv[dst])
                 y_true_mlv = np.asarray(y_trues_mlv[dst])
                 assert count_tps_mlv[dst] <= count_gts_mlv[dst]
                 recall_rate_mlv = count_tps_mlv[dst] * 1.0 / count_gts_mlv[dst]
@@ -250,25 +220,12 @@ class PrwQueryEvaluator(QueryEvaluator):
                     else average_precision_score(y_true_mlv, y_score_mlv)
                     * recall_rate_mlv
                 )
-                ap_cws_mlv = (
-                    0
-                    if count_tps_mlv[dst] == 0
-                    else average_precision_score(y_true_mlv, y_score_cws_mlv)
-                    * recall_rate_mlv
-                )
                 self.aps_mlv[dst].append(ap_mlv)
-                self.aps_cws_mlv[dst].append(ap_cws_mlv)
                 inds_mlv = np.argsort(y_score_mlv)[::-1]
                 y_score_mlv = y_score_mlv[inds_mlv]
-                y_true_mlv_o = y_true_mlv[inds_mlv]
+                y_true_mlv = y_true_mlv[inds_mlv]
                 self.accs_mlv[dst].append(
-                    [min(1, sum(y_true_mlv_o[:k])) for k in self.topks]
-                )
-                inds = np.argsort(y_score_cws_mlv)[::-1]
-                y_score_cws_mlv = y_score_cws_mlv[inds]
-                y_true_cws_mlv = y_true_mlv[inds]
-                self.accs_cws_mlv[dst].append(
-                    [min(1, sum(y_true_cws_mlv[:k])) for k in self.topks]
+                    [min(1, sum(y_true_mlv[:k])) for k in self.topks]
                 )
                 # 3. Save vis
                 self._vis_search(
@@ -287,26 +244,16 @@ class PrwQueryEvaluator(QueryEvaluator):
             comm.synchronize()
             aps_all = comm.gather(self.aps_mlv, dst=0)
             accs_all = comm.gather(self.accs_mlv, dst=0)
-            aps_cws_all = comm.gather(self.aps_cws_mlv, dst=0)
-            accs_cws_all = comm.gather(self.accs_cws_mlv, dst=0)
             if not comm.is_main_process():
                 return {}
             aps = {}
             accs = {}
-            aps_cws = {}
-            accs_cws = {}
             for dst in self.det_score_thresh:
                 aps[dst] = list(itertools.chain(*[ap[dst] for ap in aps_all]))
                 accs[dst] = list(itertools.chain(*[acc[dst] for acc in accs_all]))
-                aps_cws[dst] = list(itertools.chain(*[ap[dst] for ap in aps_cws_all]))
-                accs_cws[dst] = list(
-                    itertools.chain(*[acc[dst] for acc in accs_cws_all])
-                )
         else:
             aps = self.aps_mlv
             accs = self.accs_mlv
-            aps_cws = self.aps_cws_mlv
-            accs_cws = self.accs_cws_mlv
 
         for dst in self.det_score_thresh:
             logger.info(
@@ -315,9 +262,7 @@ class PrwQueryEvaluator(QueryEvaluator):
                 )
             )
             mAP = np.mean(aps[dst])
-            mAP_cws = np.mean(aps_cws[dst])
             mix_eval_results["search"].update({"mAP_{:.2f}_mlv".format(dst): mAP})
-            mix_eval_results["search"].update({"mAP_{:.2f}_cws".format(dst): mAP_cws})
             acc = np.mean(accs[dst], axis=0)
             # logger.info(str(acc))
             for i, v in enumerate(acc.tolist()):
@@ -325,12 +270,5 @@ class PrwQueryEvaluator(QueryEvaluator):
                 k = self.topks[i]
                 mix_eval_results["search"].update(
                     {"top{:2d}_{:.2f}_mlv".format(k, dst): v}
-                )
-            acc_cws = np.mean(accs_cws[dst], axis=0)
-            for i, v in enumerate(acc_cws.tolist()):
-                # logger.info("{:.2f} on {} acc. ".format(v, i))
-                k = self.topks[i]
-                mix_eval_results["search"].update(
-                    {"top{:2d}_{:.2f}_cws_mlv".format(k, dst): v}
                 )
         return copy.deepcopy(mix_eval_results)

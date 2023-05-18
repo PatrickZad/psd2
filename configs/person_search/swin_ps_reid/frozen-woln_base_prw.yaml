@@ -1,0 +1,16 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4PSReidFrozenWoLn"
+  WEIGHTS: "Data/model_zoo/swin_rcnn_base_solider_d2.pkl"
+  PATCH_EMBED:
+    EMBED_DIM: 128
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        NHEAD: [4, 8, 16, 32]
+        OUT_CHANNELS: 1024
+DATASETS:
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery","PRW_Query") #
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-base-frozen-woln_prw"

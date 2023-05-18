@@ -74,7 +74,6 @@ class CuhkQueryEvaluator(QueryEvaluator):
             q_box = q_instances.org_gt_boxes
             y_trues = {dst: [] for dst in self.det_score_thresh}
             y_scores = {dst: [] for dst in self.det_score_thresh}
-            y_scores_cws = {dst: [] for dst in self.det_score_thresh}
             count_gts = {dst: 0 for dst in self.det_score_thresh}
             count_tps = {dst: 0 for dst in self.det_score_thresh}
             for dst in self.det_score_thresh:
@@ -121,7 +120,6 @@ class CuhkQueryEvaluator(QueryEvaluator):
                     det, feat_g = self._get_gallery_dets(
                         gallery_imname, dst
                     ), self._get_gallery_feats(gallery_imname, dst)
-                    feat_g_cws = feat_g * det[:, 4:5]
                     # no detection in this gallery, skip it
                     if det.shape[0] == 0:
                         continue
@@ -131,11 +129,9 @@ class CuhkQueryEvaluator(QueryEvaluator):
                     sim = torch.mm(feat_g, feat_q.view(-1)[:, None]).squeeze(
                         1
                     )  # n x 1 -> n
-                    sim_cws = torch.mm(feat_g_cws, feat_q.view(-1)[:, None]).squeeze(1)
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
-                    name2sim[gallery_imname + "cws"] = sim_cws
                     # save for vis
                     g_img_ids.append(gallery_imname)
 
@@ -159,19 +155,13 @@ class CuhkQueryEvaluator(QueryEvaluator):
                                 label[j] = 1
                                 count_tps[dst] += 1
                                 break
-                        inds = torch.argsort(sim_cws)
-                        inds = inds.tolist()[::-1]
-                        inds = torch.tensor(inds, dtype=torch.long)
-                        sim_cws = name2sim[gallery_imname + "cws"][inds]
 
                     y_trues[dst].extend(label.tolist())
                     y_scores[dst].extend(sim.tolist())
-                    y_scores_cws[dst].extend(sim_cws.tolist())
 
                 # 2. Compute AP for this probe (need to scale by recall rate)
 
                 y_score = np.asarray(y_scores[dst])
-                y_score_cws = np.asarray(y_scores_cws[dst])
                 y_true = np.asarray(y_trues[dst])
                 assert count_tps[dst] <= count_gts[dst]
                 recall_rate = count_tps[dst] * 1.0 / count_gts[dst]
@@ -180,22 +170,11 @@ class CuhkQueryEvaluator(QueryEvaluator):
                     if count_tps[dst] == 0
                     else average_precision_score(y_true, y_score) * recall_rate
                 )
-                ap_cws = (
-                    0
-                    if count_tps[dst] == 0
-                    else average_precision_score(y_true, y_score_cws) * recall_rate
-                )
                 self.aps[dst].append(ap)
-                self.aps_cws[dst].append(ap_cws)
                 inds = np.argsort(y_score)[::-1]
                 y_score = y_score[inds]
                 y_true_o = y_true[inds]
                 self.accs[dst].append([min(1, sum(y_true_o[:k])) for k in self.topks])
-                inds = np.argsort(y_score_cws)[::-1]
-                y_score_cws = y_score_cws[inds]
-                y_true_cws = y_true[inds]
-                self.accs_cws[dst].append(
-                    [min(1, sum(y_true_cws[:k])) for k in self.topks]
-                )
+
                 # 3. Save vis
                 self._vis_search(q_imgid, q_box, q_pid, g_img_ids, name2sim, dst)

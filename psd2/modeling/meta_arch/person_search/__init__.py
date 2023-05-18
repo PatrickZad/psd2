@@ -8,3 +8,4 @@ from .vit_ps_dino import VitPSParaDINO, VitPDWithLocal
 from .vidt_ps import VidtPromptPD
 from .vidt_neck_ps import VidtPromptPDWithNeck,VidtPromptPDWithNeckLastSemantic
 from .swin_rcnn import *
+from .swin_ps_reid import *
