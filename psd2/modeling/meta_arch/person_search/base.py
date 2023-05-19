@@ -114,7 +114,7 @@ class SearchBase(nn.Module):
                 if score >= threds[i] and score < threds[i + 1]:
                     return i
 
-        threds = [0, 0.2, 0.5, 1]
+        threds = [0, 0.2, 0.5, 1.01]  # gt proposals can be == 1.0
         bs = len(gt_instances)
         if featmap is not None:
             level_pcas = []
