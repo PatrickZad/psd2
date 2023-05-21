@@ -19,4 +19,5 @@ DATASETS:
 TEST:
   EVAL_PERIOD: 19780
   DETECTION_SCORE_TS: [0.5,]
+VIS_PERIOD: 1
 OUTPUT_DIR: "outputs/swin_rcnn/pd-pre_cococh_small-ign"

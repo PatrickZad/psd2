@@ -325,6 +325,57 @@ class SwinF4PSReid(SearchBase):
                 assigns_on_boxes.append(assign_on_box)
             cat_assigns_on_boxes = torch.cat(assigns_on_boxes, dim=2)
             storage.put_image("img_{}/attn".format(bi), cat_assigns_on_boxes / 255.0)
+
+@META_ARCH_REGISTRY.register()
+class SwinF4PSReidLastStride(SwinF4PSReid):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        swin = SwinTransformer(
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 1),
+        )
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        pooler_scales     = (1.0 / swin_out_shape[in_features[0]].stride, )
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        assert not cfg.MODEL.KEYPOINT_ON
+        assert len(in_features) == 1
+
+        ret["roi_pooler"] = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["swin"]= swin
+        return ret
+
+
 @META_ARCH_REGISTRY.register()
 class SwinF4PSReidFrozen(SwinF4PSReid):
     @configurable
@@ -783,7 +834,63 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
             Instances(gt_instances[i].image_size, reid_feats=box_embs[i])
             for i in range(len(box_embs))
         ]
+@META_ARCH_REGISTRY.register()
+class PromptedSwinF4PSReidLastStride(PromptedSwinF4PSReid):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        if "L2P" in prompt_cfg.PROMPT_TYPE:
+            num_prompts = prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
+        else:
+            num_prompts = prompt_cfg.NUM_PROMPTS
+        swin = PromptedSwinTransformer(
+            prompt_start_stage=prompt_cfg.PROMPT_START_STAGE,
+            num_prompts=num_prompts,
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 1),
+        )
+        
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        pooler_scales     = (1.0 / swin_out_shape[in_features[0]].stride, )
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        assert not cfg.MODEL.KEYPOINT_ON
+        assert len(in_features) == 1
 
+        ret["roi_pooler"] = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["swin"]= swin
+        
+        return ret
 
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinF4PSReid(PromptedSwinF4PSReid):

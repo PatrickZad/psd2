@@ -1,0 +1,7 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4PSReidFrozen"
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") #
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-frozen_cuhk"
