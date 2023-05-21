@@ -6,6 +6,7 @@ from .plain_dtps import PlainDTPS
 from .vit_ps import VitPS, QMaskVitPS, VitPSPara
 from .vit_ps_dino import VitPSParaDINO, VitPDWithLocal
 from .vidt_ps import VidtPromptPD
-from .vidt_neck_ps import VidtPromptPDWithNeck,VidtPromptPDWithNeckLastSemantic
-from .swin_rcnn import *
+from .vidt_neck_ps import VidtPromptPDWithNeck, VidtPromptPDWithNeckLastSemantic
+from .swin_rcnn_pd import *
+from .swin_rcnn_ps import *
 from .swin_ps_reid import *
