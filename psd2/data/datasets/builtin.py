@@ -6,12 +6,11 @@ from .. import mappers
 from ..catalog import DatasetCatalog, MapperCatalog, MetadataCatalog
 
 from .cuhk_sysu import load_cuhk_sysu
-from .cuhk_sysu import subset_names as cuhk_subsets
 from .prw import load_prw
-from .prw import subsets as prw_subsets
+from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
 from .coco_ch import load_coco_ch, load_coco_p
-import copy
+
 
 # TODO change evaluator type to "query"
 def register_cuhk_sysu_all(datadir):
@@ -36,8 +35,49 @@ def register_cuhk_sysu_all(datadir):
     MetadataCatalog.get(name).set(evaluator_type="query")
 
 
-def register_prw_all(datadir):
+def register_movie_net_all(datadir):
+    name = "MovieNet_" + "Train_app10"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "Train_app10"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    name = "MovieNet_" + "Train_app30"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "Train_app30"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    name = "MovieNet_" + "Train_app50"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "Train_app50"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    name = "MovieNet_" + "Train_app70"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "Train_app70"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    name = "MovieNet_" + "Train_app100"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "Train_app100"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    name = "MovieNet_" + "GalleryTestG2000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "GalleryTestG2000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "MovieNet_" + "GalleryTestG4000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "GalleryTestG4000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "MovieNet_" + "GalleryTestG10000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "GalleryTestG10000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "MovieNet_" + "TestG2000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "TestG2000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "MovieNet_" + "TestG4000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "TestG4000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "MovieNet_" + "TestG10000"
+    DatasetCatalog.register(name, lambda: load_movie_net(datadir, "TestG10000"))
+    MapperCatalog.register(name, mappers.MovieNetMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
 
+
+def register_prw_all(datadir):
     name = "PRW_Train"
     DatasetCatalog.register(name, lambda: load_prw(datadir, "Train"))
     MapperCatalog.register(name, mappers.PrwMapper)
