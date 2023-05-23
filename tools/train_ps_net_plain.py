@@ -43,6 +43,7 @@ from psd2.evaluation import (
     DatasetEvaluators,
     verify_results,
     Ptk21QueryEvaluator,
+    MovieNetQueryEvaluator,
 )
 import re
 from psd2.modeling import GeneralizedRCNNWithTTA
@@ -111,6 +112,17 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
         elif "Ptk21" in dataset_name:
             evaluator_list.append(
                 Ptk21QueryEvaluator(
+                    dataset_name,
+                    distributed=not single_gpu,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
+                )
+            )
+        elif "MovieNet" in dataset_name:
+            evaluator_list.append(
+                MovieNetQueryEvaluator(
                     dataset_name,
                     distributed=not single_gpu,
                     output_dir=output_folder,

@@ -116,7 +116,7 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
 
         with tqdm(total=train_anno.shape[0]) as pbar:
             for index, item in enumerate(train_anno):
-                scenes = item[2].squeeze()
+                scenes = item[2]
                 # pid_str = str(item[0, 0][0][0])
                 for img_name, box, _ in scenes:
                     img_name = str(img_name[0])
@@ -127,7 +127,7 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
                 pbar.update(1)
         # training images
         train_img_names = []
-        for train_img in train_mat[:, 2]:
+        for train_img in train_mat["Train"][:, 2]:
             for app in train_img:
                 fn = app[0][0]
                 train_img_names.append(fn)
@@ -163,7 +163,7 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
                 load + ".mat",
             )
         )
-        test_anno = test_mat.squeeze()  # .tolist()
+        test_anno = test_mat[load].squeeze()  # .tolist()
         logger.info("Loading {} annotations :".format(load))
         test_query_gallery = []
         with tqdm(total=test_anno.shape[0]) as pbar:
@@ -251,12 +251,13 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
             test_img_names = loadmat(
                 opj(
                     dataset_dir,
-                    "annotation",
+                    "anno_mvn-cs",
                     f"pool_{N}.mat",
                 )
-            )["pool"].squeeze()
+            )
+            test_img_names =test_img_names["pool"].squeeze()
             test_img_names = [
-                img_name_arr[0] for img_name_arr in test_img_names.tolist()
+                str(img_name_arr.squeeze()) for img_name_arr in test_img_names
             ]
             logger.info("Loading Gallery annotations :".format(load))
             gallery_set_dicts = []

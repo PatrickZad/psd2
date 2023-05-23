@@ -4,6 +4,7 @@ MODEL:
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_rcnn_small_solider_d2.pkl"
   PROMPT:
+    STAGE_WISE: False
     PROMPT_START_STAGE: 1
     NUM_PROMPTS: 32
     PROMPT_TYPE: "Fixed"

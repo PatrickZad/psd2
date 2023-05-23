@@ -12,10 +12,12 @@ from .gallery_inf_det_evaluator import InfDetEvaluator
 from .query_evaluator import QueryEvaluator
 from .prw_query_eval import PrwQueryEvaluator
 from .cuhk_query_eval import CuhkQueryEvaluator
+from .mvn_query_eval import MovieNetQueryEvaluator
 from .cdps_query_eval import CdpsQueryEvaluator
 from .ptk21_query_eval import Ptk21QueryEvaluator
 from .prw_query_eval_p import PrwQueryEvaluatorP
 from .cuhk_query_eval_p import CuhkQueryEvaluatorP
+from .mvn_query_eval_p import MovieNetQueryEvaluatorP
 from .vis_evaluator import DetVisEvaluator, SearchVisEvaluator
 
 

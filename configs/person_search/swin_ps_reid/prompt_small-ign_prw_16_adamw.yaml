@@ -5,4 +5,5 @@ PERSON_SEARCH:
 SOLVER:
   OPTIM: "AdamW"
   BASE_LR: 0.0003
+  WEIGHT_DECAY: 0.01
 OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt16_prw_adamw"

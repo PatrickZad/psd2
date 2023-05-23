@@ -1,0 +1,27 @@
+_BASE_: "prompt_small-ign_prw.yaml"
+PERSON_SEARCH:
+  PROMPT:
+    NUM_PROMPTS: 16
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 2087
+        LEN_ULB: 3000
+INPUT:
+  MIN_SIZE_TRAIN: (160,192,224, 240)
+  MAX_SIZE_TRAIN: 720
+  MIN_SIZE_TEST: 240
+  MAX_SIZE_TEST: 720
+DATASETS:
+  TRAIN: ("MovieNet_Train_app10",) 
+  TEST: ("MovieNet_GalleryTestG2000","MovieNet_TestG2000") #
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0003
+  STEPS: (30240,60480)
+  MAX_ITER: 63000 # 1260 * 50
+  CHECKPOINT_PERIOD: 2520
+  IMS_PER_BATCH: 16
+TEST:
+  EVAL_PERIOD: 2520
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt16_mvn_adam"

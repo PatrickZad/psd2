@@ -293,6 +293,57 @@ class PatchEmbed(PatchEmbed_, Backbone):
         ret = super().forward(x)
         return {self._out_features[-1]: ret}
 
+#MVit
+class OverlappedPatchEmbed(Backbone):
+    def __init__(
+        self, pretrain_size,kernel_size=16, stride=16, padding=0, in_chans=3, embed_dim=768
+    ):
+        """
+        Args:
+            kernel_size (Tuple): kernel size of the projection layer.
+            stride (Tuple): stride of the projection layer.
+            padding (Tuple): padding size of the projection layer.
+            in_chans (int): Number of input image channels.
+            embed_dim (int):  embed_dim (int): Patch embedding dimension.
+        """
+        super().__init__()
+        pretrain_img_size = to_2tuple(pretrain_size)
+        self.pretrain_img_size = pretrain_img_size
+        self.proj = nn.Conv2d(
+            in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding
+        )
+        self.stride=stride
+        self.embed_dim=embed_dim
+        self._out_features = ["out"]
+
+    def forward(self, x):
+        x = self.proj(x)
+        return {self._out_features[-1]: x}
+    @property
+    def size_divisibility(self) -> int:
+        """
+        Some backbones require the input height and width to be divisible by a
+        specific integer. This is typically true for encoder / decoder type networks
+        with lateral connection (e.g., FPN) for which feature maps need to match
+        dimension in the "bottom up" and "top down" paths. Set to 0 if no specific
+        input size divisibility is required.
+        """
+        return self.stride
+
+    def output_shape(self):
+        """
+        Returns:
+            dict[str->ShapeSpec]
+        """
+        # this is a backward-compatible default
+        return {
+            name: ShapeSpec(
+                channels=self.embed_dim,
+                stride=self.stride,
+            )
+            for name in self._out_features
+        }
+
 
 @BACKBONE_REGISTRY.register()
 def build_patch_tokenizerms(cfg, input_shape):
@@ -330,4 +381,15 @@ def build_patch_embed_ln(cfg, input_shape):
         pt_cfg.EMBED_DIM,
         norm_layer=nn.LayerNorm,
         flatten=False,
+    )
+@BACKBONE_REGISTRY.register()
+def build_overlapped_patch_embed(cfg, input_shape):
+    pt_cfg = cfg.MODEL.PATCH_EMBED
+    return OverlappedPatchEmbed(
+        pt_cfg.PRETRAIN_IMG_SIZE,
+        pt_cfg.KERNELS_SIZE,
+        pt_cfg.STRIDE,
+        pt_cfg.PADDING,
+        input_shape.channels,
+        pt_cfg.EMBED_DIM,
     )

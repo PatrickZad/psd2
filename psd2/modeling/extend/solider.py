@@ -1412,6 +1412,10 @@ class PromptedSwinTransformer(BaseModule):
         self.promt_start_stage = prompt_start_stage
         in_channels = embed_dims
         for i in range(num_layers):
+            if isinstance(num_prompts,int):
+                stage_num_prompts=num_prompts
+            else:
+                stage_num_prompts=num_prompts[i]
             if i < num_layers - 1:
                 downsample = PatchMerging(
                     in_channels=in_channels,
@@ -1452,7 +1456,7 @@ class PromptedSwinTransformer(BaseModule):
                 )
                 if i < prompt_start_stage - 1
                 else PromptedSwinBlockSequence(
-                    num_prompts=num_prompts,
+                    num_prompts=stage_num_prompts,
                     embed_dims=in_channels,
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,

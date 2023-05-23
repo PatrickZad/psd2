@@ -148,6 +148,7 @@ def register_cococh_all(datadir):
 
 
 _root = os.getenv("PS_DATASETS", "Data/ReID")
+register_movie_net_all(os.path.join(_root, "movienet"))
 register_cuhk_sysu_all(os.path.join(_root, "cuhk_sysu"))
 register_prw_all(os.path.join(_root, "PRW"))
 _root_det = "Data/DetData"

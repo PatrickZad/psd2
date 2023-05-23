@@ -1,0 +1,12 @@
+_BASE_: "prompt_small-ign_prw.yaml"
+PERSON_SEARCH:
+  PROMPT:
+    STAGE_WISE: True
+    PROMPT_START_STAGE: 1
+    NUM_PROMPTS: [32,32,32,16]
+    PROMPT_TYPE: "Fixed"
+    CURRENT_TASK: 0
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0003
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt-stagewise-32-32-32-16_prw_adam"
