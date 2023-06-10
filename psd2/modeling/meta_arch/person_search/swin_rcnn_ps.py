@@ -1060,6 +1060,34 @@ class PromptedSwinF4RCNNPSBoxAug(PromptedSwinF4RCNNPS):
 
 
 @META_ARCH_REGISTRY.register()
+class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
+    @classmethod
+    def from_config(cls, cfg):
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        ret = super().from_config(cfg)
+        swin_org = SwinTransformer(
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT_ORG,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+        )
+        ret["swin_org"] = swin_org
+        return ret
+
+
+@META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
     @classmethod
     def from_config(cls, cfg):
