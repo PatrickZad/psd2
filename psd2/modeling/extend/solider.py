@@ -1412,10 +1412,10 @@ class PromptedSwinTransformer(BaseModule):
         self.promt_start_stage = prompt_start_stage
         in_channels = embed_dims
         for i in range(num_layers):
-            if isinstance(num_prompts,int):
-                stage_num_prompts=num_prompts
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
             else:
-                stage_num_prompts=num_prompts[i]
+                stage_num_prompts = num_prompts[i]
             if i < num_layers - 1:
                 downsample = PatchMerging(
                     in_channels=in_channels,
@@ -1454,7 +1454,7 @@ class PromptedSwinTransformer(BaseModule):
                     with_cp=with_cp,
                     init_cfg=None,
                 )
-                if i < prompt_start_stage - 1
+                if i < prompt_start_stage - 1 or stage_num_prompts == 0
                 else PromptedSwinBlockSequence(
                     num_prompts=stage_num_prompts,
                     embed_dims=in_channels,
@@ -1605,11 +1605,12 @@ class PromptedSwinBlockSequence(BaseModule):
         self.downsample = downsample
         self.num_prompts = num_prompts
 
-    def forward(self, x, hw_shape, deep_prompt_embd=None):
+    def forward(self, x, hw_shape, deep_prompt_embd):
         # NOTE make it compatible with no prompt versions
         # add the prompt embed before each blk call
         B = x.shape[0]  # batchsize
         num_blocks = len(self.blocks)
+
         for i in range(num_blocks):
             prompt_emb = deep_prompt_embd[i].expand(B, -1, -1)
             x = torch.cat([prompt_emb, x], dim=1)

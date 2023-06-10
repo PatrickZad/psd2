@@ -1,0 +1,67 @@
+_BASE_: "base_prompts.yaml"
+MODEL:
+  META_ARCHITECTURE: "PromptedSwinF4RCNNPSBoxAug"
+  WEIGHTS: "outputs/swin_rcnn/pd-pre_cococh_small-ign/model_0375819.pth"
+PERSON_SEARCH:
+  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  PROMPT:
+    STAGE_WISE: True
+    PROMPT_START_STAGE: 1
+    NUM_PROMPTS: [32,32,32,0]
+    PROMPT_TYPE: "Fixed"
+  DET:
+    MODEL:
+      TRANSFORMER:
+        WITH_CP: True
+        SEMANTIC_WEIGHT: 0.0
+  REID:
+    MODEL:
+      IN_FEAT: "stage3"
+      EMB_DIM: 768
+      BN_NECK: False
+    ID_ASSIGN:
+      NAME: "det"
+    BOX_AUGMENTATION:
+      NAME: "dn_detr"
+      H_CENTER: 0.4
+      H_SCALE: 0.2
+      NUM_LABELED: 3
+      APPEND_GT: True
+      NUM_UNLABLED: 3
+    LOSS:
+      OIM:
+        LB_LAYER: "lb_norm"
+        ULB_LAYER: "ulb_full"
+        LB_FACTOR: 30
+        ULB_FACTOR: 30
+        NUM_LB: 5532
+        LEN_ULB: 5000
+        FEAT_DIM: 768
+        NORM_FEAT: True
+        SYNC_MEMORY: False
+        USE_FOCAL: True
+        FOCAL_ALPHA: 1.0
+        FOCAL_GAMMA: 2.0
+        LOSS_WEIGHT: 1.0
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0003
+  STEPS: (33624,67248)
+  MAX_ITER: 70050 # 1401 * 50
+  CHECKPOINT_PERIOD: 2802
+  GAMMA: 0.1
+  WEIGHT_DECAY: 5.0e-4
+  IMS_PER_BATCH: 8
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") #
+TEST:
+  IMS_PER_PROC: 8
+  EVAL_PERIOD: 2802
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/ign-fixed-ps-prepend16-boxaug4_cuhk_adam_b8_bkp"
