@@ -508,7 +508,10 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
         if "L2P" in prompt_cfg.PROMPT_TYPE:
-            num_prompts = prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
+            if prompt_cfg.STAGE_WISE:
+                num_prompts = [n  * prompt_cfg.TOP_K for n in prompt_cfg.NUM_PROMPTS]
+            else:
+                num_prompts = prompt_cfg.TOP_K * prompt_cfg.NUM_PROMPTS
         else:
             num_prompts = prompt_cfg.NUM_PROMPTS
         # NOTE downsample module of stage3 is trainable
@@ -543,6 +546,10 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         ret["id_assigner"] = build_id_assigner(cfg)
         stage_prompts = nn.ModuleList()
         for si, nl in enumerate(tr_cfg.DEPTH):
+            if isinstance(num_prompts,int):
+                stage_num_prompts=num_prompts
+            else:
+                stage_num_prompts=num_prompts[si]
             if prompt_cfg.PROMPT_TYPE == "L2P":
                 prompt_stage = prompts.L2P(
                     emb_d=swin.num_features[si],
