@@ -518,6 +518,9 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
                 stage_num_prompts=num_prompts
             else:
                 stage_num_prompts=num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
             if prompt_cfg.PROMPT_TYPE == "L2P":
                 prompt_stage = prompts.L2P(
                     emb_d=swin.num_features[si],
@@ -648,18 +651,26 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
         x = self.swin.drop_after_pos(x)
 
         outs = []
-        prompt_loss = 0
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         bonenum = 3
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
-            task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
-            selected_prompts, p_loss = self.stage_prompts[i](
-                task_query_stage, i, train=self.training
-            )
-            prompt_loss += p_loss
-            x, hw_shape, out, out_hw_shape = stage(
-                x, hw_shape, deep_prompt_embd=selected_prompts
-            )
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[i](
+                    task_query_stage, i, train=self.training
+                )
+                prompt_loss += p_loss
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
             if self.swin.semantic_weight >= 0:
                 sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
                 sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
@@ -710,26 +721,34 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
             sw = self.swin.semantic_embed_w[bonenum - 1](semantic_weight).unsqueeze(1)
             sb = self.swin.semantic_embed_b[bonenum - 1](semantic_weight).unsqueeze(1)
             x = x * self.swin.softplus(sw) + sb
-        prompt_loss = 0
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[bonenum:]):
-            task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
-            selected_prompts, p_loss = self.stage_prompts[bonenum + i](
-                task_query_stage, f"reid{i}", train=self.training
-            )
-            prompt_loss += p_loss
-            expanded_prompts = []
-            for bi in range(len(roi_boxes)):
-                expanded_prompts.append(
-                    selected_prompts[:, bi : bi + 1].expand(
-                        -1, len(roi_boxes[bi]), -1, -1
-                    )
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i + bonenum] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[bonenum + i](
+                    task_query_stage, f"reid{i}", train=self.training
                 )
-            selected_prompts = torch.cat(expanded_prompts, dim=1)
-            del expanded_prompts
-            x, hw_shape, out, out_hw_shape = stage(
-                x, hw_shape, deep_prompt_embd=selected_prompts
-            )
+                prompt_loss += p_loss
+                expanded_prompts = []
+                for bi in range(len(roi_boxes)):
+                    expanded_prompts.append(
+                        selected_prompts[:, bi : bi + 1].expand(
+                            -1, len(roi_boxes[bi]), -1, -1
+                        )
+                    )
+                selected_prompts = torch.cat(expanded_prompts, dim=1)
+                del expanded_prompts
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
             if self.swin.semantic_weight >= 0:
                 sw = self.swin.semantic_embed_w[bonenum + i](semantic_weight).unsqueeze(
                     1
