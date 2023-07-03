@@ -178,3 +178,4 @@ class CuhkQueryEvaluator(QueryEvaluator):
 
                 # 3. Save vis
                 self._vis_search(q_imgid, q_box, q_pid, g_img_ids, name2sim, dst)
+

@@ -21,7 +21,7 @@ from psd2.modeling.id_assign import build_id_assigner
 import psd2.modeling.prompts as prompts
 
 from torch.nn import init
-from psd2.layers.mem_matching_losses import OIMLoss
+from psd2.layers.mem_matching_losses import OIMLoss,IncOIMLoss
 from torch.nn.functional import normalize
 from .swin_rcnn_pd import SwinF4RCNN, SwinROIHeads2, PromptedSwinROIHeads
 from psd2.modeling import ShapeSpec
@@ -73,9 +73,23 @@ class SwinF4RCNNPS(SwinF4RCNN):
         else:
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
+        ret["oim_loss"] = OIMLoss(cfg) if hasattr(cfg.PERSON_SEARCH.REID.LOSS,"OIM") else IncOIMLoss(cfg)
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
         return ret
+    def load_state_dict(self, *args, **kws):
+        state_dict=args[0]
+        if isinstance(self.oim_loss,IncOIMLoss) and "oim_loss.lb_layers.0.lookup_table" not in state_dict:
+            # resume from plain oim trained
+            if "oim_loss.lb_layer.lookup_table" in state_dict:
+                lkt0=state_dict.pop("oim_loss.lb_layer.lookup_table")
+                state_dict["oim_loss.lb_layers.0.lookup_table"]=lkt0
+            if "oim_loss.ulb_layer.queue" in state_dict:
+                q0=state_dict.pop("oim_loss.ulb_layer.queue")
+                state_dict["oim_loss.ulb_layers.0.queue"]=q0
+            if "oim_loss.ulb_layer.tail" in state_dict:
+                q0=state_dict.pop("oim_loss.ulb_layer.tail")
+                state_dict["oim_loss.ulb_layers.0.tail"]=q0
+        return super().load_state_dict(*args, **kws)
 
     def train(self, mode=True):
         self.training = mode
@@ -249,6 +263,26 @@ class SwinF4RCNNPS(SwinF4RCNN):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+    def forward_gallery_gt(self, image_list, gt_instances):
+        assert not self.training
+        features = self.swin_backbone(image_list.tensor)
+        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        reid_feats=self.reid_head(image_list, features, roi_boxes)
+        pred_instances=[]
+        for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+            inst=Instances(gt_i.image_size)
+            inst.pred_boxes=gt_i.gt_boxes
+            inst.pred_scores=torch.zeros_like(gt_i.gt_pids,dtype=feats_i.dtype)+0.99
+            inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
+            inst.assign_ids=gt_i.gt_pids
+            inst.reid_feats=feats_i
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            inst.pred_boxes.scale(org_w / w, org_h / h)
+            pred_instances.append(inst)
+                
+        return pred_instances
 
     def forward_query(self, image_list, gt_instances):
         features = self.swin_backbone(image_list.tensor)
@@ -698,7 +732,7 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         else:
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
+        ret["oim_loss"] = OIMLoss(cfg) if hasattr(cfg.PERSON_SEARCH.REID.LOSS,"OIM") else IncOIMLoss(cfg)
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
         return ret
 
@@ -965,6 +999,25 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+    def forward_gallery_gt(self, image_list, gt_instances):
+        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        reid_feats=self.reid_head(task_query,image_list, features, roi_boxes)
+        pred_instances=[]
+        for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+            inst=Instances(gt_i.image_size)
+            inst.pred_boxes=gt_i.gt_boxes
+            inst.pred_scores=torch.zeros_like(gt_i.gt_pids,dtype=feats_i.dtype)+0.99
+            inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
+            inst.assign_ids=gt_i.gt_pids
+            inst.reid_feats=feats_i
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            inst.pred_boxes.scale(org_w / w, org_h / h)
+            pred_instances.append(inst)
+
+        return pred_instances
 
     def forward_query(self, image_list, gt_instances):
         features, task_query, _ = self.swin_backbone(image_list.tensor)
@@ -1302,7 +1355,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         else:
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
+        ret["oim_loss"] = OIMLoss(cfg) if hasattr(cfg.PERSON_SEARCH.REID.LOSS,"OIM") else IncOIMLoss(cfg)
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
         return ret
 

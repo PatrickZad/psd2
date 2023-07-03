@@ -57,7 +57,7 @@ class SearchBase(nn.Module):
         images = ImageList.from_tensors(images, self.backbone.size_divisibility)
         return images
 
-    def forward(self, input_list):
+    def forward(self, input_list,infgt=False):
         """
         preds:
             a list of
@@ -86,9 +86,16 @@ class SearchBase(nn.Module):
                 self.visualize_training(image_list, gt_instances, preds, feat_maps)
                 return losses
             else:
+                if infgt:
+                    return self.forward_gallery_gt(image_list, gt_instances)
                 return self.forward_gallery(image_list, gt_instances)  # preds only
 
     def forward_gallery(self, image_list, gt_instances):
+        """
+        Return cls_scores, bboxes and reid features
+        """
+        raise NotImplementedError
+    def forward_gallery_gt(self, image_list, gt_instances):
         """
         Return cls_scores, bboxes and reid features
         """

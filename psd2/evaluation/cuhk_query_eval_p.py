@@ -96,6 +96,7 @@ class CuhkQueryEvaluatorP(QueryEvaluator):
         return super().evaluate()
 
 
+
 class EvaluatorDataset(Dataset):
     def __init__(self, eval_inputs, eval_wref):
         self.eval_inputs = eval_inputs

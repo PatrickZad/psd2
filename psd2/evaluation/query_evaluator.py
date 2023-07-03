@@ -51,7 +51,7 @@ class QueryEvaluator(DatasetEvaluator):
         self._logger = logging.getLogger(__name__)
         # {image name: torch concatenated [boxes, scores, reid features]
         inf_rts = torch.load(
-            os.path.join(self._output_dir, "_gallery_gt_inf.pt"),
+            os.path.join(self._output_dir, "_gallery_gt_inf.pt" if "GT" not in self.dataset_name else "_gallery_gt_infgt.pt"),
             map_location=self._cpu_device,
         )
         self.gts = inf_rts["gts"]
@@ -417,6 +417,7 @@ class QueryEvaluator(DatasetEvaluator):
             shutil.rmtree(opj(id_dir, qimg_id[:-4]))
         if len(os.listdir(id_dir)) == 0:
             shutil.rmtree(id_dir)
+
 
 
 def _trivial_vis(*args, **kw):

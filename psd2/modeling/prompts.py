@@ -88,7 +88,7 @@ class CodaPrompt(nn.Module):
             q = nn.functional.normalize(a_query, dim=2)
             aq_k = torch.einsum("bkd,kd->bk", q, n_K)
             if train:
-                vis_attn.append(aq_k.detach())
+                vis_attn.append(aq_k.detach())  
             # (b x 1 x k x 1) * [1 x plen x k x d] = (b x plen x d) -> prompt = plen x k x d
             P_ = torch.einsum("bk,kld->bld", aq_k, p)
             p_return.append(P_)
@@ -100,7 +100,7 @@ class CodaPrompt(nn.Module):
                 loss += ortho_penalty(p.flatten(start_dim=1, end_dim=2))
                 p_loss += loss * self.ortho_mu
         p_return = torch.stack(p_return, dim=0)
-        if self.vis_period > 0:
+        if self.vis_period > 0 and train:
             storage = get_event_storage()
             if storage.iter % self.vis_period == 0:
                 vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)

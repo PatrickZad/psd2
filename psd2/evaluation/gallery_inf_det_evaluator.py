@@ -304,7 +304,7 @@ class InfDetEvaluator(DatasetEvaluator):
             count_gts_lb = self.count_gt_lb
             count_tps_lb = self.count_tp_lb
         save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
-        save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt")
+        save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt" if "GT" not in self.dataset_name else "_gallery_gt_infgt.pt")
         if not os.path.exists(self._output_dir):
             os.makedirs(self._output_dir)
         torch.save(save_dict, save_path)
@@ -420,6 +420,7 @@ class InfDetEvaluator(DatasetEvaluator):
         img_all = vis_all.get_output().get_image()
         img_vis = np.concatenate([img_org, img_all, img_det], axis=1)
         VisImage(img_vis).save(opj(self.svis_dirs[iou_t][sthred], fname))
+
 
 
 def _trivial_vis(*args, **kw):

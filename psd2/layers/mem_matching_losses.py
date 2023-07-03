@@ -237,14 +237,16 @@ class LabeledMatchingLayer(nn.Module):
                                              between proposals and labeled persons.
         """
         if momentums is None:
-            n_feats = features.shape[0]
-            momentums = features.new_zeros(n_feats) + 0.5
+                n_feats = features.shape[0]
+                momentums = features.new_zeros(n_feats) + 0.5
         if self.sync:
-            scores = self._scores_sync(features, pid_labels, momentums)
+                scores = self._scores_sync(features, pid_labels, momentums)
         else:
-            scores = self._scores_usync(features, pid_labels, momentums)
+                scores = self._scores_usync(features, pid_labels, momentums)
 
         return scores
+    def scores(self, features):
+        return features.mm(self.lookup_table.t())
 
 
 class LabeledMatchingLayerNorm(LabeledMatchingLayer):
@@ -430,10 +432,12 @@ class UnlabeledMatchingLayer(nn.Module):
                                             between proposals and unlabeled persons.
         """
         if self.sync:
-            scores = self._scores_sync(features, pid_labels)
+                scores = self._scores_sync(features, pid_labels)
         else:
-            scores = self._scores_usync(features, pid_labels)
+                scores = self._scores_usync(features, pid_labels)
         return scores
+    def scores(self, features):
+        return features.mm(self.queue.t())
 
 
 class UnlabeledMatchingFull(UnlabeledMatching):
@@ -606,3 +610,117 @@ class OIMLoss(nn.Module):
         num_lb = torch.clamp(num_lb / comm.get_world_size(), min=1).item()
         loss_val = loss_oim.sum() / num_lb
         return {"loss_oim": loss_val * self.loss_weight}
+
+
+
+class IncOIMLoss(nn.Module):
+    @configurable
+    def __init__(
+        self,
+        lb_layer,
+        ulb_layer,
+        lb_factor,
+        ulb_factor,
+        num_lb,
+        num_ulb,
+        feat_len,
+        do_normalize=True,
+        sync=True,
+        use_focal=True,
+        focal_alpha=1,
+        focal_gamma=2,
+        loss_weight=1.0,
+    ):
+        super().__init__()
+        # for compatible with plain oim
+        self.lb_layer = layers_map[lb_layer](num_lb[0], feat_len, sync)
+        self.lb_layers = nn.ModuleList([layers_map[lb_layer](n, feat_len, sync) for n in num_lb]) 
+        
+        if len(num_ulb) == 0:
+            self.ulb_layers = None
+        else:
+            # for compatible with plain oim
+            self.ulb_layer =layers_map[ulb_layer](num_ulb[0], feat_len, sync)
+            self.ulb_layers =nn.ModuleList([layers_map[ulb_layer](n, feat_len, sync) for n in num_ulb])
+        self.lb_factor = lb_factor
+        self.ulb_factor = ulb_factor
+        self.use_focal = use_focal
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        self.do_normalize = do_normalize
+        self.loss_weight = loss_weight
+        self.id_offset=0 if len(num_lb)==1 else sum(num_lb[:-1])
+    
+
+    @classmethod
+    def from_config(cls, cfg):
+        loss_cfg = cfg.PERSON_SEARCH.REID.LOSS
+        assert hasattr(loss_cfg, "INC_OIM")
+        oim_cfg = loss_cfg.INC_OIM
+        ret = {
+            "lb_layer": oim_cfg.LB_LAYER,
+            "ulb_layer": oim_cfg.ULB_LAYER,
+            "lb_factor": oim_cfg.LB_FACTOR,
+            "ulb_factor": oim_cfg.ULB_FACTOR,
+            "num_lb": oim_cfg.NUM_LB,
+            "num_ulb": oim_cfg.LEN_ULB,
+            "feat_len": oim_cfg.FEAT_DIM,
+            "do_normalize": oim_cfg.NORM_FEAT,
+            "sync": oim_cfg.SYNC_MEMORY,
+            "loss_weight": oim_cfg.LOSS_WEIGHT,
+        }
+        if oim_cfg.USE_FOCAL:
+            ret["use_focal"] = True
+            ret["focal_alpha"] = oim_cfg.FOCAL_ALPHA
+            ret["focal_gamma"] = oim_cfg.FOCAL_GAMMA
+        else:
+            ret["use_focal"] = False
+        return ret
+
+    def forward(self, pfeats, pids, lb_mms=None):
+        # NOTE assume that training is conducted with only samples of the latest task 
+        pos_mask = pids > -2
+        pfeats = pfeats[pos_mask]
+        pids = pids[pos_mask]
+        if pfeats.shape[0] == 0:
+            loss_oim = pfeats.sum()*0.0 #pfeats.new_tensor([0]) , to avoid backward failure when only oim is used for training 
+            return {"loss_oim": loss_val * self.loss_weight}
+        else:
+            if self.do_normalize:
+                pfeats = F.normalize(pfeats, dim=-1)
+            lb_matching_scores =[lb_layer.scores(pfeats) * self.lb_factor for lb_layer in self.lb_layers[:-1]]+[self.lb_layers[-1](pfeats, pids, lb_mms)* self.lb_factor ]
+            lb_matching_scores=torch.cat(lb_matching_scores,dim=1)
+            if self.ulb_layers is not None:
+                ulb_matching_scores =[ulb_layer.scores(pfeats) * self.ulb_factor for ulb_layer in self.ulb_layers[:-1]] +[self.ulb_layers[-1](pfeats, pids) * self.ulb_factor]
+                ulb_matching_scores=torch.cat(ulb_matching_scores,dim=1)
+                matching_scores = torch.cat(
+                    (lb_matching_scores, ulb_matching_scores), dim=1
+                )
+            else:
+                matching_scores = lb_matching_scores
+            pid_labels = pids.clone()
+            pid_labels[pid_labels>-1]+=self.id_offset
+            pid_labels[pid_labels == -2] = -1
+            n_lb_feats = (pid_labels > -1).sum()
+            if n_lb_feats == 0:
+                loss_oim = loss_oim = pfeats.sum() * 0.0 # lb_matching_scores.new_tensor([0])
+            else:
+                if self.use_focal:
+                    p_i = F.softmax(matching_scores, dim=1)
+                    focal_p_i = (
+                        self.focal_alpha * (1 - p_i) ** self.focal_gamma * p_i.log()
+                    )
+                    loss_oim = F.nll_loss(
+                        focal_p_i, pid_labels, reduction="none", ignore_index=-1
+                    )
+                else:
+                    loss_oim = F.cross_entropy(
+                        matching_scores, pid_labels, reduction="none", ignore_index=-1
+                    )
+        comm.synchronize()
+        all_num_lb = comm.all_gather(n_lb_feats)
+        num_lb = sum([num.to("cpu") for num in all_num_lb])
+        num_lb = torch.clamp(num_lb / comm.get_world_size(), min=1).item()
+        loss_val = loss_oim.sum() / num_lb
+        return {"loss_oim": loss_val * self.loss_weight}
+
