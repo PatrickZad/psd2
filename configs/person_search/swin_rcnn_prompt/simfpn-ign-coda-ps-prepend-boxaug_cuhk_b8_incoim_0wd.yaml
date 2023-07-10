@@ -105,7 +105,7 @@ DATASETS:
   TRAIN: ("CUHK-SYSU_Train",) 
   TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","CUHK-SYSU_GalleryGT","CUHK-SYSU_TestG100GT") #
 TEST:
-  IMS_PER_PROC: 8
+  IMS_PER_PROC: 6
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
 OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-coda-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"

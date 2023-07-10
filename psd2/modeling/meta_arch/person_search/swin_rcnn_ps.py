@@ -32,7 +32,7 @@ from .swin_rcnn_pd import (
     AlteredStandaredROIHeads,
 )
 from psd2.modeling import ShapeSpec
-
+from psd2.modeling.poolers import ROIPooler
 
 # NOTE to test finetune and upper-bound
 @META_ARCH_REGISTRY.register()
@@ -44,6 +44,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
         oim_loss,
         bn_neck,
         pool_layer,
+        reid_box_pooler,
         *args,
         **kws,
     ):
@@ -52,6 +53,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
         self.pool_layer = pool_layer
         self.oim_loss = oim_loss
         self.bn_neck = bn_neck
+        self.reid_box_pooler=reid_box_pooler
         for p in self.backbone.parameters():
             p.requires_grad = True
         for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
@@ -86,6 +88,27 @@ class SwinF4RCNNPS(SwinF4RCNN):
             else IncOIMLoss(cfg)
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=ret["swin"].num_features[i], stride=ret["swin"].strides[i]
+            )
+            for i in range(len(ret["swin"].stages))
+        }
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution,int):
+            pooler_resolution=(pooler_resolution,pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
+        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"]=reid_box_pooler
         return ret
 
     def load_state_dict(self, *args, **kws):
@@ -126,7 +149,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
                 Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
                 for roi_boxes_i in roi_boxes
             ]
-        x = self.roi_heads.pooler(features, roi_boxes)
+        x = self.reid_box_pooler(features, roi_boxes)
         del features
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -321,6 +344,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
         oim_loss,
         bn_neck,
         pool_layer,
+        reid_box_pooler,
         *args,
         **kws,
     ):
@@ -329,6 +353,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
         self.pool_layer = pool_layer
         self.oim_loss = oim_loss
         self.bn_neck = bn_neck
+        self.reid_box_pooler=reid_box_pooler
         for p in self.backbone.parameters():
             p.requires_grad = True
         for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
@@ -363,6 +388,27 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
             else IncOIMLoss(cfg)
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=ret["swin"].num_features[i], stride=ret["swin"].strides[i]
+            )
+            for i in range(len(ret["swin"].stages))
+        }
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution,int):
+            pooler_resolution=(pooler_resolution,pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
+        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"]=reid_box_pooler
         return ret
 
     def load_state_dict(self, *args, **kws):
@@ -403,7 +449,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
                 Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
                 for roi_boxes_i in roi_boxes
             ]
-        x = self.roi_heads.pooler(features, roi_boxes)
+        x = self.reid_box_pooler(features, roi_boxes)
         del features
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -497,7 +543,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
             losses.update(proposal_losses)
             assign_ids = self.id_assigner(
                 roi_boxes,
-                [inst.scores for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
                 [inst.gt_boxes.tensor for inst in gt_instances],
                 [inst.gt_pids for inst in gt_instances],
                 match_indices=pos_match_indices,
@@ -512,7 +558,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
             iou_t = self.roi_heads.box_predictor.test_nms_thresh
             for pred_i in pred_instances:
                 pred_boxes_t = pred_i.pred_boxes.tensor
-                pred_scores = pred_i.scores
+                pred_scores = pred_i.pred_scores
                 filter_mask = pred_scores >= score_t
                 pred_boxes_t = pred_boxes_t[filter_mask]
                 pred_scores = pred_scores[filter_mask]
@@ -662,7 +708,7 @@ class SwinF4RCNNPS2(SwinF4RCNNPS):
                 Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
                 for roi_boxes_i in roi_boxes
             ]
-        x = self.roi_heads.pooler(features, roi_boxes)
+        x = self.reid_box_pooler(features, roi_boxes)
         del features
         # NOTE semantic_weight = 0:
 
@@ -1068,6 +1114,21 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
             else IncOIMLoss(cfg)
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution,int):
+            pooler_resolution=(pooler_resolution,pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
+        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"]=reid_box_pooler
         return ret
 
     @torch.no_grad()
@@ -1172,7 +1233,7 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
                 for roi_boxes_i in roi_boxes
             ]
-        x = self.roi_heads.pooler(features, roi_boxes)
+        x = self.reid_box_pooler(features, roi_boxes)
         del features
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -1649,6 +1710,21 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             else IncOIMLoss(cfg)
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution,int):
+            pooler_resolution=(pooler_resolution,pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
+        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"]=reid_box_pooler
         return ret
 
     @torch.no_grad()
@@ -1753,7 +1829,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
                 for roi_boxes_i in roi_boxes
             ]
-        x = self.roi_heads.pooler(features, roi_boxes)
+        x = self.reid_box_pooler(features, roi_boxes)
         del features
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -2102,7 +2178,7 @@ class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
             losses.update(proposal_losses)
             assign_ids = self.id_assigner(
                 roi_boxes,
-                [inst.scores for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
                 [inst.gt_boxes.tensor for inst in gt_instances],
                 [inst.gt_pids for inst in gt_instances],
                 match_indices=pos_match_indices,
@@ -2132,7 +2208,7 @@ class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
             iou_t = self.roi_heads.box_predictor.test_nms_thresh
             for pred_i in pred_instances:
                 pred_boxes_t = pred_i.pred_boxes.tensor
-                pred_scores = pred_i.scores
+                pred_scores = pred_i.pred_scores
                 filter_mask = pred_scores >= score_t
                 pred_boxes_t = pred_boxes_t[filter_mask]
                 pred_scores = pred_scores[filter_mask]
