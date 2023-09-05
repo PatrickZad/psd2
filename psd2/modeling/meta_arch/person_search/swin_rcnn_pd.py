@@ -560,6 +560,45 @@ class SwinSimFPNRCNN(SwinF4RCNN):
         return {"stage4": outs[-1]}
 
 
+@META_ARCH_REGISTRY.register()
+class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
+
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        bonenum = 3
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if i == bonenum - 1:
+                if hasattr(self.swin, f"norm{i}"):
+                    norm_layer = getattr(self.swin, f"norm{i}")
+                    out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(out)
+        return {"stage3": outs[-1]}
+
+
+
 from psd2.modeling.roi_heads.roi_heads import (
     ROIHeads,
     add_ground_truth_to_proposals,

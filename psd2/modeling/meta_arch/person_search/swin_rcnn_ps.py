@@ -301,6 +301,40 @@ class SwinF4RCNNPS(SwinF4RCNN):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+    def forward_gallery_vis(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            self.swin, image_list, features, proposals, gt_instances
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        # nms
+        reid_feats = self.reid_head(image_list, features, roi_boxes)
+        score_t = self.roi_heads.box_predictor.test_score_thresh
+        iou_t = self.roi_heads.box_predictor.test_nms_thresh
+        for pred_i, feats_i in zip(pred_instances, reid_feats):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = feats_i[keep]
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+        return pred_instances, [feat.detach() for feat in features.values()]
+        
+
+
 
     def forward_gallery_gt(self, image_list, gt_instances):
         assert not self.training
@@ -333,7 +367,6 @@ class SwinF4RCNNPS(SwinF4RCNN):
             Instances(gt_instances[i].image_size, reid_feats=box_embs[i])
             for i in range(len(box_embs))
         ]
-
 
 @META_ARCH_REGISTRY.register()
 class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
@@ -917,18 +950,15 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         patch_embed = ret["backbone"]
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
-        if "L2P" in prompt_cfg.PROMPT_TYPE:
-            if prompt_cfg.STAGE_WISE:
-                num_prompts = [n * prompt_cfg.TOP_K for n in prompt_cfg.NUM_PROMPTS]
-            else:
-                num_prompts = prompt_cfg.TOP_K * prompt_cfg.NUM_PROMPTS
-        else:
-            num_prompts = prompt_cfg.NUM_PROMPTS
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts,int):
+            num_prompts=[num_prompts]*4
+        in_num_prompts=[ n* prompt_cfg.TOP_K for n in num_prompts] if "L2P" in prompt_cfg.PROMPT_TYPE else num_prompts
         # NOTE downsample module of stage3 is trainable
         swin = SidePromptedSwinTransformer(
             side_start_stage=3,
             prompt_start_stage=1,
-            num_prompts=num_prompts,
+            num_prompts=in_num_prompts,
             semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
             pretrain_img_size=patch_embed.pretrain_img_size,
             patch_size=patch_embed.patch_size
@@ -963,8 +993,8 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
             if stage_num_prompts == 0:
                 stage_prompts.append(nn.Identity())
                 continue
-            if prompt_cfg.PROMPT_TYPE == "L2P":
-                prompt_stage = prompts.L2P(
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -975,8 +1005,8 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2PO":
-                prompt_stage = prompts.L2POrg(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -987,8 +1017,8 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2POCos":
-                prompt_stage = prompts.L2POrgCos(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1005,6 +1035,17 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             else:  # CODAPrompt
                 prompt_stage = prompts.CodaPrompt(
                     emb_d=swin.num_features[si],
@@ -1016,7 +1057,7 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            prompt_stage.task_count = prompt_cfg.CURRECT_TASK
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
@@ -1026,8 +1067,8 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         if stage_num_prompts == 0:
             stage_prompts.append(nn.Identity())
         else:
-            if prompt_cfg.PROMPT_TYPE == "L2P":
-                prompt_stage = prompts.L2P(
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1038,8 +1079,20 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2PO":
-                prompt_stage = prompts.L2POrg(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1056,18 +1109,29 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     num_prompts=stage_num_prompts,
                     num_layers=tr_cfg.DEPTH[-1],
                 )
-            else:  # CODAPrompt
-                prompt_stage = prompts.CodaPrompt(
-                    emb_d=swin.num_features[-1],
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
                     num_prompts=stage_num_prompts,
-                    num_layers=tr_cfg.DEPTH[-1],
+                    num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            prompt_stage.task_count = prompt_cfg.CURRECT_TASK
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
             side_stage_prompts.append(prompt_stage)
 
         ret.update(
@@ -1395,6 +1459,56 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
 
+    def forward_gallery_vis(self, image_list, gt_instances):
+        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            self.swin,
+            self.side_stage_prompts,
+            task_query,
+            image_list,
+            features,
+            proposals,
+            gt_instances,
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+        reid_loss = self.reid_head(
+                task_query, image_list, features, roi_boxes, assign_ids
+            )
+
+        for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+        score_t = self.roi_heads.box_predictor.test_score_thresh
+        iou_t = self.roi_heads.box_predictor.test_nms_thresh
+        for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+        return pred_instances, [feat.detach() for feat in features.values()]
     def forward_gallery_gt(self, image_list, gt_instances):
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
         roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
@@ -1501,18 +1615,16 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         patch_embed = ret["backbone"]
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
-        if "L2P" in prompt_cfg.PROMPT_TYPE:
-            if prompt_cfg.STAGE_WISE:
-                num_prompts = [n * prompt_cfg.TOP_K for n in prompt_cfg.NUM_PROMPTS]
-            else:
-                num_prompts = prompt_cfg.TOP_K * prompt_cfg.NUM_PROMPTS
-        else:
-            num_prompts = prompt_cfg.NUM_PROMPTS
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts,int):
+            num_prompts=[num_prompts]*4
+        in_num_prompts=[ n* prompt_cfg.TOP_K for n in num_prompts] if "L2P" in prompt_cfg.PROMPT_TYPE else num_prompts
         # NOTE downsample module of stage3 is trainable
         swin = SidePromptedSwinTransformer(
             side_start_stage=3,
             prompt_start_stage=1,
-            num_prompts=num_prompts,
+            num_prompts=in_num_prompts,
             semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
             pretrain_img_size=patch_embed.pretrain_img_size,
             patch_size=patch_embed.patch_size
@@ -1556,8 +1668,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             if stage_num_prompts == 0:
                 stage_prompts.append(nn.Identity())
                 continue
-            if prompt_cfg.PROMPT_TYPE == "L2P":
-                prompt_stage = prompts.L2P(
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1568,8 +1680,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2PO":
-                prompt_stage = prompts.L2POrg(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1580,8 +1692,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2POCos":
-                prompt_stage = prompts.L2POrgCos(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1598,6 +1710,17 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             else:  # CODAPrompt
                 prompt_stage = prompts.CodaPrompt(
                     emb_d=swin.num_features[si],
@@ -1609,7 +1732,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            prompt_stage.task_count = prompt_cfg.CURRECT_TASK
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
@@ -1619,8 +1742,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         if stage_num_prompts == 0:
             stage_prompts.append(nn.Identity())
         else:
-            if prompt_cfg.PROMPT_TYPE == "L2P":
-                prompt_stage = prompts.L2P(
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1631,8 +1754,20 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            elif prompt_cfg.PROMPT_TYPE == "L2PO":
-                prompt_stage = prompts.L2POrg(
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1649,18 +1784,29 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     num_prompts=stage_num_prompts,
                     num_layers=tr_cfg.DEPTH[-1],
                 )
-            else:  # CODAPrompt
-                prompt_stage = prompts.CodaPrompt(
-                    emb_d=swin.num_features[-1],
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
                     num_prompts=stage_num_prompts,
-                    num_layers=tr_cfg.DEPTH[-1],
+                    num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            prompt_stage.task_count = prompt_cfg.CURRECT_TASK
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
             side_stage_prompts.append(prompt_stage)
 
         ret.update(
@@ -1991,6 +2137,54 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+    def forward_gallery_vis(self, image_list, gt_instances):
+        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        fpn_features = self.sim_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, fpn_features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list,
+            fpn_features,
+            proposals,
+            gt_instances,
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+        reid_loss = self.reid_head(
+                task_query, image_list, features, roi_boxes, assign_ids
+            )
+        for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+        score_t = self.roi_heads.box_predictor.test_score_thresh
+        iou_t = self.roi_heads.box_predictor.test_nms_thresh
+        for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+        return pred_instances, [feat.detach() for feat in features.values()]
+        
 
     def forward_gallery_gt(self, image_list, gt_instances):
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
@@ -2140,6 +2334,7 @@ class PromptedSwinF4RCNNPSBoxAug(PromptedSwinF4RCNNPS):
             return pred_instances
 
 
+
 @META_ARCH_REGISTRY.register()
 class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
     @configurable
@@ -2252,7 +2447,7 @@ class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
-
+    
 
 @META_ARCH_REGISTRY.register()
 class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
@@ -2281,7 +2476,7 @@ class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
         ret["swin_org"] = swin_org
         return ret
 
-
+#TODO refactor new L2P code
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
     @classmethod
@@ -2368,6 +2563,17 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                     num_prompts=prompt_cfg.NUM_PROMPTS,
                     num_layers=nl,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             else:  # CODAPrompt
                 prompt_stage = prompts.CodaPrompt(
                     emb_d=swin.num_features[si],
@@ -2379,7 +2585,8 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
-            prompt_stage.task_count = prompt_cfg.CURRECT_TASK
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if prompt_cfg.PROMPT_TYPE == "L2P":
@@ -2394,6 +2601,18 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                 key_dim=swin.num_features[-1],
                 vis_period=cfg.VIS_PERIOD,
             )
+        elif prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=prompt_cfg.NUM_PROMPTS,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
         elif prompt_cfg.PROMPT_TYPE == "L2PO":
             prompt_stage = prompts.L2POrg(
                 emb_d=swin.num_features[-1],
@@ -2412,6 +2631,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                 num_prompts=prompt_cfg.NUM_PROMPTS,
                 num_layers=tr_cfg.DEPTH[-1],
             )
+        
         else:  # CODAPrompt
             prompt_stage = prompts.CodaPrompt(
                 emb_d=swin.num_features[-1],

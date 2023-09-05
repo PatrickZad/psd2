@@ -37,11 +37,11 @@ PERSON_SEARCH:
         ULB_LAYER: "ulb_full"
         LB_FACTOR: 30
         ULB_FACTOR: 30
-        NUM_LB: [5532,483,2087]
+        NUM_LB: [5532,483,10000]
         LEN_ULB: [5000,500,3000]
         FEAT_DIM: 768
         NORM_FEAT: True
-        SYNC_MEMORY: False
+        SYNC_MEMORY: True
         USE_FOCAL: True
         FOCAL_ALPHA: 1.0
         FOCAL_GAMMA: 2.0
@@ -62,7 +62,7 @@ INPUT:
   MAX_SIZE_TEST: 720
 DATASETS:
   TRAIN: ("MovieNet_Train_app10",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
 TEST:
   IMS_PER_PROC: 8
   EVAL_PERIOD: 2520

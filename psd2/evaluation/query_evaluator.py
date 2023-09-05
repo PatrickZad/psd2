@@ -68,7 +68,7 @@ class QueryEvaluator(DatasetEvaluator):
         if not vis:
             self._vis_search = _trivial_vis
             return
-        vis_dir = opj(self._output_dir, "vis", "search")
+        vis_dir = opj(self._output_dir,self.dataset_name, "vis", "search")
         self.svis_dirs = {}
         lrk = comm.get_local_rank()
         for scr in s_threds:
@@ -218,6 +218,8 @@ class QueryEvaluator(DatasetEvaluator):
             "c": "black",
             "m": "white",
         }
+        q_box=q_box.tensor.squeeze(0).numpy()
+        q_id=q_id.squeeze().item()
         id_dir = opj(self.svis_dirs[sthred], str(q_id))
         pos_dir = opj(id_dir, qimg_id[:-4], "pos")
         neg_dir = opj(id_dir, qimg_id[:-4], "neg")
@@ -229,7 +231,7 @@ class QueryEvaluator(DatasetEvaluator):
         q_path = self.gtfs[qimg_id]
         qimg = Image.open(q_path)
         vis_org = Visualizer(qimg)
-        vis_org.draw_box(q_box.numpy(), edge_color="g")
+        vis_org.draw_box(q_box, edge_color="g")
         id_pos = q_box[:2]
         vis_org.draw_text(
             str(q_id), id_pos, horizontal_alignment="left", color="w", bg_color="g"

@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpn_cococh_small-ign/model_0336259.pth"
+  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-l2pppMask-ps-prepend16-boxaug4_cuhk2prw_adam_b8_incoim_0wd/model_final.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -43,12 +43,13 @@ PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [16,16,16,16]
-    POOL_SIZE: 30
-    PROMPT_TYPE: "CODAPrompt"
+    NUM_PROMPTS: [4,4,4,4]
+    POOL_SIZE: 12
+    PROMPT_TYPE: "L2PppMask"
     NUM_TASKS: 3
-    CURRECT_TASK: 0
+    CURRECT_TASK: 2
     LOSS_WEIGHT: 0.1
+    TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
@@ -78,8 +79,8 @@ PERSON_SEARCH:
         ULB_LAYER: "ulb_full"
         LB_FACTOR: 30
         ULB_FACTOR: 30
-        NUM_LB: [5532,]
-        LEN_ULB: [5000,]
+        NUM_LB: [5532,483,2807] # for vis [10000,]
+        LEN_ULB: [5000,500,3000] # for vis [5000,]
         FEAT_DIM: 768
         NORM_FEAT: True
         SYNC_MEMORY: True
@@ -90,22 +91,22 @@ PERSON_SEARCH:
 SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0003
-  STEPS: (33624,67248)
-  MAX_ITER: 70050 # 1401 * 50
-  CHECKPOINT_PERIOD: 2802
+  STEPS: (30240,60480)
+  MAX_ITER: 63000 # 1260 * 50
+  CHECKPOINT_PERIOD: 2520
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
   IMS_PER_BATCH: 8
 INPUT:
-  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
-  MAX_SIZE_TRAIN: 1333
-  MIN_SIZE_TEST: 800
-  MAX_SIZE_TEST: 1333
+  MIN_SIZE_TRAIN: (160,192,224, 240)
+  MAX_SIZE_TRAIN: 720
+  MIN_SIZE_TEST: 240
+  MAX_SIZE_TEST: 720
 DATASETS:
-  TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") # "CUHK-SYSU_GalleryGT","CUHK-SYSU_TestG100GT") #
+  TRAIN: ("MovieNet_Train_app10",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
 TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-coda-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMask-ps-prepend16-boxaug4_cuhk2prw2mvn_adam_b8_incoim_0wd"

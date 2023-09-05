@@ -175,7 +175,10 @@ class SearchBase(nn.Module):
             boxes = pred_instances[bi].pred_boxes
             boxes = boxes.tensor.cpu().numpy()
             scores = pred_instances[bi].pred_scores.cpu().tolist()
-            assign_ids = pred_instances[bi].assign_ids.cpu().tolist()
+            if hasattr(pred_instances[bi],"assign_ids"):
+                assign_ids = pred_instances[bi].assign_ids.cpu().tolist()
+            else:
+                assign_ids=None
             for i, score in enumerate(scores):
                 split = score_split(score, threds)
                 b_clr = COLORS[i % len(COLORS)]
@@ -188,13 +191,14 @@ class SearchBase(nn.Module):
                     color=t_clr,
                     bg_color=b_clr,
                 )
-                visualize_preds[split].draw_text(
-                    str(assign_ids[i]),
-                    boxes[i][:2],
-                    horizontal_alignment="left",
-                    color=t_clr,
-                    bg_color=b_clr,
-                )
+                if assign_ids is not None:
+                    visualize_preds[split].draw_text(
+                        str(assign_ids[i]),
+                        boxes[i][:2],
+                        horizontal_alignment="left",
+                        color=t_clr,
+                        bg_color=b_clr,
+                    )
             rgb_preds = [vis.get_output().get_image() for vis in visualize_preds]
             rgb_pred = np.concatenate(rgb_preds, axis=1)
             t_pred = tvF.to_tensor(rgb_pred)
@@ -202,3 +206,12 @@ class SearchBase(nn.Module):
 
     def vis_forward(self, image_list, gt_instances, pred_instances, feat_maps=None):
         raise NotImplementedError
+    @torch.no_grad()
+    def forward_vis(self, input_list):
+        image_list = self.preprocess_input(input_list)
+        gt_instances = [gti["instances"].to(self.device) for gti in input_list]
+        preds, feat_maps = self.forward_gallery_vis(
+                    image_list, gt_instances
+                )
+        self.visualize_training(image_list, gt_instances, preds, feat_maps)
+        return preds

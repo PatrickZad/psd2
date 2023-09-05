@@ -574,7 +574,6 @@ class OIMLoss(nn.Module):
         pids = pids[pos_mask]
         if pfeats.shape[0] == 0:
             loss_oim = pfeats.sum()*0.0 #pfeats.new_tensor([0]) , to avoid backward failure when only oim is used for training 
-            return {"loss_oim": loss_val * self.loss_weight}
         else:
             if self.do_normalize:
                 pfeats = F.normalize(pfeats, dim=-1)
@@ -590,7 +589,7 @@ class OIMLoss(nn.Module):
             pid_labels[pid_labels == -2] = -1
             n_lb_feats = (pid_labels > -1).sum()
             if n_lb_feats == 0:
-                loss_oim = loss_oim = pfeats.sum() * 0.0 # lb_matching_scores.new_tensor([0])
+                loss_oim = loss_oim = matching_scores.sum() * 0.0 # lb_matching_scores.new_tensor([0])
             else:
                 if self.use_focal:
                     p_i = F.softmax(matching_scores, dim=1)
@@ -633,7 +632,7 @@ class IncOIMLoss(nn.Module):
     ):
         super().__init__()
         # for compatible with plain oim
-        self.lb_layer = layers_map[lb_layer](num_lb[0], feat_len, sync)
+        self.lb_layer = layers_map[lb_layer](num_lb[0], feat_len,sync)
         self.lb_layers = nn.ModuleList([layers_map[lb_layer](n, feat_len, sync) for n in num_lb]) 
         
         if len(num_ulb) == 0:
@@ -650,7 +649,8 @@ class IncOIMLoss(nn.Module):
         self.do_normalize = do_normalize
         self.loss_weight = loss_weight
         self.id_offset=0 if len(num_lb)==1 else sum(num_lb[:-1])
-    
+        #NOTE pre-sync to fix sync for multi-gpu small batch (more pure-ulb gpu-batches)
+        self.sync=sync
 
     @classmethod
     def from_config(cls, cfg):
@@ -684,7 +684,6 @@ class IncOIMLoss(nn.Module):
         pids = pids[pos_mask]
         if pfeats.shape[0] == 0:
             loss_oim = pfeats.sum()*0.0 #pfeats.new_tensor([0]) , to avoid backward failure when only oim is used for training 
-            return {"loss_oim": loss_val * self.loss_weight}
         else:
             if self.do_normalize:
                 pfeats = F.normalize(pfeats, dim=-1)
@@ -703,7 +702,7 @@ class IncOIMLoss(nn.Module):
             pid_labels[pid_labels == -2] = -1
             n_lb_feats = (pid_labels > -1).sum()
             if n_lb_feats == 0:
-                loss_oim = loss_oim = pfeats.sum() * 0.0 # lb_matching_scores.new_tensor([0])
+                loss_oim = matching_scores.sum() * 0.0 # lb_matching_scores.new_tensor([0])
             else:
                 if self.use_focal:
                     p_i = F.softmax(matching_scores, dim=1)

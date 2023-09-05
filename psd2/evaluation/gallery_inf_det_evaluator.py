@@ -20,7 +20,9 @@ import shutil
 from psd2.utils.visualizer import domain_hist_img
 import time
 from psd2.structures import Boxes, pairwise_iou
-
+import pandas
+import seaborn
+import matplotlib.pyplot as mplot
 logger = logging.getLogger(__name__)
 
 # NOTE evaluation in augmented box range
@@ -56,6 +58,10 @@ class InfDetEvaluator(DatasetEvaluator):
         self.count_gt_lb = 0
         self.count_tp = 0
         self.count_tp_lb = 0
+        # in-depth analysis
+        self.count_tp_ulb = 0
+        self.count_false = 0
+        self.tp_ious = []
         # det score vis to tb, for incmt spps
         self.det_scores_per_domain = []
         # make vis dirs
@@ -101,6 +107,14 @@ class InfDetEvaluator(DatasetEvaluator):
         self.count_tp_lb = {
             iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
         }
+        self.count_tp_ulb = {
+            iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
+        }
+        self.count_false = {
+            iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
+        }
+        self.tp_ious = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
+
 
     def process(self, inputs, outputs):
         """
@@ -219,8 +233,23 @@ class InfDetEvaluator(DatasetEvaluator):
                 self.count_tp[iou_t][sthred] += tfmat.sum().item()
                 self.count_gt[iou_t][sthred] += num_gts
                 tfmat_lb = tfmat[gt_pids_t > -1, :]
-                self.count_tp_lb[iou_t][sthred] += tfmat_lb.sum().item()
+                if tfmat_lb.shape[0] > 0:
+                        cur_tp_lb = tfmat_lb.sum().item()
+                else:
+                        cur_tp_lb = 0
+                self.count_tp_lb[iou_t][sthred] += cur_tp_lb
                 self.count_gt_lb[iou_t][sthred] += num_lb_gts
+                tfmat_ulb = tfmat[gt_pids_t == -1, :]
+                if tfmat_ulb.shape[0] > 0:
+                        cur_tp_ulb = tfmat_ulb.sum().item()
+                else:
+                        cur_tp_ulb = 0
+                self.count_tp_ulb[iou_t][sthred] += cur_tp_ulb
+                self.count_false[iou_t][sthred] += (
+                        tfmat.shape[1] - cur_tp_lb - cur_tp_ulb
+                    )
+                tp_ious = ious[tfmat].cpu().numpy().tolist()
+                self.tp_ious[iou_t][sthred].extend(tp_ious)
                 s_recall = tfmat.sum().item() / num_gts
                 s_precision = tfmat.sum().item() / num_dets
                 if s_recall < 1 or s_precision < 1:
@@ -263,6 +292,9 @@ class InfDetEvaluator(DatasetEvaluator):
             count_tp_rs = comm.gather(self.count_tp, dst=0)
             count_gt_lb_rs = comm.gather(self.count_gt_lb, dst=0)
             count_tp_lb_rs = comm.gather(self.count_tp_lb, dst=0)
+            count_tp_ulb_rs = comm.gather(self.count_tp_ulb, dst=0)
+            count_false_rs = comm.gather(self.count_false, dst=0)
+            tp_ious_rs = comm.gather(self.tp_ious, dst=0)
             y_trues = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
             y_scores = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
             count_gts = {iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs}
@@ -273,6 +305,13 @@ class InfDetEvaluator(DatasetEvaluator):
             count_tps_lb = {
                 iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
             }
+            count_tps_ulb = {
+                iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
+            }
+            count_false = {
+                iou: {k: 0 for k in self.threshs} for iou in self.iou_threshs
+            }
+            tp_ious = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
             for iou_t in self.iou_threshs:
                 for st in self.threshs:
                     y_trues[iou_t][st] = list(
@@ -289,6 +328,15 @@ class InfDetEvaluator(DatasetEvaluator):
                     count_tps_lb[iou_t][st] = sum(
                         [ct[iou_t][st] for ct in count_tp_lb_rs]
                     )
+                    count_tps_ulb[iou_t][st] = sum(
+                        [ct[iou_t][st] for ct in count_tp_ulb_rs]
+                    )
+                    count_false[iou_t][st] = sum(
+                        [ct[iou_t][st] for ct in count_false_rs]
+                    )
+                    tp_ious[iou_t][st] = list(
+                        itertools.chain(*[ti[iou_t][st] for ti in tp_ious_rs])
+                    )
             if len(save_rts) == 0 or len(save_gts) == 0 or len(save_gtfs) == 0:
                 comm.synchronize()
                 return {}
@@ -303,6 +351,9 @@ class InfDetEvaluator(DatasetEvaluator):
             count_tps = self.count_tp
             count_gts_lb = self.count_gt_lb
             count_tps_lb = self.count_tp_lb
+            count_tps_ulb = self.count_tp_ulb
+            count_false = self.count_false
+            tp_ious = self.tp_ious
         save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
         save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt" if "GT" not in self.dataset_name else "_gallery_gt_infgt.pt")
         if not os.path.exists(self._output_dir):
@@ -319,6 +370,8 @@ class InfDetEvaluator(DatasetEvaluator):
                 count_tp = count_tps[iou_t][st]
                 count_gt = count_gts[iou_t][st]
                 count_tp_lb = count_tps_lb[iou_t][st]
+                count_tp_ulb = count_tps_ulb[iou_t][st]
+                count_neg = count_false[iou_t][st]
                 count_gt_lb = count_gts_lb[iou_t][st]
                 y_true = y_trues[iou_t][st]
                 y_score = y_scores[iou_t][st]
@@ -337,8 +390,13 @@ class InfDetEvaluator(DatasetEvaluator):
                         "AP_iou{}_score{}".format(iou_t, st): ap,
                         "Recall_iou{}_score{}".format(iou_t, st): det_rate,
                         "RecallLb_iou{}_score{}".format(iou_t, st): det_rate_lb,
+                        "Num_Lb_iou{}_score{}".format(iou_t, st): count_tp_lb,
+                        "Num_Ulb_iou{}_score{}".format(iou_t, st): count_tp_ulb,
+                        "Num_Neg_iou{}_score{}".format(iou_t, st): count_neg,
                     }
                 )
+        self._vis_tp_iou(tp_ious)
+        self._vis_det_scores(y_scores, y_trues)
         return copy.deepcopy(det_result)
 
     def _vis_samp(
@@ -421,7 +479,54 @@ class InfDetEvaluator(DatasetEvaluator):
         img_vis = np.concatenate([img_org, img_all, img_det], axis=1)
         VisImage(img_vis).save(opj(self.svis_dirs[iou_t][sthred], fname))
 
-
+    def _vis_tp_iou(self, tp_ious):
+        for iou_t in self.iou_threshs:
+            for st in self.threshs:
+                mplot.clf()
+                ious = tp_ious[iou_t][st]
+                vis_data = pandas.DataFrame(
+                    {
+                        "ious": ious,
+                    },
+                )
+                plt = seaborn.histplot(data=vis_data, x="ious", binwidth=0.05,stat="count")
+                fig = plt.get_figure()
+                fig.savefig(
+                    opj(
+                        self._output_dir,
+                        "ious_iou{}_score{}.png".format(iou_t, st),
+                    ),
+                    dpi=400,
+                )
+    def _vis_det_scores(self, det_scores, det_labels):
+        for iou_t in self.iou_threshs:
+            for st in self.threshs:
+                mplot.clf()
+                scores = det_scores[iou_t][st]
+                labels = det_labels[iou_t][st]
+                tp_scores = np.array(scores, dtype=np.float32)[
+                    np.array(labels, np.bool8)
+                ].tolist()
+                fp_scores = np.array(scores, dtype=np.float32)[
+                    np.logical_not(np.array(labels, np.bool8))
+                ].tolist()
+                vis_data = pandas.DataFrame(
+                    {
+                        "scores": tp_scores + fp_scores,
+                        "type": ["pos"] * len(tp_scores) + ["neg"] * len(fp_scores),
+                    },
+                )
+                plt = seaborn.histplot(
+                    data=vis_data, x="scores", hue="type", binwidth=0.05,multiple="dodge",stat="count"
+                )
+                fig = plt.get_figure()
+                fig.savefig(
+                    opj(
+                        self._output_dir,
+                        "scores_iou{}_score{}.png".format(iou_t, st),
+                    ),
+                    dpi=400,
+                )
 
 def _trivial_vis(*args, **kw):
     pass

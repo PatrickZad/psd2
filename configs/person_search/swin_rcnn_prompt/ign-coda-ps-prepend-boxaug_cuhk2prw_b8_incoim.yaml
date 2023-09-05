@@ -41,7 +41,7 @@ PERSON_SEARCH:
         LEN_ULB: [5000,500]
         FEAT_DIM: 768
         NORM_FEAT: True
-        SYNC_MEMORY: False
+        SYNC_MEMORY: True
         USE_FOCAL: True
         FOCAL_ALPHA: 1.0
         FOCAL_GAMMA: 2.0

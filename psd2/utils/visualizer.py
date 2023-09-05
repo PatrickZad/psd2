@@ -1470,7 +1470,7 @@ def mat_heatmap(matrix,vmin,vmax):
 
     mat_data=matrix.cpu().numpy()
     fig = plt.figure()
-    sns.heatmap(mat_data,vmin=vmin,vmax=vmax)
+    sns.heatmap(mat_data,vmin=vmin,vmax=vmax,annot=True,fmt='0.2g',linewidths=.6,annot_kws={'rotation': 270})
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=180)
     buf.seek(0)
