@@ -17,7 +17,7 @@ PERSON_SEARCH:
     MODEL:
       TRANSFORMER:
         WITH_CP: False
-        SEMANTIC_WEIGHT: 0.0
+        SEMANTIC_WEIGHT: -1
   REID:
     MODEL:
       IN_FEAT: "stage3"
