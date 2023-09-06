@@ -63,8 +63,8 @@ SOLVER:
   IMS_PER_BATCH: 8
 DATASETS:
   TRAIN: ("COCO-CH",) 
-  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery",) #
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery","MovieNet_GalleryTestG2000") #
 TEST:
   EVAL_PERIOD: 19780
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/pd-pre-simfpn_cococh_small-ign"
+OUTPUT_DIR: "outputs/swin_rcnn/pd-pre-simfpn_cococh_small-ign_r"
