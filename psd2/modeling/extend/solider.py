@@ -2580,23 +2580,25 @@ class SideSwinTransformer(SwinTransformer):
                         n_idx = idx - self.side_start_stage + 1
                         n_k = ".".join([str(n_idx)] + k_kws[2:])
                         semantic_emb_b_params[n_k] = v
+            
             res = self.side_stages.load_state_dict(stages_params, strict=False)
             print("parameters of *side_stages* haved been loaded:\n", str(res))
             for i, p in norm_params.items():
                 res = getattr(self, f"side_norm{i}").load_state_dict(p, strict=False)
                 print(f"parameters of *side_norm{i}* haved been loaded:\n", str(res))
-            res = self.side_semantic_embed_w.load_state_dict(
-                semantic_emb_w_params, strict=False
-            )
-            print(
-                "parameters of *side_semantic_embed_w* haved been loaded:\n", str(res)
-            )
-            res = self.side_semantic_embed_b.load_state_dict(
-                semantic_emb_b_params, strict=False
-            )
-            print(
-                "parameters of *side_semantic_embed_b* haved been loaded:\n", str(res)
-            )
+            if self.semantic_weight >= 0:
+                res = self.side_semantic_embed_w.load_state_dict(
+                    semantic_emb_w_params, strict=False
+                )
+                print(
+                    "parameters of *side_semantic_embed_w* haved been loaded:\n", str(res)
+                )
+                res = self.side_semantic_embed_b.load_state_dict(
+                    semantic_emb_b_params, strict=False
+                )
+                print(
+                    "parameters of *side_semantic_embed_b* haved been loaded:\n", str(res)
+                )
 
 
 class SidePromptedSwinTransformer(SideSwinTransformer, PromptedSwinTransformer):

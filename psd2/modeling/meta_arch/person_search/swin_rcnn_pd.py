@@ -66,13 +66,14 @@ class SwinF4RCNN(SearchBase):
             self.swin.eval()
             self.swin.side_stages[-1].train()
             self.swin.side_stages[-2].downsample.train()
-            self.swin.side_semantic_embed_w[-1].train()
-            self.swin.side_semantic_embed_b[-1].train()
-            self.swin.side_semantic_embed_w[-2].train()
-            self.swin.side_semantic_embed_b[-2].train()
+            if hasattr(self.swin,"side_semantic_embed_w"):
+                self.swin.side_semantic_embed_w[-1].train()
+                self.swin.side_semantic_embed_b[-1].train()
+                self.swin.side_semantic_embed_w[-2].train()
+                self.swin.side_semantic_embed_b[-2].train()
+                self.swin.softplus.train()
             self.swin.side_norm2.train()
             self.swin.side_norm3.train()
-            self.swin.softplus.train()
             self.proposal_generator.train()
             self.roi_heads.train()
         else:
@@ -508,17 +509,12 @@ class SwinSimFPNRCNN(SwinF4RCNN):
 
             for i, instances_i in enumerate(pred_instances):
                 instances_i.assign_ids = torch.zeros_like(
-                    instances_i.scores, dtype=torch.int64
+                    instances_i.pred_scores, dtype=torch.int64
                 )  # assign_ids[i]
-            for pred_i in pred_instances:
-                pred_scores = pred_i.scores
-                pred_i.pred_scores = pred_scores
-                pred_i.reid_feats = pred_i.pred_boxes.tensor  # trivial impl
+                instances_i.reid_feats = instances_i.pred_boxes.tensor  # trivial impl
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             for pred_i, gt_i in zip(pred_instances, gt_instances):
-                pred_scores = pred_i.scores
-                pred_i.pred_scores = pred_scores
                 pred_i.reid_feats = pred_i.pred_boxes.tensor  # trivial impl
                 # back to org scale
                 org_h, org_w = gt_i.org_img_size
@@ -586,8 +582,8 @@ class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
                 sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
                 x = x * self.swin.softplus(sw) + sb
             if i == bonenum - 1:
-                if hasattr(self.swin, f"norm{i}"):
-                    norm_layer = getattr(self.swin, f"norm{i}")
+                if hasattr(self.swin, f"side_norm{i}"):
+                    norm_layer = getattr(self.swin, f"side_norm{i}")
                     out = norm_layer(out)
                 out = (
                     out.view(-1, *out_hw_shape, self.swin.num_features[i])
