@@ -66,7 +66,7 @@ class SwinF4RCNN(SearchBase):
             self.swin.eval()
             self.swin.side_stages[-1].train()
             self.swin.side_stages[-2].downsample.train()
-            if hasattr(self.swin,"side_semantic_embed_w"):
+            if hasattr(self.swin, "side_semantic_embed_w"):
                 self.swin.side_semantic_embed_w[-1].train()
                 self.swin.side_semantic_embed_b[-1].train()
                 self.swin.side_semantic_embed_w[-2].train()
@@ -514,8 +514,25 @@ class SwinSimFPNRCNN(SwinF4RCNN):
                 instances_i.reid_feats = instances_i.pred_boxes.tensor  # trivial impl
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
             for pred_i, gt_i in zip(pred_instances, gt_instances):
-                pred_i.reid_feats = pred_i.pred_boxes.tensor  # trivial impl
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
                 # back to org scale
                 org_h, org_w = gt_i.org_img_size
                 h, w = gt_i.image_size
@@ -558,7 +575,6 @@ class SwinSimFPNRCNN(SwinF4RCNN):
 
 @META_ARCH_REGISTRY.register()
 class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
-
     def swin_backbone(self, x):
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -593,6 +609,262 @@ class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
                 outs.append(out)
         return {"stage3": outs[-1]}
 
+
+from psd2.modeling.meta_arch import RetinaNet
+from psd2.modeling.meta_arch.retinanet import RetinaNetHead
+from psd2.modeling.anchor_generator import build_anchor_generator
+from psd2.modeling.box_regression import Box2BoxTransform, _dense_box_regression_loss
+from psd2.modeling.matcher import Matcher
+
+
+@META_ARCH_REGISTRY.register()
+class SwinSimFPNRetina(SearchBase, RetinaNet):
+    @configurable
+    def __init__(
+        self,
+        swin,
+        id_assigner,
+        sim_fpn,
+        det_head,
+        head_in_features,
+        anchor_generator,
+        box2box_transform,
+        anchor_matcher,
+        focal_loss_alpha=0.25,
+        focal_loss_gamma=2.0,
+        smooth_l1_beta=0.0,
+        box_reg_loss_type="smooth_l1",
+        test_score_thresh=0.05,
+        test_topk_candidates=1000,
+        test_nms_thresh=0.5,
+        max_detections_per_image=100,
+        *args,
+        **kws,
+    ):
+        SearchBase.__init__(self, *args, **kws)
+        self.swin = swin
+        self.id_assigner = id_assigner
+        self.sim_fpn = sim_fpn
+        # retina
+        self.num_classes = 1
+        self.head_in_features = head_in_features
+        self.head = det_head
+        # Anchors
+        self.anchor_generator = anchor_generator
+        self.box2box_transform = box2box_transform
+        self.anchor_matcher = anchor_matcher
+
+        # Loss parameters:
+        self.focal_loss_alpha = focal_loss_alpha
+        self.focal_loss_gamma = focal_loss_gamma
+        self.smooth_l1_beta = smooth_l1_beta
+        self.box_reg_loss_type = box_reg_loss_type
+        # Inference parameters:
+        self.test_score_thresh = test_score_thresh
+        self.test_topk_candidates = test_topk_candidates
+        self.test_nms_thresh = test_nms_thresh
+        self.max_detections_per_image = max_detections_per_image
+
+        # state
+        for p in self.sim_fpn.parameters():  # norm2 is not supervised in solider
+            p.requires_grad = True
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+        for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
+            if (
+                "side_stages.0.downsample" not in n
+                and "side_stages.1" not in n
+                and "side_semantic_embed_w.0" not in n
+                and "side_semantic_embed_b.0" not in n
+                and "side_semantic_embed_w.1" not in n
+                and "side_semantic_embed_b.1" not in n
+                and not n.startswith("side_norm3")
+                and not n.startswith("side_norm2")
+            ):
+                p.requires_grad = False
+
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training = mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.swin.eval()
+            self.swin.side_stages[-1].train()
+            self.swin.side_stages[-2].downsample.train()
+            if hasattr(self.swin, "side_semantic_embed_w"):
+                self.swin.side_semantic_embed_w[-1].train()
+                self.swin.side_semantic_embed_b[-1].train()
+                self.swin.side_semantic_embed_w[-2].train()
+                self.swin.side_semantic_embed_b[-2].train()
+                self.swin.softplus.train()
+            self.swin.side_norm2.train()
+            self.swin.side_norm3.train()
+            self.sim_fpn.train()
+            self.anchor_generator.train()
+            self.head.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = SearchBase.from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        # NOTE downsample module of stage3 is trainable
+        swin = SideSwinTransformer(
+            side_start_stage=3,
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 1),  # NOTE remove last stride
+        )
+
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            swin_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "swin": swin,
+                "sim_fpn": sim_fpn,
+            }
+        )
+        # retina
+        fpn_out_shape = sim_fpn.output_shape()
+        feature_shapes = [fpn_out_shape[f] for f in cfg.MODEL.RETINANET.IN_FEATURES]
+        det_head = RetinaNetHead(cfg, feature_shapes)
+        anchor_generator = build_anchor_generator(cfg, feature_shapes)
+        ret.update(
+            {
+                "det_head": det_head,
+                "anchor_generator": anchor_generator,
+                "box2box_transform": Box2BoxTransform(
+                    weights=cfg.MODEL.RETINANET.BBOX_REG_WEIGHTS
+                ),
+                "anchor_matcher": Matcher(
+                    cfg.MODEL.RETINANET.IOU_THRESHOLDS,
+                    cfg.MODEL.RETINANET.IOU_LABELS,
+                    allow_low_quality_matches=True,
+                ),
+                "head_in_features": cfg.MODEL.RETINANET.IN_FEATURES,
+                # Loss parameters:
+                "focal_loss_alpha": cfg.MODEL.RETINANET.FOCAL_LOSS_ALPHA,
+                "focal_loss_gamma": cfg.MODEL.RETINANET.FOCAL_LOSS_GAMMA,
+                "smooth_l1_beta": cfg.MODEL.RETINANET.SMOOTH_L1_LOSS_BETA,
+                "box_reg_loss_type": cfg.MODEL.RETINANET.BBOX_REG_LOSS_TYPE,
+                # Inference parameters:
+                "test_score_thresh": cfg.MODEL.RETINANET.SCORE_THRESH_TEST,
+                "test_topk_candidates": cfg.MODEL.RETINANET.TOPK_CANDIDATES_TEST,
+                "test_nms_thresh": cfg.MODEL.RETINANET.NMS_THRESH_TEST,
+                "max_detections_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
+            }
+        )
+        return ret
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        features = self.sim_fpn(features)
+        features = [features[f] for f in self.head_in_features]
+        predictions = self.head(features)
+
+        if self.training:
+            pred_logits, pred_anchor_deltas = self._transpose_dense_predictions(
+                predictions, [self.num_classes, 4]
+            )
+            anchors = self.anchor_generator(features)
+            gt_labels, gt_boxes = self.label_anchors(anchors, gt_instances)
+            losses = self.losses(
+                anchors, pred_logits, gt_labels, pred_anchor_deltas, gt_boxes
+            )
+            pred_instances = []
+            with torch.no_grad():
+                for img_idx, image_size in enumerate(image_list.image_sizes):
+                    scores_per_image = [x[img_idx].sigmoid_() for x in pred_logits]
+                    deltas_per_image = [x[img_idx] for x in pred_anchor_deltas]
+                    results_per_image = self.inference_single_image(
+                        anchors, scores_per_image, deltas_per_image, image_size
+                    )
+                    pred_instances.append(results_per_image)
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.pred_scores = instances_i.scores
+                instances_i.remove("scores")
+                instances_i.assign_ids = torch.zeros_like(
+                    instances_i.pred_scores, dtype=torch.int64
+                )  # assign_ids[i]
+                instances_i.reid_feats = instances_i.pred_boxes.tensor  # trivial impl
+
+            return pred_instances, [feat.detach() for feat in features], losses
+        else:
+            pred_instances = self.forward_inference(image_list, features, predictions)
+            for pred_i, gt_i in zip(pred_instances, gt_instances):
+                pred_i.pred_scores = pred_i.scores
+                pred_i.remove("scores")
+                pred_i.reid_feats = pred_i.pred_boxes.tensor  # trivial impl
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        bonenum = 4
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if i == bonenum - 1:
+                norm_layer = getattr(self.swin, f"side_norm{i}")
+                out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(out)
+        return {"stage4": outs[-1]}
 
 
 from psd2.modeling.roi_heads.roi_heads import (
@@ -652,6 +924,7 @@ class AlteredStandaredROIHeads(StandardROIHeads):
             "box_head": box_head,
             "box_predictor": box_predictor,
         }
+
     @torch.no_grad()
     def label_and_sample_proposals(
         self, proposals: List[Instances], targets: List[Instances]
@@ -785,6 +1058,7 @@ class AlteredStandaredROIHeads(StandardROIHeads):
             # applied to the top scoring box detections.
             pred_instances = self.forward_with_given_boxes(features, pred_instances)
             return pred_instances, {}, None
+
     def _forward_box_with_pred(
         self, features: Dict[str, torch.Tensor], proposals: List[Instances]
     ):
@@ -813,7 +1087,7 @@ class AlteredStandaredROIHeads(StandardROIHeads):
         if self.training:
             losses = self.box_predictor.losses(predictions, proposals)
             # proposals is modified in-place below, so losses must be computed first.
-            if self.train_on_pred_boxes: # NOTE not considered yet
+            if self.train_on_pred_boxes:  # NOTE not considered yet
                 with torch.no_grad():
                     pred_boxes = self.box_predictor.predict_boxes_for_gt_classes(
                         predictions, proposals
@@ -824,12 +1098,15 @@ class AlteredStandaredROIHeads(StandardROIHeads):
                         proposals_per_image.proposal_boxes = Boxes(pred_boxes_per_image)
             with torch.no_grad():
                 self.box_predictor.eval()
-                pred_instances = self.box_predictor.inference_unms(predictions, proposals)
+                pred_instances = self.box_predictor.inference_unms(
+                    predictions, proposals
+                )
                 self.box_predictor.train()
             return pred_instances, losses
         else:
             pred_instances = self.box_predictor.inference(predictions, proposals)
-            return pred_instances,{}
+            return pred_instances, {}
+
     def _forward_box(
         self, features: Dict[str, torch.Tensor], proposals: List[Instances]
     ):
@@ -858,8 +1135,8 @@ class AlteredStandaredROIHeads(StandardROIHeads):
         if self.training:
             losses = self.box_predictor.losses(predictions, proposals)
             # proposals is modified in-place below, so losses must be computed first.
-            if self.train_on_pred_boxes:# NOTE not considered yet
-                with torch.no_grad(): 
+            if self.train_on_pred_boxes:  # NOTE not considered yet
+                with torch.no_grad():
                     pred_boxes = self.box_predictor.predict_boxes_for_gt_classes(
                         predictions, proposals
                     )
