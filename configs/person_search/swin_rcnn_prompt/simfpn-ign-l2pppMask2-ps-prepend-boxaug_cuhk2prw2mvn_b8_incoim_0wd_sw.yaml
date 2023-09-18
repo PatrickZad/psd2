@@ -104,7 +104,7 @@ INPUT:
   MAX_SIZE_TEST: 720
 DATASETS:
   TRAIN: ("MovieNet_Train_app10",) 
-  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
 TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802

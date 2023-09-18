@@ -87,6 +87,10 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
             ]
     """
     global movie_net_test_subs
+    if subset == "Train":
+        subset = "Train_app10"
+    if subset == "Gallery":
+        subset == "GalleryTestG2000"
     assert subset in subset_names
     # init all labels
     all_imgs = loadmat(opj(dataset_dir, "anno_mvn-cs", "Images.mat"))
@@ -255,7 +259,7 @@ def load_movie_net(dataset_dir, subset="Train_app10"):
                     f"pool_{N}.mat",
                 )
             )
-            test_img_names =test_img_names["pool"].squeeze()
+            test_img_names = test_img_names["pool"].squeeze()
             test_img_names = [
                 str(img_name_arr.squeeze()) for img_name_arr in test_img_names
             ]

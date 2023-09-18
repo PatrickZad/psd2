@@ -10,6 +10,7 @@ from .prw import load_prw
 from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
 from .coco_ch import load_coco_ch, load_coco_p
+from .cpm import load_cpm
 
 
 # TODO change evaluator type to "query"
@@ -195,9 +196,25 @@ def register_cococh_all(datadir):
     MapperCatalog.register(name, mappers.COCOCHDINOPreDetMapper)
 
 
+def register_cpm(datadirs):
+    name = "CPM_" + "Train"
+    DatasetCatalog.register(name, lambda: load_cpm(datadirs, "Train"))
+    MapperCatalog.register(name, mappers.SearchMapper)
+    name = "CPM_" + "Gallery"
+    DatasetCatalog.register(name, lambda: load_cpm(datadirs, "Gallery"))
+    MapperCatalog.register(name, mappers.SearchMapper)
+
+
 _root = os.getenv("PS_DATASETS", "Data/ReID")
 register_movie_net_all(os.path.join(_root, "movienet"))
 register_cuhk_sysu_all(os.path.join(_root, "cuhk_sysu"))
 register_prw_all(os.path.join(_root, "PRW"))
+register_cpm(
+    [
+        os.path.join(_root, "cuhk_sysu"),
+        os.path.join(_root, "PRW"),
+        os.path.join(_root, "movienet"),
+    ]
+)
 _root_det = "Data/DetData"
 register_cococh_all(_root_det)

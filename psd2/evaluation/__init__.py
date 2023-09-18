@@ -19,6 +19,6 @@ from .prw_query_eval_p import PrwQueryEvaluatorP
 from .cuhk_query_eval_p import CuhkQueryEvaluatorP
 from .mvn_query_eval_p import MovieNetQueryEvaluatorP
 from .vis_evaluator import DetVisEvaluator, SearchVisEvaluator
-
+from .domain_id_eval import DomainIdEvaluator
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]
