@@ -24,7 +24,8 @@ T_COLORS_BG = {
 class SearchBase(nn.Module):
     @configurable
     def __init__(self, backbone, pix_mean, pix_std, vis_period):
-        super().__init__()
+        # super(SearchBase, self).__init__()
+        nn.Module.__init__(self)
         self.backbone = backbone
 
         self.register_buffer("pixel_mean", torch.Tensor(pix_mean).view(-1, 1, 1))
@@ -57,7 +58,7 @@ class SearchBase(nn.Module):
         images = ImageList.from_tensors(images, self.backbone.size_divisibility)
         return images
 
-    def forward(self, input_list,infgt=False):
+    def forward(self, input_list, infgt=False):
         """
         preds:
             a list of
@@ -95,6 +96,7 @@ class SearchBase(nn.Module):
         Return cls_scores, bboxes and reid features
         """
         raise NotImplementedError
+
     def forward_gallery_gt(self, image_list, gt_instances):
         """
         Return cls_scores, bboxes and reid features
@@ -175,10 +177,10 @@ class SearchBase(nn.Module):
             boxes = pred_instances[bi].pred_boxes
             boxes = boxes.tensor.cpu().numpy()
             scores = pred_instances[bi].pred_scores.cpu().tolist()
-            if hasattr(pred_instances[bi],"assign_ids"):
+            if hasattr(pred_instances[bi], "assign_ids"):
                 assign_ids = pred_instances[bi].assign_ids.cpu().tolist()
             else:
-                assign_ids=None
+                assign_ids = None
             for i, score in enumerate(scores):
                 split = score_split(score, threds)
                 b_clr = COLORS[i % len(COLORS)]
@@ -206,12 +208,11 @@ class SearchBase(nn.Module):
 
     def vis_forward(self, image_list, gt_instances, pred_instances, feat_maps=None):
         raise NotImplementedError
+
     @torch.no_grad()
     def forward_vis(self, input_list):
         image_list = self.preprocess_input(input_list)
         gt_instances = [gti["instances"].to(self.device) for gti in input_list]
-        preds, feat_maps = self.forward_gallery_vis(
-                    image_list, gt_instances
-                )
+        preds, feat_maps = self.forward_gallery_vis(image_list, gt_instances)
         self.visualize_training(image_list, gt_instances, preds, feat_maps)
         return preds
