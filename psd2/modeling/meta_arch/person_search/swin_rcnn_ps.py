@@ -34,6 +34,7 @@ from .swin_rcnn_pd import (
 from psd2.modeling import ShapeSpec
 from psd2.modeling.poolers import ROIPooler
 
+
 # NOTE to test finetune and upper-bound
 @META_ARCH_REGISTRY.register()
 class SwinF4RCNNPS(SwinF4RCNN):
@@ -53,7 +54,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
         self.pool_layer = pool_layer
         self.oim_loss = oim_loss
         self.bn_neck = bn_neck
-        self.reid_box_pooler=reid_box_pooler
+        self.reid_box_pooler = reid_box_pooler
         for p in self.backbone.parameters():
             p.requires_grad = True
         for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
@@ -95,20 +96,25 @@ class SwinF4RCNNPS(SwinF4RCNN):
             for i in range(len(ret["swin"].stages))
         }
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        if isinstance(pooler_resolution,int):
-            pooler_resolution=(pooler_resolution,pooler_resolution)
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
         assert len(pooler_resolution) == 2
-        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
-        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
-        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / swin_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
         reid_box_pooler = ROIPooler(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
-        ret["reid_box_pooler"]=reid_box_pooler
+        ret["reid_box_pooler"] = reid_box_pooler
         return ret
 
     def load_state_dict(self, *args, **kws):
@@ -301,6 +307,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+
     def forward_gallery_vis(self, image_list, gt_instances):
         features = self.swin_backbone(image_list.tensor)
         proposals, proposal_losses = self.proposal_generator(
@@ -315,26 +322,21 @@ class SwinF4RCNNPS(SwinF4RCNN):
         score_t = self.roi_heads.box_predictor.test_score_thresh
         iou_t = self.roi_heads.box_predictor.test_nms_thresh
         for pred_i, feats_i in zip(pred_instances, reid_feats):
-                pred_boxes_t = pred_i.pred_boxes.tensor
-                pred_scores = pred_i.pred_scores
-                filter_mask = pred_scores >= score_t
-                pred_boxes_t = pred_boxes_t[filter_mask]
-                pred_scores = pred_scores[filter_mask]
-                cate_idx = pred_scores.new_zeros(
-                    pred_scores.shape[0], dtype=torch.int64
-                )
-                # nms
-                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
-                pred_boxes_t = pred_boxes_t[keep]
-                pred_scores = pred_scores[keep]
-                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
-                pred_i.pred_scores = pred_scores
-                pred_i.reid_feats = feats_i[keep]
-                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+            pred_boxes_t = pred_i.pred_boxes.tensor
+            pred_scores = pred_i.pred_scores
+            filter_mask = pred_scores >= score_t
+            pred_boxes_t = pred_boxes_t[filter_mask]
+            pred_scores = pred_scores[filter_mask]
+            cate_idx = pred_scores.new_zeros(pred_scores.shape[0], dtype=torch.int64)
+            # nms
+            keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+            pred_boxes_t = pred_boxes_t[keep]
+            pred_scores = pred_scores[keep]
+            pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+            pred_i.pred_scores = pred_scores
+            pred_i.reid_feats = feats_i[keep]
+            pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
         return pred_instances, [feat.detach() for feat in features.values()]
-        
-
-
 
     def forward_gallery_gt(self, image_list, gt_instances):
         assert not self.training
@@ -368,6 +370,7 @@ class SwinF4RCNNPS(SwinF4RCNN):
             for i in range(len(box_embs))
         ]
 
+
 @META_ARCH_REGISTRY.register()
 class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
     @configurable
@@ -386,7 +389,7 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
         self.pool_layer = pool_layer
         self.oim_loss = oim_loss
         self.bn_neck = bn_neck
-        self.reid_box_pooler=reid_box_pooler
+        self.reid_box_pooler = reid_box_pooler
         for p in self.backbone.parameters():
             p.requires_grad = True
         for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
@@ -428,20 +431,25 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
             for i in range(len(ret["swin"].stages))
         }
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        if isinstance(pooler_resolution,int):
-            pooler_resolution=(pooler_resolution,pooler_resolution)
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
         assert len(pooler_resolution) == 2
-        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
-        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
-        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / swin_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
         reid_box_pooler = ROIPooler(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
-        ret["reid_box_pooler"]=reid_box_pooler
+        ret["reid_box_pooler"] = reid_box_pooler
         return ret
 
     def load_state_dict(self, *args, **kws):
@@ -951,9 +959,13 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
         num_prompts = prompt_cfg.NUM_PROMPTS
-        if isinstance(num_prompts,int):
-            num_prompts=[num_prompts]*4
-        in_num_prompts=[ n* prompt_cfg.TOP_K for n in num_prompts] if "L2P" in prompt_cfg.PROMPT_TYPE else num_prompts
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        in_num_prompts = (
+            [n * prompt_cfg.TOP_K for n in num_prompts]
+            if "L2P" in prompt_cfg.PROMPT_TYPE
+            else num_prompts
+        )
         # NOTE downsample module of stage3 is trainable
         swin = SidePromptedSwinTransformer(
             side_start_stage=3,
@@ -1227,20 +1239,25 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        if isinstance(pooler_resolution,int):
-            pooler_resolution=(pooler_resolution,pooler_resolution)
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
         assert len(pooler_resolution) == 2
-        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
-        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
-        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / swin_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
         reid_box_pooler = ROIPooler(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
-        ret["reid_box_pooler"]=reid_box_pooler
+        ret["reid_box_pooler"] = reid_box_pooler
         return ret
 
     @torch.no_grad()
@@ -1523,40 +1540,39 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
         )
         roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
         assign_ids = self.id_assigner(
-                roi_boxes,
-                [inst.pred_scores for inst in pred_instances],
-                [inst.gt_boxes.tensor for inst in gt_instances],
-                [inst.gt_pids for inst in gt_instances],
-                match_indices=pos_match_indices,
-            )
+            roi_boxes,
+            [inst.pred_scores for inst in pred_instances],
+            [inst.gt_boxes.tensor for inst in gt_instances],
+            [inst.gt_pids for inst in gt_instances],
+            match_indices=pos_match_indices,
+        )
         reid_loss = self.reid_head(
-                task_query, image_list, features, roi_boxes, assign_ids
-            )
+            task_query, image_list, features, roi_boxes, assign_ids
+        )
 
         for i, instances_i in enumerate(pred_instances):
-                instances_i.assign_ids = assign_ids[i]
-            # nms
+            instances_i.assign_ids = assign_ids[i]
+        # nms
         score_t = self.roi_heads.box_predictor.test_score_thresh
         iou_t = self.roi_heads.box_predictor.test_nms_thresh
         for pred_i in pred_instances:
-                pred_boxes_t = pred_i.pred_boxes.tensor
-                pred_scores = pred_i.pred_scores
-                filter_mask = pred_scores >= score_t
-                pred_boxes_t = pred_boxes_t[filter_mask]
-                pred_scores = pred_scores[filter_mask]
-                cate_idx = pred_scores.new_zeros(
-                    pred_scores.shape[0], dtype=torch.int64
-                )
-                # nms
-                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
-                pred_boxes_t = pred_boxes_t[keep]
-                pred_scores = pred_scores[keep]
-                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
-                pred_i.pred_scores = pred_scores
-                pred_i.reid_feats = pred_boxes_t  # trivial impl
-                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
-                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            pred_boxes_t = pred_i.pred_boxes.tensor
+            pred_scores = pred_i.pred_scores
+            filter_mask = pred_scores >= score_t
+            pred_boxes_t = pred_boxes_t[filter_mask]
+            pred_scores = pred_scores[filter_mask]
+            cate_idx = pred_scores.new_zeros(pred_scores.shape[0], dtype=torch.int64)
+            # nms
+            keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+            pred_boxes_t = pred_boxes_t[keep]
+            pred_scores = pred_scores[keep]
+            pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+            pred_i.pred_scores = pred_scores
+            pred_i.reid_feats = pred_boxes_t  # trivial impl
+            pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+            pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
         return pred_instances, [feat.detach() for feat in features.values()]
+
     def forward_gallery_gt(self, image_list, gt_instances):
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
         roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
@@ -1665,9 +1681,13 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
         num_prompts = prompt_cfg.NUM_PROMPTS
         num_prompts = prompt_cfg.NUM_PROMPTS
-        if isinstance(num_prompts,int):
-            num_prompts=[num_prompts]*4
-        in_num_prompts=[ n* prompt_cfg.TOP_K for n in num_prompts] if "L2P" in prompt_cfg.PROMPT_TYPE else num_prompts
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        in_num_prompts = (
+            [n * prompt_cfg.TOP_K for n in num_prompts]
+            if "L2P" in prompt_cfg.PROMPT_TYPE
+            else num_prompts
+        )
         # NOTE downsample module of stage3 is trainable
         swin = SidePromptedSwinTransformer(
             side_start_stage=3,
@@ -1953,20 +1973,25 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        if isinstance(pooler_resolution,int):
-            pooler_resolution=(pooler_resolution,pooler_resolution)
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
         assert len(pooler_resolution) == 2
-        assert isinstance(pooler_resolution[0], int) and isinstance(pooler_resolution[1], int)
-        pooler_scales     = tuple(1.0 / swin_out_shape[k].stride for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT])
-        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / swin_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
         reid_box_pooler = ROIPooler(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
-        ret["reid_box_pooler"]=reid_box_pooler
+        ret["reid_box_pooler"] = reid_box_pooler
         return ret
 
     @torch.no_grad()
@@ -2233,6 +2258,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+
     def forward_gallery_vis(self, image_list, gt_instances):
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
         fpn_features = self.sim_fpn(features)
@@ -2247,40 +2273,37 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         )
         roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
         assign_ids = self.id_assigner(
-                roi_boxes,
-                [inst.pred_scores for inst in pred_instances],
-                [inst.gt_boxes.tensor for inst in gt_instances],
-                [inst.gt_pids for inst in gt_instances],
-                match_indices=pos_match_indices,
-            )
+            roi_boxes,
+            [inst.pred_scores for inst in pred_instances],
+            [inst.gt_boxes.tensor for inst in gt_instances],
+            [inst.gt_pids for inst in gt_instances],
+            match_indices=pos_match_indices,
+        )
         reid_loss = self.reid_head(
-                task_query, image_list, features, roi_boxes, assign_ids
-            )
+            task_query, image_list, features, roi_boxes, assign_ids
+        )
         for i, instances_i in enumerate(pred_instances):
-                instances_i.assign_ids = assign_ids[i]
-            # nms
+            instances_i.assign_ids = assign_ids[i]
+        # nms
         score_t = self.roi_heads.box_predictor.test_score_thresh
         iou_t = self.roi_heads.box_predictor.test_nms_thresh
         for pred_i in pred_instances:
-                pred_boxes_t = pred_i.pred_boxes.tensor
-                pred_scores = pred_i.pred_scores
-                filter_mask = pred_scores >= score_t
-                pred_boxes_t = pred_boxes_t[filter_mask]
-                pred_scores = pred_scores[filter_mask]
-                cate_idx = pred_scores.new_zeros(
-                    pred_scores.shape[0], dtype=torch.int64
-                )
-                # nms
-                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
-                pred_boxes_t = pred_boxes_t[keep]
-                pred_scores = pred_scores[keep]
-                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
-                pred_i.pred_scores = pred_scores
-                pred_i.reid_feats = pred_boxes_t  # trivial impl
-                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
-                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            pred_boxes_t = pred_i.pred_boxes.tensor
+            pred_scores = pred_i.pred_scores
+            filter_mask = pred_scores >= score_t
+            pred_boxes_t = pred_boxes_t[filter_mask]
+            pred_scores = pred_scores[filter_mask]
+            cate_idx = pred_scores.new_zeros(pred_scores.shape[0], dtype=torch.int64)
+            # nms
+            keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+            pred_boxes_t = pred_boxes_t[keep]
+            pred_scores = pred_scores[keep]
+            pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+            pred_i.pred_scores = pred_scores
+            pred_i.reid_feats = pred_boxes_t  # trivial impl
+            pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+            pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
         return pred_instances, [feat.detach() for feat in features.values()]
-        
 
     def forward_gallery_gt(self, image_list, gt_instances):
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
@@ -2430,7 +2453,6 @@ class PromptedSwinF4RCNNPSBoxAug(PromptedSwinF4RCNNPS):
             return pred_instances
 
 
-
 @META_ARCH_REGISTRY.register()
 class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
     @configurable
@@ -2543,7 +2565,7 @@ class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
-    
+
 
 @META_ARCH_REGISTRY.register()
 class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
@@ -2572,7 +2594,8 @@ class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
         ret["swin_org"] = swin_org
         return ret
 
-#TODO refactor new L2P code
+
+# TODO refactor new L2P code
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
     @classmethod
@@ -2698,17 +2721,17 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                 vis_period=cfg.VIS_PERIOD,
             )
         elif prompt_cfg.PROMPT_TYPE == "L2Ppp":
-                prompt_stage = prompts.L2Ppp(
-                    emb_d=swin.num_features[-1],
-                    n_tasks=prompt_cfg.NUM_TASKS,
-                    pool_size=prompt_cfg.POOL_SIZE,
-                    num_prompts=prompt_cfg.NUM_PROMPTS,
-                    num_layers=tr_cfg.DEPTH[-1],
-                    topk=prompt_cfg.TOP_K,
-                    loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=swin.num_features[-1],
-                    vis_period=cfg.VIS_PERIOD,
-                )
+            prompt_stage = prompts.L2Ppp(
+                emb_d=swin.num_features[-1],
+                n_tasks=prompt_cfg.NUM_TASKS,
+                pool_size=prompt_cfg.POOL_SIZE,
+                num_prompts=prompt_cfg.NUM_PROMPTS,
+                num_layers=tr_cfg.DEPTH[-1],
+                topk=prompt_cfg.TOP_K,
+                loss_weight=prompt_cfg.LOSS_WEIGHT,
+                key_dim=swin.num_features[-1],
+                vis_period=cfg.VIS_PERIOD,
+            )
         elif prompt_cfg.PROMPT_TYPE == "L2PO":
             prompt_stage = prompts.L2POrg(
                 emb_d=swin.num_features[-1],
@@ -2727,7 +2750,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                 num_prompts=prompt_cfg.NUM_PROMPTS,
                 num_layers=tr_cfg.DEPTH[-1],
             )
-        
+
         else:  # CODAPrompt
             prompt_stage = prompts.CodaPrompt(
                 emb_d=swin.num_features[-1],
