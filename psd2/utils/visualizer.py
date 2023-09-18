@@ -1467,9 +1467,10 @@ def mat_heatmap(matrix,vmin,vmax):
     import seaborn as sns
     import io
     import cv2
-
+    ref_width=20
+    ref_n=60
     mat_data=matrix.cpu().numpy()
-    fig = plt.figure()
+    fig = plt.figure(figsize=(math.ceil(mat_data.shape[1]/ref_n*ref_width),mat_data.shape[0]+1))
     sns.heatmap(mat_data,vmin=vmin,vmax=vmax,annot=True,fmt='0.2g',linewidths=.6,annot_kws={'rotation': 270})
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=180)

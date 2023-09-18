@@ -265,9 +265,9 @@ class InfDetEvaluator(DatasetEvaluator):
 
     def evaluate(self):
         if self._distributed:
+            comm.synchronize()
             if comm.get_local_rank() == 0:
                 self.granks_of_local_0s.append(comm.get_rank())
-            comm.synchronize()
             save_ranks = comm.all_gather(self.granks_of_local_0s)
             save_ranks = list(set(itertools.chain(*save_ranks)))
             save_rts = {}

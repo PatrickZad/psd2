@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from psd2.utils.events import get_event_storage
 from psd2.utils.visualizer import mat_heatmap
-
+import psd2.utils.comm as comm
 
 class CodaPrompt(nn.Module):
     def __init__(
@@ -457,8 +457,205 @@ class L2PppMask2(L2Ppp):
         else:
             return torch.stack(p_return, dim=0).flatten(2,3),p_loss
                  
-        
+class L2PppMaskM(L2Ppp):
 
+    def _init_smart(self, *args,**kws):
+        super()._init_smart(*args,**kws)
+        self.loss_weight_mem_neg = self.loss_weight[2] # memory to new key
+        self.loss_weight_mem_pos = self.loss_weight[3] # memory to old key
+        self.loss_weight_neg = self.loss_weight[1] # data to old key
+        self.loss_weight = self.loss_weight[0] # data to new key
+        self.mem_len=512
+        self.mem_batch=64
+        self.register_buffer("memory",torch.zeros(self.n_tasks,self.mem_len,self.key_d))
+        self.register_buffer("memory_next",torch.zeros(self.n_tasks,dtype=torch.int64))
+    def update_mem(self,feats):
+        if comm.get_world_size()>1:
+            all_feats=comm.all_gather(feats)
+            feats=torch.cat([feat_.to(self.memory.device) for feat_ in all_feats])
+        left_mem=self.mem_len-self.memory_next[self.task_count].item()
+        if left_mem<feats.shape[0]:
+            self.memory[self.task_count][self.memory_next[self.task_count]:]=feats[:left_mem]
+            self.memory[self.task_count][:feats.shape[0]-left_mem]=feats[left_mem:]
+            self.memory_next[self.task_count]=feats.shape[0]-left_mem
+        else:
+            self.memory[self.task_count][self.memory_next[self.task_count]:self.memory_next[self.task_count]+feats.shape[0]]=feats
+            self.memory_next[self.task_count]=(self.memory_next[self.task_count]+feats.shape[0])%self.mem_len
+    def sample_mem(self,task_id):
+        if comm.get_world_size()>1:
+            if comm.get_rank()==0:
+                sample=torch.randint(0,self.mem_len,(self.mem_batch,),device=self.memory.device)
+            else:
+                # NOTE scatter raises errors
+                sample=None
+            sample=comm.all_gather(sample)[0].to(self.memory.device)
+        else:
+            sample=torch.randint(0,self.mem_len,(self.mem_batch,),device=self.memory.device)
+        return self.memory[task_id][sample]
+
+    def forward(self, x_query,vis_mark, train=False, task_id=None):
+        # assume queries are same across layers
+        B, nL, C = x_query.shape
+        if train:
+            self.update_mem(x_query[:,0,:])
+            if self.task_count>0:
+                mem_samples=[self.sample_mem(i) for i in range(self.task_count)]
+        p_return = []
+        p_loss = 0.
+        vis_attn = []
+        for l in range(nL):
+            # e prompts
+            lp=[]
+            if l in self.e_layers:
+                K = getattr(self, f"e_k_{l}")  # 0 based indexing here
+                p = getattr(self, f"e_p_{l}")  # 0 based indexing here
+
+                # cosine similarity to match keys/querries
+                n_K = nn.functional.normalize(K, dim=1)
+                q = nn.functional.normalize(x_query[:,l,:], dim=1).detach()
+                cos_sim = torch.einsum("bj,kj->bk", q, n_K)
+
+                if train:
+                    vis_attn.append(cos_sim.detach())  
+                    loss = (1.0 - cos_sim[:, self.task_count*self.top_k:(self.task_count+1)*self.top_k]).sum() # pos
+                    p_loss+=loss*self.loss_weight
+                    if self.task_count>0:
+                        # neg
+                        loss= (cos_sim[:, :self.task_count*self.top_k]).sum()
+                        p_loss+=loss*self.loss_weight_neg
+                        for ti,ti_samp in enumerate(mem_samples):
+                            q = nn.functional.normalize(ti_samp, dim=1).detach()
+                            cos_sim = torch.einsum("bj,kj->bk", q, n_K)
+                            # pos
+                            loss=(1.0 - cos_sim[:, ti*self.top_k:(ti+1)*self.top_k]).sum()
+                            p_loss+=loss*self.loss_weight_mem_pos
+                            # neg
+                            if ti==0:
+                                loss=0.
+                            else:
+                                loss=(cos_sim[:, :ti*self.top_k]).sum()
+                            loss+=(cos_sim[:, (ti+1)*self.top_k:(self.task_count+1)*self.top_k]).sum()
+                            p_loss+=loss*self.loss_weight_mem_neg
+                    P_ = p[self.task_count*self.top_k:(self.task_count+1)*self.top_k].flatten(0,1).unsqueeze(0).expand(B, -1, -1) # B, num_e_prompts*topk, d
+                else:
+                    top_k = torch.topk(cos_sim, self.top_k, dim=1)
+                    k_idx = top_k.indices
+                    P_ = p[k_idx]
+                lp.append(P_)
+            # g prompts
+            if l in self.g_layers:
+                p = getattr(self, f"g_p_{l}")  # 0 based indexing here
+                P_ = p.expand(B, -1, -1)
+                lp.append(P_)
+            p_return.append(torch.cat(lp,dim=1))
+
+        if self.vis_period > 0 and train:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
+                vis_img = (
+                    torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        if self.training:
+            return torch.stack(p_return, dim=0), p_loss
+        else:
+            return torch.stack(p_return, dim=0).flatten(2,3),p_loss
+                 
+          
+class L2PppMaskMC(L2PppMaskM):
+
+    def _init_smart(self, *args,**kws):
+        super(L2PppMaskM,self)._init_smart(*args,**kws)
+        self.mem_len=1024
+        self.mem_batch=64//comm.get_world_size()
+        self.temp=0.07
+        self.register_buffer("memory",torch.zeros(self.n_tasks,self.mem_len,self.key_d))
+        self.register_buffer("memory_next",torch.zeros(self.n_tasks,dtype=torch.int64))
+    def sample_mem(self,task_id):
+        if comm.get_world_size()>1:
+            if comm.get_rank()==0:
+                sample=torch.randint(0,self.mem_len,(self.mem_batch*comm.get_world_size(),),device=self.memory.device)
+            else:
+                # NOTE scatter raises errors
+                sample=None
+            sample=comm.all_gather(sample)[0].to(self.memory.device)
+        else:
+            sample=torch.randint(0,self.mem_len,(self.mem_batch,),device=self.memory.device)
+        return self.memory[task_id][sample]
+
+    def forward(self, x_query,vis_mark, train=False, task_id=None):
+        # assume queries are same across layers
+        B, nL, C = x_query.shape
+        if train:
+            self.update_mem(x_query[:,0,:])
+            if self.task_count>0:
+                mem_samples=[self.sample_mem(i) for i in range(self.task_count+1)]
+        p_return = []
+        p_loss = 0.
+        vis_attn = []
+        for l in range(nL):
+            # e prompts
+            lp=[]
+            if l in self.e_layers:
+                K = getattr(self, f"e_k_{l}")  # 0 based indexing here
+                p = getattr(self, f"e_p_{l}")  # 0 based indexing here
+
+                # cosine similarity to match keys/querries
+                n_K = nn.functional.normalize(K, dim=1)
+                q = nn.functional.normalize(x_query[:,l,:], dim=1).detach()
+                cos_sim = torch.einsum("bj,kj->bk", q, n_K)
+
+                if train:
+                    vis_attn.append(cos_sim.detach())
+                    
+                    if self.task_count==0:
+                        # ref to BYOL
+                        loss = (2.0 - 2* cos_sim[:, self.task_count*self.top_k:(self.task_count+1)*self.top_k]).sum()/B # pos only
+                        p_loss+=loss*self.loss_weight
+                    else:
+                        # ref to SupCon, keys as query for contrastive
+                        # 1. cur domain
+                        #NOTE no self similarity
+                        logits_pos=cos_sim[:, self.task_count*self.top_k:(self.task_count+1)*self.top_k].T/self.temp
+                        q_neg_n=nn.functional.normalize(torch.cat(mem_samples[:self.task_count],dim=0),dim=1)
+                        logits_full=torch.cat([logits_pos,torch.einsum("kj,bj->kb", n_K[self.task_count*self.top_k:(self.task_count+1)*self.top_k],q_neg_n)/self.temp],dim=1)
+                        loss=(torch.log(torch.exp(logits_full).sum(dim=1))-logits_pos.mean(dim=1)).sum()
+                        p_loss+=loss*self.loss_weight
+                        # 2. previous domain
+                        for t in range(self.task_count):
+                            tn_K=nn.functional.normalize(K[t*self.top_k:(t+1)*self.top_k,:],dim=1)
+                            q_pos_n=nn.functional.normalize(mem_samples[t][self.mem_batch*comm.get_local_rank():self.mem_batch*(comm.get_local_rank()+1)],dim=1)
+                            q_neg_n=nn.functional.normalize(torch.cat(mem_samples[:t]+mem_samples[t+1:],dim=0),dim=1)
+                            logits_pos=torch.einsum("kj,bj->kb",tn_K,q_pos_n)/self.temp
+                            logits_full=torch.cat([logits_pos,torch.einsum("kj,bj->kb", tn_K,q_neg_n)/self.temp],dim=1)
+                            loss=(torch.log(torch.exp(logits_full).sum(dim=1))-logits_pos.mean(dim=1)).sum()
+                            p_loss+=loss*self.loss_weight
+                    P_ = p[self.task_count*self.top_k:(self.task_count+1)*self.top_k].flatten(0,1).unsqueeze(0).expand(B, -1, -1) # B, num_e_prompts*topk, d
+                else:
+                    top_k = torch.topk(cos_sim, self.top_k, dim=1)
+                    k_idx = top_k.indices
+                    P_ = p[k_idx]
+                lp.append(P_)
+            # g prompts
+            if l in self.g_layers:
+                p = getattr(self, f"g_p_{l}")  # 0 based indexing here
+                P_ = p.expand(B, -1, -1)
+                lp.append(P_)
+            p_return.append(torch.cat(lp,dim=1))
+
+        if self.vis_period > 0 and train:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
+                vis_img = (
+                    torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        if self.training:
+            return torch.stack(p_return, dim=0), p_loss
+        else:
+            return torch.stack(p_return, dim=0).flatten(2,3),p_loss
 
 class FixedPrompts(nn.Module):
     def __init__(
