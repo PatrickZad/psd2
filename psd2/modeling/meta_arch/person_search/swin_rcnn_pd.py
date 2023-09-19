@@ -118,6 +118,12 @@ class SwinF4RCNN(SearchBase):
             )
             for i in range(len(swin.stages))
         }
+        swin_out_shape.update( {
+            "side_stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        })
         roi_heads = SwinROIHeads(cfg, swin_out_shape)
         ret["id_assigner"] = build_id_assigner(cfg)
         ret.update(
@@ -463,6 +469,12 @@ class SwinSimFPNRCNN(SwinF4RCNN):
             )
             for i in range(len(swin.stages))
         }
+        swin_out_shape.update( {
+            "side_stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        })
         sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
         sim_fpn = SimpleFeaturePyramid(
             swin_out_shape,
