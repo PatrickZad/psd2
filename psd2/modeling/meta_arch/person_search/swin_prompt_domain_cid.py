@@ -140,6 +140,114 @@ class SwinLinearCDI(SearchBase):
         else:
             return tF.softmax(logits, dim=-1)
 
+@META_ARCH_REGISTRY.register()
+class SwinExtracter(SearchBase):
+    @configurable
+    def __init__(
+        self,
+        swin_org,
+        swin_org_init_path,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        self.swin_org = swin_org
+        self.swin_org_init_path = swin_org_init_path
+        self.load_swin()
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+        for p in self.swin_org.parameters():
+            p.requires_grad = False
+
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training = mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.swin_org.eval()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        swin_org = SwinTransformer(
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+        )
+        ret["swin_org"] = swin_org
+        ret["swin_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        return ret
+
+    def load_swin(self):
+        state_dict = _load_file(self.swin_org_init_path)
+        if "model" in state_dict:
+            state_dict = state_dict["model"]
+        org_ks = list(state_dict.keys())
+        for k in org_ks:
+            v = state_dict.pop(k)
+            if k.startswith("swin."):
+                nk = k[len("swin.") :]
+                if not isinstance(v, torch.Tensor):
+                    state_dict[nk] = torch.tensor(v, device=self.device)
+        res = self.swin_org.load_state_dict(state_dict, strict=False)
+        print("parameters of *swin_org* haved been loaded: \n")
+        print(res)
+
+    @torch.no_grad()
+    def task_query(self, backbone_features):
+        x = backbone_features[list(backbone_features.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin_org.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin_org.drop_after_pos(x)
+
+        if self.swin_org.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin_org.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+
+        for i, stage in enumerate(self.swin_org.stages):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin_org.semantic_weight >= 0:
+                sw = self.swin_org.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin_org.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin_org.softplus(sw) + sb
+        out = self.swin_org.norm3(out)
+        out = (
+            out.view(-1, *out_hw_shape, self.swin_org.num_features[i])
+            .permute(0, 3, 1, 2)
+            .contiguous()
+        )
+        x = self.swin_org.avgpool(out)
+        x = torch.flatten(x, 1)
+        return x
+
+    def forward(self, input_list):
+        image_list = self.preprocess_input(input_list)
+        backbone_features = self.backbone(image_list.tensor)
+        img_feats = self.task_query(backbone_features)
+        return img_feats
 
 @META_ARCH_REGISTRY.register()
 class SwinMsLinearCDI(SwinLinearCDI):
