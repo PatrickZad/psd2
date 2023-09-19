@@ -152,7 +152,7 @@ class SwinMsLinearCDI(SwinLinearCDI):
         *args,
         **kws,
     ):
-        super(SwinLinearCDI).__init__(*args, **kws)
+        super(SwinLinearCDI, self).__init__(*args, **kws)
         self.swin_org = swin_org
         self.swin_org_init_path = swin_org_init_path
         self.id_head = nn.Linear(1440, len(domain_names))
@@ -190,9 +190,9 @@ class SwinMsLinearCDI(SwinLinearCDI):
                 .permute(0, 3, 1, 2)
                 .contiguous()
             )
-            x = self.swin_org.avgpool(out)
-            x = torch.flatten(x, 1)
-            outs.append(x)
+            out = self.swin_org.avgpool(out)
+            out = torch.flatten(out, 1)
+            outs.append(out)
         return torch.cat(outs, dim=-1)
 
 
@@ -208,6 +208,57 @@ class SwinCosCDI(SwinLinearCDI):
         self.topk = 4  # voting
         self.domain_keys = nn.Parameter(
             torch.FloatTensor(self.topk * len(self.domain_names), 768)
+        )
+        nn.init.uniform_(self.domain_keys)
+
+    def forward(self, input_list):
+        image_list = self.preprocess_input(input_list)
+        gt_instances = [gti["instances"].to(self.device) for gti in input_list]
+        backbone_features = self.backbone(image_list.tensor)
+        img_embd = self.task_query(backbone_features)
+        cos_sim = torch.einsum(
+            "bj,kj->bk",
+            tF.normalize(img_embd, dim=-1),
+            tF.normalize(self.domain_keys, dim=-1),
+        )
+        if self.training:
+            gt_di = self._gt_domains(gt_instances)
+            cos_dist = 1 - cos_sim
+            pos_mask = torch.zeros_like(cos_dist)
+            for i, di in enumerate(gt_di):
+                pos_mask[i, di * self.topk : (di + 1) * self.topk] = 1
+            pos_dist = cos_dist[pos_mask.bool()]
+            loss = pos_dist.sum() / len(gt_di)
+            return {"loss_cos": loss}
+        else:
+            domain_ids = torch.cat(
+                [
+                    torch.zeros(self.topk, device=self.device) + i
+                    for i in range(len(self.domain_names))
+                ]
+            ).long()
+            rst = []
+            for cos_sim_i in cos_sim:
+                topk_idx = torch.topk(cos_sim_i, k=self.topk)[1]
+                di, ndi = torch.unique(domain_ids[topk_idx], return_counts=True)
+                logits = torch.zeros(len(self.domain_names), device=self.device)
+                logits[di[torch.argmax(ndi)]] = 1
+                rst.append(logits)
+            return torch.stack(rst)
+
+
+@META_ARCH_REGISTRY.register()
+class SwinMsCosCDI(SwinMsLinearCDI):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        self.topk = 4  # voting
+        self.domain_keys = nn.Parameter(
+            torch.FloatTensor(self.topk * len(self.domain_names), 1440)
         )
         nn.init.uniform_(self.domain_keys)
 
