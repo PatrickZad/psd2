@@ -118,12 +118,14 @@ class SwinF4RCNN(SearchBase):
             )
             for i in range(len(swin.stages))
         }
-        swin_out_shape.update( {
-            "side_stage{}".format(i + 1): ShapeSpec(
-                channels=swin.num_features[i], stride=swin.strides[i]
-            )
-            for i in range(len(swin.stages))
-        })
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
         roi_heads = SwinROIHeads(cfg, swin_out_shape)
         ret["id_assigner"] = build_id_assigner(cfg)
         ret.update(
@@ -469,12 +471,14 @@ class SwinSimFPNRCNN(SwinF4RCNN):
             )
             for i in range(len(swin.stages))
         }
-        swin_out_shape.update( {
-            "side_stage{}".format(i + 1): ShapeSpec(
-                channels=swin.num_features[i], stride=swin.strides[i]
-            )
-            for i in range(len(swin.stages))
-        })
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
         sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
         sim_fpn = SimpleFeaturePyramid(
             swin_out_shape,
@@ -1162,6 +1166,26 @@ class AlteredStandaredROIHeads(StandardROIHeads):
             return pred_instances
 
 
+class AlteredStandaredROIHeadsTi(AlteredStandaredROIHeads):
+    @classmethod
+    def _init_box_head(cls, cfg, input_shape):
+        ret = AlteredStandaredROIHeads._init_box_head(cls, cfg, input_shape)
+
+        box_head = ret["box_head"]
+        box_predictor = FastRCNNOutputLayersPsTi(cfg, box_head.output_shape)
+        ret["box_predictor"] = box_predictor
+        return ret
+
+    def forward(
+        self,
+        tid,
+        *args,
+        **kws,
+    ) -> Tuple[List[Instances], Dict[str, torch.Tensor]]:
+        self.box_predictor.set_task_id(tid)
+        return super().forward(*args, **kws)
+
+
 class SwinROIHeads(ROIHeads):
     @configurable
     def __init__(
@@ -1761,6 +1785,46 @@ class FastRCNNOutputLayersPs(FastRCNNOutputLayers):
             result.pred_classes = filter_inds[:, 1]
             results.append(result)
         return results
+
+
+import copy
+
+
+class FastRCNNOutputLayersPsTi(FastRCNNOutputLayersPs):
+    @configurable
+    def __init__(self, n_tasks, *args, **kws):
+        super().__init__(*args, **kws)
+        self.cls_score_ti = nn.ModuleList(
+            [copy.deepcopy(self.cls_score) for _ in range(n_tasks)]
+        )
+
+    @classmethod
+    def from_config(cls, cfg, input_shape):
+        ret = super().from_config(cfg, input_shape)
+        ret["n_tasks"] = cfg.PERSON_SEARCH.INCREMENTAL.NUM_TASKS
+        return ret
+
+    def set_task_id(self, tid):
+        self.tid = tid
+
+    def forward(self, x):
+        """
+        Args:
+            x: per-region features of shape (N, ...) for N bounding boxes to predict.
+
+        Returns:
+            (Tensor, Tensor):
+            First tensor: shape (N,K+1), scores for each of the N box. Each row contains the
+            scores for K object categories and 1 background class.
+
+            Second tensor: bounding box regression deltas for each box. Shape is shape (N,Kx4),
+            or (N,4) for class-agnostic regression.
+        """
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+        scores = self.cls_score_ti[self.tid](x)
+        proposal_deltas = self.bbox_pred(x)
+        return scores, proposal_deltas
 
 
 from psd2.modeling import Backbone

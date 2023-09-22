@@ -1,9 +1,10 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinMsCosDivCDI"
-  WEIGHTS: "outputs/swin_rcnn/swin6_ms_cos_div_cdi_cuhk2prw/model_final.pth"
+  META_ARCHITECTURE: "SwinContraCDI"
+  WEIGHTS: "outputs/swin_rcnn/swin_contra_cdi_cuhk2prw/model_final.pth"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  QUERY_IMG_FEATS: ["outputs/swin_rcnn/swin_feat_extract/CUHK-SYSU_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/PRW_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/MovieNet_Train_app10_img_feats.pth"]
   DOMAIN_IDENTIFY:
     DOMAIN_NAMES: ["CUHK-SYSU","PRW","MovieNet"]
   DET:
@@ -14,8 +15,8 @@ PERSON_SEARCH:
 SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0005
-  STEPS: (6300,)
-  MAX_ITER: 12600 # 630 * 20
+  STEPS: (3780,7560)
+  MAX_ITER: 12600 # 630 * 40
   CHECKPOINT_PERIOD: 1260
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
@@ -32,4 +33,4 @@ TEST:
   IMS_PER_PROC: 16
   EVAL_PERIOD: 630
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin6_ms_cos_div_cdi_cuhk2prw2mvn"
+OUTPUT_DIR: "outputs/swin_rcnn/swin_contra_cdi_cuhk2prw2mvn"

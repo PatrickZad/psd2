@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinMsCosDivCDI"
-  WEIGHTS: "outputs/swin_rcnn/swin6_ms_cos_div_cdi_cuhk2prw/model_final.pth"
+  META_ARCHITECTURE: "SwinMsCosCDI"
+  WEIGHTS: "outputs/swin_rcnn/swin6_ms_cos_cdi_cuhk2prw/model_final.pth"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   DOMAIN_IDENTIFY:
@@ -32,4 +32,4 @@ TEST:
   IMS_PER_PROC: 16
   EVAL_PERIOD: 630
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin6_ms_cos_div_cdi_cuhk2prw2mvn"
+OUTPUT_DIR: "outputs/swin_rcnn/swin6_ms_cos_cdi_cuhk2prw2mvn"

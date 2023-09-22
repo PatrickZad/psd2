@@ -1,0 +1,23 @@
+_BASE_: "base_prompts.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinMsExtracter"
+  WEIGHTS: ""
+PERSON_SEARCH:
+  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  DET:
+    MODEL:
+      TRANSFORMER:
+        WITH_CP: False
+        SEMANTIC_WEIGHT: -1
+INPUT:
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+DATASETS:
+  TEST: ("CUHK-SYSU_Train",) 
+DATALOADER:
+  NUM_WORKERS: 8
+  ASPECT_RATIO_GROUPING: False
+TEST:
+  IMS_PER_PROC: 16
+
+OUTPUT_DIR: "outputs/swin_rcnn/swin_ms_feat_extract"
