@@ -43,12 +43,13 @@ PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [16,16,16,16]
-    POOL_SIZE: 30
-    PROMPT_TYPE: "CODAPrompt"
+    NUM_PROMPTS: [4,4,4,4]
+    POOL_SIZE: 12
+    PROMPT_TYPE: "L2PppMask"
     NUM_TASKS: 3
     CURRECT_TASK: 0
     LOSS_WEIGHT: 0.1
+    TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
@@ -101,13 +102,11 @@ INPUT:
   MAX_SIZE_TRAIN: 1333
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
-  MIN_SIZE_TEST_INC: [800,800,800,800,240,240]
-  MAX_SIZE_TEST_INC: [1333,1333,1333,1333,720,720]
 DATASETS:
   TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") # "CUHK-SYSU_GalleryGT","CUHK-SYSU_TestG100GT") #
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100",) #
 TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-coda-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMask-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
