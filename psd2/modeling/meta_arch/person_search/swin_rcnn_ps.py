@@ -30,6 +30,7 @@ from .swin_rcnn_pd import (
     SwinSimFPNRCNN,
     SimpleFeaturePyramid,
     AlteredStandaredROIHeads,
+    AlteredStandaredROIHeadsTi,
 )
 from psd2.modeling import ShapeSpec
 from psd2.modeling.poolers import ROIPooler
@@ -430,12 +431,14 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
             )
             for i in range(len(ret["swin"].stages))
         }
-        swin_out_shape.update( {
-            "side_stage{}".format(i + 1): ShapeSpec(
-                channels=ret["swin"].num_features[i], stride=ret["swin"].strides[i]
-            )
-            for i in range(len(ret["swin"].stages))
-        })
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=ret["swin"].num_features[i], stride=ret["swin"].strides[i]
+                )
+                for i in range(len(ret["swin"].stages))
+            }
+        )
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
         if isinstance(pooler_resolution, int):
             pooler_resolution = (pooler_resolution, pooler_resolution)
@@ -1723,12 +1726,14 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             )
             for i in range(len(swin.stages))
         }
-        swin_out_shape.update( {
-            "side_stage{}".format(i + 1): ShapeSpec(
-                channels=swin.num_features[i], stride=swin.strides[i]
-            )
-            for i in range(len(swin.stages))
-        })
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
         sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
         sim_fpn = SimpleFeaturePyramid(
             swin_out_shape,
@@ -2578,6 +2583,7 @@ class PromptedSwinSimFPNRCNNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
 
+
 @META_ARCH_REGISTRY.register()
 class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
     @classmethod
@@ -2591,7 +2597,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             num_prompts = [num_prompts] * 4
 
         # NOTE downsample module of stage3 is trainable
-        swin =  ret["swin"]
+        swin = ret["swin"]
 
         stage_prompts = nn.ModuleList()
         for si, nl in enumerate(tr_cfg.DEPTH):
@@ -2611,7 +2617,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=nl,
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
@@ -2623,7 +2629,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=nl,
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
@@ -2635,7 +2641,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=nl,
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
@@ -2647,7 +2653,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=nl,
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
@@ -2659,7 +2665,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=nl,
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "Fixed":
@@ -2676,7 +2682,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             else:  # CODAPrompt
@@ -2687,7 +2693,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
@@ -2709,7 +2715,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=tr_cfg.DEPTH[-1],
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
@@ -2721,7 +2727,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=tr_cfg.DEPTH[-1],
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
@@ -2733,7 +2739,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=tr_cfg.DEPTH[-1],
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
@@ -2745,7 +2751,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=tr_cfg.DEPTH[-1],
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
@@ -2757,7 +2763,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_layers=tr_cfg.DEPTH[-1],
                     topk=prompt_cfg.TOP_K,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             elif prompt_cfg.PROMPT_TYPE == "Fixed":
@@ -2774,7 +2780,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             else:  # CODAPrompt
@@ -2785,7 +2791,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     num_prompts=stage_num_prompts,
                     num_layers=nl,
                     loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=sum( swin.num_features[-4:]),
+                    key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
             prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
@@ -2799,6 +2805,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             }
         )
         return ret
+
     @torch.no_grad()
     def task_query(self, backbone_features):
         x = backbone_features[list(backbone_features.keys())[-1]]
@@ -2813,14 +2820,14 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             w = torch.ones(x.shape[0], 1) * self.swin_org.semantic_weight
             w = torch.cat([w, 1 - w], axis=-1)
             semantic_weight = w.cuda()
-        outs=[]
+        outs = []
         for i, stage in enumerate(self.swin_org.stages):
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
             if self.swin_org.semantic_weight >= 0:
                 sw = self.swin_org.semantic_embed_w[i](semantic_weight).unsqueeze(1)
                 sb = self.swin_org.semantic_embed_b[i](semantic_weight).unsqueeze(1)
                 x = x * self.swin_org.softplus(sw) + sb
-            out =getattr(self.swin_org,"norm{}".format(i))(out)
+            out = getattr(self.swin_org, "norm{}".format(i))(out)
             out = (
                 out.view(-1, *out_hw_shape, self.swin_org.num_features[i])
                 .permute(0, 3, 1, 2)
@@ -2829,7 +2836,8 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             out = self.swin_org.avgpool(out)
             out = torch.flatten(out, 1)
             outs.append(out)
-        return torch.cat(outs,dim=-1)
+        return torch.cat(outs, dim=-1)
+
     def swin_backbone(self, x):
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
@@ -2879,7 +2887,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     .permute(0, 3, 1, 2)
                     .contiguous()
                 )
-                outs.append(outd) # for det
+                outs.append(outd)  # for det
                 norm_layer = getattr(self.swin, f"norm{i}")
                 outr = norm_layer(out)
                 outr = (
@@ -2887,10 +2895,293 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     .permute(0, 3, 1, 2)
                     .contiguous()
                 )
-                outs.append(outr) # for det
+                outs.append(outr)  # for det
         if self.training:
             prompt_loss = {"loss_prompt": prompt_loss}
-        return {"side_stage3": outs[0],"stage3": outs[1]}, task_query, prompt_loss
+        return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
+
+
+import torch.nn.functional as tF
+
+
+@META_ARCH_REGISTRY.register()
+class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
+    @configurable
+    def __init__(
+        self,
+        n_tasks,
+        cur_task,
+        task_keys,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        self.task_keys = nn.Parameter(task_keys, requires_grad=True)
+        self.n_tasks = n_tasks
+        self.cur_task = cur_task
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        inc_cfg = cfg.PERSON_SEARCH.INCREMENTAL
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+
+        # NOTE downsample module of stage3 is trainable
+        swin = ret["swin"]
+
+        stage_prompts = nn.ModuleList()
+        for si, nl in enumerate(tr_cfg.DEPTH):
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
+            assert prompt_cfg.PROMPT_TYPE == "FixedTaskInc"
+            prompt_stage = prompts.FixedPromptsTaskInc(
+                emb_d=swin.num_features[si],
+                n_tasks=inc_cfg.NUM_TASKS,
+                num_prompts=stage_num_prompts,
+                num_layers=nl,
+            )
+            prompt_stage.process_task_count(inc_cfg.CUR_TASK)
+            stage_prompts.append(prompt_stage)
+        side_stage_prompts = nn.ModuleList()
+        if isinstance(num_prompts, int):
+            stage_num_prompts = num_prompts
+        else:
+            stage_num_prompts = num_prompts[-1]
+        if stage_num_prompts == 0:
+            stage_prompts.append(nn.Identity())
+        else:
+            prompt_stage = prompts.FixedPromptsTaskInc(
+                emb_d=swin.num_features[-1],
+                n_tasks=inc_cfg.NUM_TASKS,
+                num_prompts=stage_num_prompts,
+                num_layers=tr_cfg.DEPTH[-1],
+            )
+            prompt_stage.process_task_count(inc_cfg.CUR_TASK)
+            side_stage_prompts.append(prompt_stage)
+        task_keys = torch.FloatTensor(
+            inc_cfg.NUM_TASKS, inc_cfg.TOP_K, swin.num_features[-1]
+        )
+        nn.init.uniform_(task_keys)
+        ret.update(
+            {
+                "n_tasks": inc_cfg.NUM_TASKS,
+                "swin": swin,
+                "stage_prompts": stage_prompts,
+                "side_stage_prompts": side_stage_prompts,
+                "task_keys": task_keys,
+            }
+        )
+        return ret
+
+    @torch.no_grad()
+    def task_query(self, backbone_features):
+        x = backbone_features[list(backbone_features.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin_org.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin_org.drop_after_pos(x)
+
+        if self.swin_org.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin_org.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+
+        for i, stage in enumerate(self.swin_org.stages):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin_org.semantic_weight >= 0:
+                sw = self.swin_org.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin_org.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin_org.softplus(sw) + sb
+        out = self.swin_org.norm3(out)
+        out = (
+            out.view(-1, *out_hw_shape, self.swin_org.num_features[i])
+            .permute(0, 3, 1, 2)
+            .contiguous()
+        )
+        x = self.swin_org.avgpool(out)
+        x = torch.flatten(x, 1)
+        return x
+
+    def swin_backbone(self, x, ti):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        task_query = self.task_query(x)
+
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        bonenum = 3
+        task_query_x = task_query.unsqueeze(1)
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[i](
+                    task_query_stage, i, train=self.training
+                )
+                prompt_loss += p_loss
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if i == bonenum - 1:
+                norm_layer = getattr(self.swin, f"side_norm{i}")
+                outd = norm_layer(out)
+                outd = (
+                    outd.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(outd)  # for det
+                norm_layer = getattr(self.swin, f"norm{i}")
+                outr = norm_layer(out)
+                outr = (
+                    outr.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(outr)  # for det
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss}
+        return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
+
+    def task_select(self, query):
+        if self.training:
+            keys = self.task_keys[self.cur_task]
+            keys_n = tF.normalize(keys, dim=-1)
+            query_n = tF.normalize(query, dim=-1)
+            sim = torch.einsum("kj,bj->kb", keys_n, query_n)
+            loss = sim.sum() / query.shape[0]
+            ti = self.cur_task
+        else:
+            keys_n = tF.normalize(keys, dim=-1)
+            query_n = tF.normalize(query, dim=-1)
+
+    def forward_gallery(self, image_list, gt_instances):
+        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        fpn_features = self.sim_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, fpn_features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list,
+            fpn_features,
+            proposals,
+            gt_instances,
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        if self.training:
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            pos_boxes, pos_ids = [], []
+            for gts_i in gt_instances:
+                # append gt
+                pos_boxes.append(gts_i.gt_boxes.tensor)
+                pos_ids.append(gts_i.gt_pids)
+            pos_boxes, pos_ids = self.box_aug.augment_boxes(
+                pos_boxes,
+                pos_ids,
+                det_boxes=None,
+                det_pids=None,
+                img_sizes=[gti.image_size for gti in gt_instances],
+            )
+            reid_loss = self.reid_head(
+                task_query, image_list, features, pos_boxes, pos_ids
+            )
+            losses.update(reid_loss)
+            losses.update(prompt_loss)
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            reid_feats = self.reid_head(task_query, image_list, features, roi_boxes)
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, feats_i, gt_i in zip(pred_instances, reid_feats, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.reid_feats = feats_i[keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
 
 @META_ARCH_REGISTRY.register()
 class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
@@ -2923,6 +3214,19 @@ class PromptedSwinF4RCNNPSHybrid(PromptedSwinF4RCNNPS):
 # TODO refactor new L2P code
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
+    @configurable
+    def __init__(
+        self,
+        box_aug,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        self.box_aug = box_aug
+
     @classmethod
     def from_config(cls, cfg):
         ret = super(SwinF4RCNNPS, cls).from_config(cfg)
@@ -3134,6 +3438,8 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
             else IncOIMLoss(cfg)
         )
         ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        roi_heads = AlteredStandaredROIHeadsTi(cfg, ret["sim_fpn"].output_shape())
+        ret["roi_heads"] = roi_heads
         return ret
 
 

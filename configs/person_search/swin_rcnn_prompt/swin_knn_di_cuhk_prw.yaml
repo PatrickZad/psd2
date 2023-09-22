@@ -1,0 +1,23 @@
+_BASE_: "base_prompts.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinKnnDI"
+  WEIGHTS: ""
+PERSON_SEARCH:
+  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  QUERY_IMG_FEATS: ["outputs/swin_rcnn/swin_feat_extract/CUHK-SYSU_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/PRW_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/MovieNet_Train_app10_img_feats.pth"]
+  DOMAIN_IDENTIFY:
+    DOMAIN_NAMES: ["CUHK-SYSU","PRW","MovieNet"]
+  DET:
+    MODEL:
+      TRANSFORMER:
+        WITH_CP: False
+        SEMANTIC_WEIGHT: -1
+INPUT:
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+DATASETS:
+  TEST: ("CUHK-SYSU_Gallery","PRW_Gallery",) # "MovieNet_GalleryTestG2000") 
+TEST:
+  IMS_PER_PROC: 16
+
+OUTPUT_DIR: "outputs/swin_rcnn/swin_knn_di_cuhk_prw"
