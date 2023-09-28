@@ -1,6 +1,6 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "PromptedMsSwinSimFPNLiteRCNNPSBoxAug"
+  META_ARCHITECTURE: "PromptedSwinSimFPNRCNNPSBoxAug"
   WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign/model_0316479.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
@@ -53,9 +53,9 @@ PERSON_SEARCH:
     MODEL:
       TRANSFORMER:
         WITH_CP: True
-        SEMANTIC_WEIGHT: -1
+        SEMANTIC_WEIGHT: 0.0 # -1
       SIM_FPN:
-        IN_FEATURE: "side_stage3"
+        IN_FEATURE: "stage4"
         OUT_CHANNELS: 256
         SCALE_FACTORS: [4.0, 2.0, 1.0, 0.5]
   REID:
@@ -110,4 +110,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-coda-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-coda-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"

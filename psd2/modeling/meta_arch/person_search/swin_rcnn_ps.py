@@ -1038,6 +1038,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -1126,6 +1138,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1779,6 +1803,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -1867,6 +1903,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2327,16 +2375,16 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
     def forward_gallery_gt(self, image_list, gt_instances):
         assert not self.training
         # inf on faster rcnn boxes
-        #if self.pred_rst is None:
-        #    pred_rst = torch.load(
-        #        "Data/model_zoo/frcnn_prw_gallery_gt_inf.pt",
-        #        map_location=self.device,
-        #    )["infs"]
-        #    self.pred_rst = {imgn: rst[:, :5] for imgn, rst in pred_rst.items()}
+        if self.pred_rst is None:
+            pred_rst = torch.load(
+                "Data/model_zoo/frcnn_prw_gallery_gt_inf.pt",
+                map_location=self.device,
+            )["infs"]
+            self.pred_rst = {imgn: rst[:, :5] for imgn, rst in pred_rst.items()}
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
-        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
-        # roi_boxes = [self.pred_rst[inst.image_id][:, :4] for inst in gt_instances]
-        """for i, gt_i in enumerate(gt_instances):
+        # roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        roi_boxes = [self.pred_rst[inst.image_id][:, :4] for inst in gt_instances]
+        for i, gt_i in enumerate(gt_instances):
             # back to org scale
             org_h, org_w = gt_i.org_img_size
             h, w = gt_i.image_size
@@ -2345,25 +2393,25 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 dtype=torch.float32,
                 device=self.device,
             )
-            roi_boxes[i] = roi_boxes[i] * factor"""
+            roi_boxes[i] = roi_boxes[i] * factor
         reid_feats = self.reid_head(task_query, image_list, features, roi_boxes)
         pred_instances = []
         for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
             inst = Instances(gt_i.image_size)
-            # inst.pred_boxes = Boxes(roi_boxes[i])
-            inst.pred_boxes = gt_i.gt_boxes
-            # inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
-            inst.pred_scores = (
-                torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            inst.pred_boxes =Boxes(roi_boxes[i]) #gt_i.gt_boxes 
+            #inst.pred_scores = (
+            #    torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            #)
+            inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
+            # inst.pred_classes =torch.zeros_like(gt_i.gt_pids)  
+            inst.pred_classes = torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
             )
-            #inst.pred_classes = torch.zeros_like(
-            #    self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
-            #)
-            inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
-            #inst.assign_ids = torch.zeros_like(
-            #    self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
-            #)
-            inst.assign_ids = gt_i.gt_pids
+            
+            # inst.assign_ids =gt_i.gt_pids 
+            inst.assign_ids =torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64)
+            
             inst.reid_feats = feats_i
             # back to org scale
             org_h, org_w = gt_i.org_img_size
@@ -2661,6 +2709,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -2749,6 +2809,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2928,6 +3000,19 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
         if self.training:
             prompt_loss = {"loss_prompt": prompt_loss}
         return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
+
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
+    @classmethod
+    def from_config(cls, cfg):
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,cls).from_config(cfg)
+        
+
+    @torch.no_grad()
+    def task_query(self, backbone_features):
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,self).task_query(backbone_features)
+
 
 
 import torch.nn.functional as tF

@@ -53,7 +53,7 @@ PERSON_SEARCH:
     MODEL:
       TRANSFORMER:
         WITH_CP: True
-        SEMANTIC_WEIGHT: -1
+        SEMANTIC_WEIGHT: 0.0 # -1
       SIM_FPN:
         IN_FEATURE: "stage4"
         OUT_CHANNELS: 256
@@ -101,11 +101,13 @@ INPUT:
   MAX_SIZE_TRAIN: 720
   MIN_SIZE_TEST: 240
   MAX_SIZE_TEST: 720
+  MIN_SIZE_TEST_INC: [800,800,800,800,240,240]
+  MAX_SIZE_TEST_INC: [1333,1333,1333,1333,720,720]
 DATASETS:
   TRAIN: ("MovieNet_Train_app10",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
+  TEST: ("MovieNet_GalleryTestG2000","MovieNet_TestG2000",) # "CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query",
 TEST:
-  IMS_PER_PROC: 2
+  IMS_PER_PROC: 4
   EVAL_PERIOD: 2520
   DETECTION_SCORE_TS: [0.5,]
 OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-coda-ps-prepend16-boxaug4_cuhk2prw2mvn_adam_b8_incoim_0wd"
