@@ -494,6 +494,20 @@ class L2PppMask(L2Ppp):
         else:
             return super().forward(x_query, vis_mark, train, task_id)
 
+class L2PppMaskBs(L2Ppp):
+    def _init_smart(self, *args, **kws):
+        super()._init_smart(*args, **kws)
+        self.task_id_bootstrap = True
+
+    def forward(self, x_query, vis_mark, train=False, task_id=None):
+        if self.training:
+            p_list, ploss = super(L2Ppp, self).forward(
+                x_query, vis_mark, train, task_id
+            )
+            return torch.stack(p_list, dim=0), ploss/x_query.shape[0]
+        else:
+            return super().forward(x_query, vis_mark, train, task_id)
+
 
 # NOTE use prompt mask
 class L2PppMask2(L2Ppp):

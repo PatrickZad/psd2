@@ -1038,6 +1038,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -1126,6 +1138,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1779,6 +1803,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     key_dim=swin.num_features[-1],
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -1867,6 +1903,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2661,6 +2709,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
                 prompt_stage = prompts.L2PppMask2(
                     emb_d=swin.num_features[si],
@@ -2749,6 +2809,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2928,6 +3000,19 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
         if self.training:
             prompt_loss = {"loss_prompt": prompt_loss}
         return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
+
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
+    @classmethod
+    def from_config(cls, cfg):
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,cls).from_config(cfg)
+        
+
+    @torch.no_grad()
+    def task_query(self, backbone_features):
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,self).task_query(backbone_features)
+
 
 
 import torch.nn.functional as tF
