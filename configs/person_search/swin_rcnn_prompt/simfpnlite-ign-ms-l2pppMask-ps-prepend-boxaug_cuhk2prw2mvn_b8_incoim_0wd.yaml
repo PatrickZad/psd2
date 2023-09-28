@@ -109,4 +109,4 @@ TEST:
   IMS_PER_PROC: 3
   EVAL_PERIOD: 2240
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMaskMC-ps-prepend16-boxaug4_cuhk2prw2mvn_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMask-ps-prepend16-boxaug4_cuhk2prw2mvn_adam_b8_incoim_0wd"

@@ -72,7 +72,7 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                 output_dir=output_folder,
                 s_threds=cfg.TEST.DETECTION_SCORE_TS,
                 topk=cfg.TEST.DETECTIONS_PER_IMAGE,
-                #vis=vis_eval,
+                vis=vis_eval,
             )
         )
     elif evaluator_type is "query":

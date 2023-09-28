@@ -1647,6 +1647,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         for p in self.sim_fpn.parameters():
             p.requires_grad = False
 
+        self.pred_rst = None
+
     def load_state_dict(self, *args, **kws):
         out = super().load_state_dict(*args, **kws)
         state_dict = _load_file(self.swin_org_init_path)
@@ -2323,18 +2325,45 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         return pred_instances, [feat.detach() for feat in features.values()]
 
     def forward_gallery_gt(self, image_list, gt_instances):
+        assert not self.training
+        # inf on faster rcnn boxes
+        if self.pred_rst is None:
+            pred_rst = torch.load(
+                "Data/model_zoo/frcnn_prw_gallery_gt_inf.pt",
+                map_location=self.device,
+            )["infs"]
+            self.pred_rst = {imgn: rst[:, :5] for imgn, rst in pred_rst.items()}
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
-        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        # roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        roi_boxes = [self.pred_rst[inst.image_id][:, :4] for inst in gt_instances]
+        for i, gt_i in enumerate(gt_instances):
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            factor = torch.tensor(
+                [[w / org_w, h / org_h, w / org_w, h / org_h]],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            roi_boxes[i] = roi_boxes[i] * factor
         reid_feats = self.reid_head(task_query, image_list, features, roi_boxes)
         pred_instances = []
         for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
             inst = Instances(gt_i.image_size)
-            inst.pred_boxes = gt_i.gt_boxes
-            inst.pred_scores = (
-                torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            inst.pred_boxes =Boxes(roi_boxes[i]) #gt_i.gt_boxes 
+            #inst.pred_scores = (
+            #    torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            #)
+            inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
+            # inst.pred_classes =torch.zeros_like(gt_i.gt_pids)  
+            inst.pred_classes = torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
             )
-            inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
-            inst.assign_ids = gt_i.gt_pids
+            
+            # inst.assign_ids =gt_i.gt_pids 
+            inst.assign_ids =torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64)
+            
             inst.reid_feats = feats_i
             # back to org scale
             org_h, org_w = gt_i.org_img_size
