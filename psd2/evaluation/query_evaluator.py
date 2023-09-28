@@ -51,7 +51,12 @@ class QueryEvaluator(DatasetEvaluator):
         self._logger = logging.getLogger(__name__)
         # {image name: torch concatenated [boxes, scores, reid features]
         inf_rts = torch.load(
-            os.path.join(self._output_dir, "_gallery_gt_inf.pt" if "GT" not in self.dataset_name else "_gallery_gt_infgt.pt"),
+            os.path.join(
+                self._output_dir,
+                "_gallery_gt_inf.pt"
+                if "GT" not in self.dataset_name
+                else "_gallery_gt_infgt.pt",
+            ),
             map_location=self._cpu_device,
         )
         self.gts = inf_rts["gts"]
@@ -68,7 +73,7 @@ class QueryEvaluator(DatasetEvaluator):
         if not vis:
             self._vis_search = _trivial_vis
             return
-        vis_dir = opj(self._output_dir,self.dataset_name, "vis", "search")
+        vis_dir = opj(self._output_dir, self.dataset_name, "vis", "search")
         self.svis_dirs = {}
         lrk = comm.get_local_rank()
         for scr in s_threds:
@@ -218,8 +223,8 @@ class QueryEvaluator(DatasetEvaluator):
             "c": "black",
             "m": "white",
         }
-        q_box=q_box.tensor.squeeze(0).numpy()
-        q_id=q_id.squeeze().item()
+        q_box = q_box.tensor.squeeze(0).numpy()
+        q_id = q_id.squeeze().item()
         id_dir = opj(self.svis_dirs[sthred], str(q_id))
         pos_dir = opj(id_dir, qimg_id[:-4], "pos")
         neg_dir = opj(id_dir, qimg_id[:-4], "neg")
@@ -419,7 +424,6 @@ class QueryEvaluator(DatasetEvaluator):
             shutil.rmtree(opj(id_dir, qimg_id[:-4]))
         if len(os.listdir(id_dir)) == 0:
             shutil.rmtree(id_dir)
-
 
 
 def _trivial_vis(*args, **kw):

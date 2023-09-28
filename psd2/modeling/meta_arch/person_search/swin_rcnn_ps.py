@@ -1647,6 +1647,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         for p in self.sim_fpn.parameters():
             p.requires_grad = False
 
+        self.pred_rst = None
+
     def load_state_dict(self, *args, **kws):
         out = super().load_state_dict(*args, **kws)
         state_dict = _load_file(self.swin_org_init_path)
@@ -2323,17 +2325,44 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         return pred_instances, [feat.detach() for feat in features.values()]
 
     def forward_gallery_gt(self, image_list, gt_instances):
+        assert not self.training
+        # inf on faster rcnn boxes
+        #if self.pred_rst is None:
+        #    pred_rst = torch.load(
+        #        "Data/model_zoo/frcnn_prw_gallery_gt_inf.pt",
+        #        map_location=self.device,
+        #    )["infs"]
+        #    self.pred_rst = {imgn: rst[:, :5] for imgn, rst in pred_rst.items()}
         features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
         roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        # roi_boxes = [self.pred_rst[inst.image_id][:, :4] for inst in gt_instances]
+        """for i, gt_i in enumerate(gt_instances):
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            factor = torch.tensor(
+                [[w / org_w, h / org_h, w / org_w, h / org_h]],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            roi_boxes[i] = roi_boxes[i] * factor"""
         reid_feats = self.reid_head(task_query, image_list, features, roi_boxes)
         pred_instances = []
         for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
             inst = Instances(gt_i.image_size)
+            # inst.pred_boxes = Boxes(roi_boxes[i])
             inst.pred_boxes = gt_i.gt_boxes
+            # inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
             inst.pred_scores = (
                 torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
             )
+            #inst.pred_classes = torch.zeros_like(
+            #    self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
+            #)
             inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
+            #inst.assign_ids = torch.zeros_like(
+            #    self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
+            #)
             inst.assign_ids = gt_i.gt_pids
             inst.reid_feats = feats_i
             # back to org scale
@@ -2923,6 +2952,14 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
         self.n_tasks = n_tasks
         self.cur_task = cur_task
 
+        for n, p in self.roi_heads.named_parameters():
+            if "ti" in n:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+
+        self.pred_rst = None
+
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
@@ -2971,16 +3008,19 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             prompt_stage.process_task_count(inc_cfg.CUR_TASK)
             side_stage_prompts.append(prompt_stage)
         task_keys = torch.FloatTensor(
-            inc_cfg.NUM_TASKS, inc_cfg.TOP_K, swin.num_features[-1]
+            inc_cfg.NUM_TASKS, inc_cfg.LEN_KEYS, swin.num_features[-1]
         )
         nn.init.uniform_(task_keys)
+        roi_heads = AlteredStandaredROIHeadsTi(cfg, ret["sim_fpn"].output_shape())
         ret.update(
             {
                 "n_tasks": inc_cfg.NUM_TASKS,
+                "cur_task": inc_cfg.CUR_TASK,
                 "swin": swin,
                 "stage_prompts": stage_prompts,
                 "side_stage_prompts": side_stage_prompts,
                 "task_keys": task_keys,
+                "roi_heads": roi_heads,
             }
         )
         return ret
@@ -3021,8 +3061,6 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
             w = torch.cat([w, 1 - w], axis=-1)
             semantic_weight = w.cuda()
-        x = self.backbone(x)
-        task_query = self.task_query(x)
 
         x = x[list(x.keys())[-1]]
         hw_shape = x.shape[2:]
@@ -3033,11 +3071,7 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
         x = self.swin.drop_after_pos(x)
 
         outs = []
-        prompt_loss = torch.zeros(
-            (1,), dtype=task_query.dtype, device=task_query.device
-        )
         bonenum = 3
-        task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
             if (
                 not isinstance(self.swin.num_prompts, int)
@@ -3045,11 +3079,7 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             ):
                 x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
             else:
-                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
-                selected_prompts, p_loss = self.stage_prompts[i](
-                    task_query_stage, i, train=self.training
-                )
-                prompt_loss += p_loss
+                selected_prompts = self.stage_prompts[i](len(stage.blocks), ti)
                 x, hw_shape, out, out_hw_shape = stage(
                     x, hw_shape, deep_prompt_embd=selected_prompts
                 )
@@ -3074,9 +3104,7 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     .contiguous()
                 )
                 outs.append(outr)  # for det
-        if self.training:
-            prompt_loss = {"loss_prompt": prompt_loss}
-        return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
+        return {"side_stage3": outs[0], "stage3": outs[1]}
 
     def task_select(self, query):
         if self.training:
@@ -3084,19 +3112,50 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
             keys_n = tF.normalize(keys, dim=-1)
             query_n = tF.normalize(query, dim=-1)
             sim = torch.einsum("kj,bj->kb", keys_n, query_n)
-            loss = sim.sum() / query.shape[0]
-            ti = self.cur_task
+            loss = (1 - sim).sum() / query.shape[0]
+            ti = [self.cur_task] * query.shape[0]
+            loss = {"loss_task_cos": loss}
         else:
-            keys_n = tF.normalize(keys, dim=-1)
+            keys_n = tF.normalize(self.task_keys, dim=-1).flatten(0, 1)
             query_n = tF.normalize(query, dim=-1)
+            cos_sim = torch.einsum("bj,kj->bk", query_n, keys_n)
+            domain_ids = torch.cat(
+                [
+                    torch.zeros(self.task_keys.shape[1], device=self.device) + i
+                    for i in range(self.task_keys.shape[0])
+                ]
+            ).long()
+            ti = []
+            for cos_sim_i in cos_sim:
+                topk_idx = torch.topk(cos_sim_i, k=self.task_keys.shape[1])[1]
+                di, ndi = torch.unique(domain_ids[topk_idx], return_counts=True)
+                ti.append(di[torch.argmax(ndi)].item())
+            loss = None
+        return ti, loss
+
+    def forward_query(self, image_list, gt_instances):
+        bk = self.backbone(image_list.tensor)
+        x_query = self.task_query(bk)
+        ti, _ = self.task_select(x_query)
+        features = self.swin_backbone(bk, ti)
+        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        box_embs = self.reid_head(ti, image_list, features, roi_boxes)
+        return [
+            Instances(gt_instances[i].image_size, reid_feats=box_embs[i])
+            for i in range(len(box_embs))
+        ]
 
     def forward_gallery(self, image_list, gt_instances):
-        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        bk = self.backbone(image_list.tensor)
+        x_query = self.task_query(bk)
+        ti, t_loss = self.task_select(x_query)
+        features = self.swin_backbone(bk, ti)
         fpn_features = self.sim_fpn(features)
         proposals, proposal_losses = self.proposal_generator(
             image_list, fpn_features, gt_instances
         )
         pred_instances, losses, pos_match_indices = self.roi_heads(
+            ti,
             image_list,
             fpn_features,
             proposals,
@@ -3124,11 +3183,9 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 det_pids=None,
                 img_sizes=[gti.image_size for gti in gt_instances],
             )
-            reid_loss = self.reid_head(
-                task_query, image_list, features, pos_boxes, pos_ids
-            )
+            reid_loss = self.reid_head(ti, image_list, features, pos_boxes, pos_ids)
             losses.update(reid_loss)
-            losses.update(prompt_loss)
+            losses.update(t_loss)
 
             for i, instances_i in enumerate(pred_instances):
                 instances_i.assign_ids = assign_ids[i]
@@ -3155,7 +3212,7 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
-            reid_feats = self.reid_head(task_query, image_list, features, roi_boxes)
+            reid_feats = self.reid_head(ti, image_list, features, roi_boxes)
             # nms
             score_t = self.roi_heads.box_predictor.test_score_thresh
             iou_t = self.roi_heads.box_predictor.test_nms_thresh
@@ -3181,6 +3238,147 @@ class TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 h, w = gt_i.image_size
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
+
+    def forward_gallery_gt(self, image_list, gt_instances):
+        assert not self.training
+        # inf on faster rcnn boxes
+        if self.pred_rst is None:
+            pred_rst = torch.load(
+                "Data/model_zoo/frcnn_prw_gallery_gt_inf.pt",
+                map_location=self.device,
+            )["infs"]
+            self.pred_rst = {imgn: rst[:, :5] for imgn, rst in pred_rst.items()}
+
+        bk = self.backbone(image_list.tensor)
+        x_query = self.task_query(bk)
+        ti, _ = self.task_select(x_query)
+        features = self.swin_backbone(bk, ti)
+        # roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        roi_boxes = [self.pred_rst[inst.image_id][:, :4] for inst in gt_instances]
+        for i, gt_i in enumerate(gt_instances):
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            factor = torch.tensor(
+                [[w / org_w, h / org_h, w / org_w, h / org_h]],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            roi_boxes[i] = roi_boxes[i] * factor
+        reid_feats = self.reid_head(ti, image_list, features, roi_boxes)
+        pred_instances = []
+        for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
+            inst = Instances(gt_i.image_size)
+            inst.pred_boxes = Boxes(roi_boxes[i])  # gt_i.gt_boxes
+            # inst.pred_scores = (
+            #    torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            # )
+            inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
+            inst.pred_classes = torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
+            )  # torch.zeros_like(gt_i.gt_pids)
+            inst.assign_ids = torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
+            )  # gt_i.gt_pids
+            inst.reid_feats = feats_i
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            inst.pred_boxes.scale(org_w / w, org_h / h)
+            pred_instances.append(inst)
+
+        return pred_instances
+
+    def reid_head(
+        self, task_ids, image_list, backbone_features, roi_boxes, roi_ids=None
+    ):
+        features = [backbone_features[self.reid_in_feature]]
+        if self.training:
+            roi_boxes = [
+                Boxes(roi_boxes[i][roi_ids[i] > -2], box_mode=BoxMode.XYXY_ABS)
+                for i in range(len(roi_ids))
+            ]
+            pos_ids = torch.cat(
+                [roi_ids[i][roi_ids[i] > -2] for i in range(len(roi_ids))], dim=0
+            )
+        else:
+            roi_boxes = [
+                Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
+                for roi_boxes_i in roi_boxes
+            ]
+        x = self.reid_box_pooler(features, roi_boxes)
+        del features
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+
+        hw_shape = x.shape[-2:]
+        x = torch.flatten(x, 2)
+        x = x.permute(0, 2, 1)
+        bonenum = 3
+        x, hw_shape = self.swin.stages[bonenum - 1].downsample(x, hw_shape)
+        if self.swin.semantic_weight >= 0:
+            sw = self.swin.semantic_embed_w[bonenum - 1](semantic_weight).unsqueeze(1)
+            sb = self.swin.semantic_embed_b[bonenum - 1](semantic_weight).unsqueeze(1)
+            x = x * self.swin.softplus(sw) + sb
+
+        for i, stage in enumerate(self.swin.stages[bonenum:]):
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i + bonenum] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                selected_prompts = self.stage_prompts[bonenum + i](
+                    len(stage.blocks), task_ids
+                )
+                expanded_prompts = []
+                for bi in range(len(roi_boxes)):
+                    expanded_prompts.append(
+                        selected_prompts[:, bi : bi + 1].expand(
+                            -1, len(roi_boxes[bi]), -1, -1
+                        )
+                    )
+                selected_prompts = torch.cat(expanded_prompts, dim=1)
+                del expanded_prompts
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[bonenum + i](semantic_weight).unsqueeze(
+                    1
+                )
+                sb = self.swin.semantic_embed_b[bonenum + i](semantic_weight).unsqueeze(
+                    1
+                )
+                x = x * self.swin.softplus(sw) + sb
+            if i == len(self.swin.stages) - bonenum - 1:
+                norm_layer = getattr(self.swin, f"norm{bonenum+i}")
+                out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[bonenum + i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+        del x
+        embs = self.pool_layer(out).reshape((out.shape[0], -1))
+        embs = self.bn_neck(embs)
+        if self.training:
+            if self.vis_period > 0:
+                storage = get_event_storage()
+                if storage.iter % self.vis_period == 0:
+                    self.visualize_training_ps(
+                        image_list.tensor,
+                        out.split([len(bxs) for bxs in roi_boxes], dim=0),
+                        [bxs.tensor for bxs in roi_boxes],
+                    )
+            del out
+            reid_loss = self.oim_loss(embs, pos_ids)
+            return reid_loss
+        else:
+            embs = normalize(embs, dim=-1)
+            return torch.split(embs, [len(bxs) for bxs in roi_boxes])
 
 
 @META_ARCH_REGISTRY.register()

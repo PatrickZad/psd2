@@ -23,6 +23,7 @@ import logging
 import os
 from collections import OrderedDict
 import torch
+
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 import psd2.utils.comm as comm
 from psd2.checkpoint import DetectionCheckpointer
@@ -51,6 +52,7 @@ from psd2.evaluation import (
 import re
 from psd2.modeling import GeneralizedRCNNWithTTA
 
+
 # TODO evaluator catalog
 def build_evaluator(cfg, dataset_name, output_folder=None):
     """
@@ -75,7 +77,7 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                 output_dir=output_folder,
                 s_threds=cfg.TEST.DETECTION_SCORE_TS,
                 topk=cfg.TEST.DETECTIONS_PER_IMAGE,
-                # vis=vis_eval,
+                vis=vis_eval,
             )
         )
     elif evaluator_type is "query":

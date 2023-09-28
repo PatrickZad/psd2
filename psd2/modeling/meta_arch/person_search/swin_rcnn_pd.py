@@ -1166,10 +1166,13 @@ class AlteredStandaredROIHeads(StandardROIHeads):
             return pred_instances
 
 
+import itertools
+
+
 class AlteredStandaredROIHeadsTi(AlteredStandaredROIHeads):
     @classmethod
     def _init_box_head(cls, cfg, input_shape):
-        ret = AlteredStandaredROIHeads._init_box_head(cls, cfg, input_shape)
+        ret = AlteredStandaredROIHeads._init_box_head(cfg, input_shape)
 
         box_head = ret["box_head"]
         box_predictor = FastRCNNOutputLayersPsTi(cfg, box_head.output_shape)
@@ -1182,8 +1185,213 @@ class AlteredStandaredROIHeadsTi(AlteredStandaredROIHeads):
         *args,
         **kws,
     ) -> Tuple[List[Instances], Dict[str, torch.Tensor]]:
-        self.box_predictor.set_task_id(tid)
+        self.tid = tid
         return super().forward(*args, **kws)
+
+    @torch.no_grad()
+    def label_and_sample_proposals(
+        self, proposals: List[Instances], targets: List[Instances]
+    ) -> List[Instances]:
+        """
+        Prepare some proposals to be used to train the ROI heads.
+        It performs box matching between `proposals` and `targets`, and assigns
+        training labels to the proposals.
+        It returns ``self.batch_size_per_image`` random samples from proposals and groundtruth
+        boxes, with a fraction of positives that is no larger than
+        ``self.positive_fraction``.
+
+        Args:
+            See :meth:`ROIHeads.forward`
+
+        Returns:
+            list[Instances]:
+                length `N` list of `Instances`s containing the proposals
+                sampled for training. Each `Instances` has the following fields:
+
+                - proposal_boxes: the proposal boxes
+                - gt_boxes: the ground-truth box that the proposal is assigned to
+                  (this is only meaningful if the proposal has a label > 0; if label = 0
+                  then the ground-truth box is random)
+
+                Other fields such as "gt_classes", "gt_masks", that's included in `targets`.
+        """
+        # Augment proposals with ground-truth boxes.
+        # In the case of learned proposals (e.g., RPN), when training starts
+        # the proposals will be low quality due to random initialization.
+        # It's possible that none of these initial
+        # proposals have high enough overlap with the gt objects to be used
+        # as positive examples for the second stage components (box head,
+        # cls head, mask head). Adding the gt boxes to the set of proposals
+        # ensures that the second stage components will have some positive
+        # examples from the start of training. For RPN, this augmentation improves
+        # convergence and empirically improves box AP on COCO by about 0.5
+        # points (under one tested configuration).
+        if self.proposal_append_gt:
+            proposals = add_ground_truth_to_proposals(targets, proposals)
+
+        proposals_with_gt = []
+
+        num_fg_samples = []
+        num_bg_samples = []
+        pos_match_indices = []  # for reid label assign
+        for i, (proposals_per_image, targets_per_image) in enumerate(
+            zip(proposals, targets)
+        ):
+            has_gt = len(targets_per_image) > 0
+            match_quality_matrix = pairwise_iou(
+                targets_per_image.gt_boxes, proposals_per_image.proposal_boxes
+            )
+            matched_idxs, matched_labels = self.proposal_matcher(match_quality_matrix)
+            sampled_idxs, gt_classes = self._sample_proposals(
+                matched_idxs, matched_labels, targets_per_image.gt_classes
+            )
+
+            # Set target attributes of the sampled proposals:
+            proposals_per_image = proposals_per_image[sampled_idxs]
+            proposals_per_image.gt_classes = gt_classes
+            proposals_per_image.tids = torch.zeros_like(gt_classes) + self.tid[i]
+
+            src_idxs = torch.arange(
+                0,
+                len(proposals_per_image),
+                dtype=torch.int64,
+                device=match_quality_matrix.device,
+            )  # src_idxs are the indices after sampling
+            tgt_idxs = matched_idxs[sampled_idxs]
+            pos_mask = gt_classes < self.num_classes
+            src_idxs = src_idxs[pos_mask]
+            tgt_idxs = tgt_idxs[pos_mask]  # make it compatible with detr-like matchers
+            pos_match_indices.append((src_idxs, tgt_idxs))
+
+            if has_gt:
+                sampled_targets = matched_idxs[sampled_idxs]
+                # We index all the attributes of targets that start with "gt_"
+                # and have not been added to proposals yet (="gt_classes").
+                # NOTE: here the indexing waste some compute, because heads
+                # like masks, keypoints, etc, will filter the proposals again,
+                # (by foreground/background, or number of keypoints in the image, etc)
+                # so we essentially index the data twice.
+                for trg_name, trg_value in targets_per_image.get_fields().items():
+                    if trg_name.startswith("gt_") and not proposals_per_image.has(
+                        trg_name
+                    ):
+                        proposals_per_image.set(trg_name, trg_value[sampled_targets])
+            # If no GT is given in the image, we don't know what a dummy gt value can be.
+            # Therefore the returned proposals won't have any gt_* fields, except for a
+            # gt_classes full of background label.
+
+            num_bg_samples.append((gt_classes == self.num_classes).sum().item())
+            num_fg_samples.append(gt_classes.numel() - num_bg_samples[-1])
+            proposals_with_gt.append(proposals_per_image)
+
+        # Log the number of fg/bg samples that are selected for training ROI heads
+        storage = get_event_storage()
+        storage.put_scalar("roi_head/num_fg_samples", np.mean(num_fg_samples))
+        storage.put_scalar("roi_head/num_bg_samples", np.mean(num_bg_samples))
+
+        return proposals_with_gt, pos_match_indices
+
+    def _forward_box_with_pred(
+        self, features: Dict[str, torch.Tensor], proposals: List[Instances]
+    ):
+        """
+        Forward logic of the box prediction branch. If `self.train_on_pred_boxes is True`,
+            the function puts predicted boxes in the `proposal_boxes` field of `proposals` argument.
+
+        Args:
+            features (dict[str, Tensor]): mapping from feature map names to tensor.
+                Same as in :meth:`ROIHeads.forward`.
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+            In inference, a list of `Instances`, the predicted instances.
+        """
+        features = [features[f] for f in self.box_in_features]
+        box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+        box_features = self.box_head(box_features)
+        predictions = self.box_predictor(
+            box_features, torch.cat([x.tids for x in proposals]).cpu().tolist()
+        )
+        del box_features
+
+        if self.training:
+            losses = self.box_predictor.losses(predictions, proposals)
+            # proposals is modified in-place below, so losses must be computed first.
+            if self.train_on_pred_boxes:  # NOTE not considered yet
+                with torch.no_grad():
+                    pred_boxes = self.box_predictor.predict_boxes_for_gt_classes(
+                        predictions, proposals
+                    )
+                    for proposals_per_image, pred_boxes_per_image in zip(
+                        proposals, pred_boxes
+                    ):
+                        proposals_per_image.proposal_boxes = Boxes(pred_boxes_per_image)
+            with torch.no_grad():
+                self.box_predictor.eval()
+                pred_instances = self.box_predictor.inference_unms(
+                    predictions, proposals
+                )
+                self.box_predictor.train()
+            return pred_instances, losses
+        else:
+            pred_instances = self.box_predictor.inference(predictions, proposals)
+            return pred_instances, {}
+
+    def _forward_box(
+        self, features: Dict[str, torch.Tensor], proposals: List[Instances]
+    ):
+        """
+        Forward logic of the box prediction branch. If `self.train_on_pred_boxes is True`,
+            the function puts predicted boxes in the `proposal_boxes` field of `proposals` argument.
+
+        Args:
+            features (dict[str, Tensor]): mapping from feature map names to tensor.
+                Same as in :meth:`ROIHeads.forward`.
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+            In inference, a list of `Instances`, the predicted instances.
+        """
+        features = [features[f] for f in self.box_in_features]
+        box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+        box_features = self.box_head(box_features)
+        predictions = self.box_predictor(
+            box_features,
+            list(
+                itertools.chain(
+                    *[
+                        [self.tid[pi]] * len(proposals[pi])
+                        for pi in range(len(proposals))
+                    ]
+                )
+            ),
+        )
+        del box_features
+
+        if self.training:
+            losses = self.box_predictor.losses(predictions, proposals)
+            # proposals is modified in-place below, so losses must be computed first.
+            if self.train_on_pred_boxes:  # NOTE not considered yet
+                with torch.no_grad():
+                    pred_boxes = self.box_predictor.predict_boxes_for_gt_classes(
+                        predictions, proposals
+                    )
+                    for proposals_per_image, pred_boxes_per_image in zip(
+                        proposals, pred_boxes
+                    ):
+                        proposals_per_image.proposal_boxes = Boxes(pred_boxes_per_image)
+            return losses
+        else:
+            pred_instances = self.box_predictor.inference_unms(predictions, proposals)
+            return pred_instances
 
 
 class SwinROIHeads(ROIHeads):
@@ -1797,6 +2005,9 @@ class FastRCNNOutputLayersPsTi(FastRCNNOutputLayersPs):
         self.cls_score_ti = nn.ModuleList(
             [copy.deepcopy(self.cls_score) for _ in range(n_tasks)]
         )
+        self.bbox_pred_ti = nn.ModuleList(
+            [copy.deepcopy(self.bbox_pred) for _ in range(n_tasks)]
+        )
 
     @classmethod
     def from_config(cls, cfg, input_shape):
@@ -1804,10 +2015,7 @@ class FastRCNNOutputLayersPsTi(FastRCNNOutputLayersPs):
         ret["n_tasks"] = cfg.PERSON_SEARCH.INCREMENTAL.NUM_TASKS
         return ret
 
-    def set_task_id(self, tid):
-        self.tid = tid
-
-    def forward(self, x):
+    def forward(self, x, tids):
         """
         Args:
             x: per-region features of shape (N, ...) for N bounding boxes to predict.
@@ -1822,8 +2030,14 @@ class FastRCNNOutputLayersPsTi(FastRCNNOutputLayersPs):
         """
         if x.dim() > 2:
             x = torch.flatten(x, start_dim=1)
-        scores = self.cls_score_ti[self.tid](x)
-        proposal_deltas = self.bbox_pred(x)
+        all_scores = torch.stack(
+            [cls_layer(x) for cls_layer in self.cls_score_ti], dim=1
+        )
+        scores = all_scores[list(range(x.shape[0])), tids]
+        all_proposal_deltas = torch.stack(
+            [box_layer(x) for box_layer in self.bbox_pred_ti], dim=1
+        )
+        proposal_deltas = all_proposal_deltas[list(range(x.shape[0])), tids]
         return scores, proposal_deltas
 
 
