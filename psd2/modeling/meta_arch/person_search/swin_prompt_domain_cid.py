@@ -144,6 +144,34 @@ class SwinLinearCDI(SearchBase):
             return tF.softmax(logits, dim=-1)
 
 
+from psd2.structures import ImageList
+
+
+@META_ARCH_REGISTRY.register()
+class SwinLinearCDI_NPadding(SwinLinearCDI):
+    def forward(self, input_list):
+        image_list = []
+        for in_dict in input_list:
+            image = in_dict["image"].clone().to(self.device)
+            image = (image - self.pixel_mean) / self.pixel_std
+            img_list = ImageList.from_tensors([image], self.backbone.size_divisibility)
+            image_list.append(img_list)
+        gt_instances = [gti["instances"].to(self.device) for gti in input_list]
+        img_embeds = []
+        for imgl in image_list:
+            backbone_features = self.backbone(imgl.tensor)
+            img_embd = self.task_query(backbone_features)
+            img_embeds.append(img_embd)
+        img_embd = torch.cat(img_embeds, dim=0)
+        logits = self.id_head(img_embd)
+        if self.training:
+            gt_di = self._gt_domains(gt_instances)
+            loss = tF.cross_entropy(logits, gt_di, reduction="mean")
+            return {"loss_ce": loss}
+        else:
+            return tF.softmax(logits, dim=-1)
+
+
 @META_ARCH_REGISTRY.register()
 class SwinFFNCDI(SwinLinearCDI):
     @configurable
@@ -157,6 +185,34 @@ class SwinFFNCDI(SwinLinearCDI):
         self.id_head = nn.Sequential(
             Mlp(768, 768 * 2, 768), nn.Linear(768, len(self.domain_names))
         )
+
+
+@META_ARCH_REGISTRY.register()
+class SwinLinearCDIOpen(SwinLinearCDI):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+        for p in self.swin_org.parameters():
+            p.requires_grad = True
+
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training = mode
+        if mode:
+            # training:
+            self.backbone.train()
+            self.swin_org.train()
+            self.id_head.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
 
 
 @META_ARCH_REGISTRY.register()

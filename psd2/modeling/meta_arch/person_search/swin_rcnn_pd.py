@@ -12,7 +12,7 @@ from .base import SearchBase
 
 from ...proposal_generator import build_proposal_generator
 from .. import META_ARCH_REGISTRY
-from psd2.modeling.extend.solider import SideSwinTransformer
+from psd2.modeling.extend.solider import SideSwinTransformer, PatchMerging
 from psd2.modeling.id_assign import build_id_assigner
 import copy
 from psd2.modeling.roi_heads import build_roi_heads
@@ -396,19 +396,151 @@ class SwinF4RCNN4(SwinF4RCNN2):
 
 @META_ARCH_REGISTRY.register()
 class SwinF4RCNNSeq(SwinF4RCNN):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        for n, p in self.swin.named_parameters():  # backbone part
+            p.requires_grad = False
+
+    def load_state_dict(self, state_dict, strict):
+        out = super(SwinF4RCNN, self).load_state_dict(state_dict, strict)
+        with torch.no_grad():
+            self.swin.load_side(state_dict)
+            self.roi_heads.load_state_dict(state_dict, strict)
+            self.roi_heads.swin.load_side(state_dict)
+        return out
+
+    def train(self, mode=True):
+        self.training = mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.swin.eval()
+            self.proposal_generator.train()
+            self.roi_heads.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
-        swin = ret["swin"]
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        # NOTE downsample module of stage3 is trainable
+        swin = SideSwinTransformer(
+            side_start_stage=3,
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 1),
+        )
+        org_ds = swin.side_stages[-2].downsample
+        # NOTE dirty impl
+        swin.side_stages[-2].downsample = PatchMerging(
+            in_channels=org_ds.in_channels,
+            out_channels=org_ds.out_channels,
+            stride=2,
+            norm_cfg=dict(type="LN"),
+            init_cfg=None,
+        )
         swin_out_shape = {
             "stage{}".format(i + 1): ShapeSpec(
                 channels=swin.num_features[i], stride=swin.strides[i]
             )
             for i in range(len(swin.stages))
         }
-        roi_heads = SeqSwinROIHeads(cfg, swin_out_shape)
+        roi_heads = SeqSwinROIHeads(cfg, swin_out_shape, swin)
         ret["roi_heads"] = roi_heads
         return ret
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list, features, proposals, gt_instances
+        )
+
+        if self.training:
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, gt_i in zip(pred_instances, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
 
 
 from psd2.modeling.backbone.fpn import LastLevelMaxPool
@@ -1394,6 +1526,7 @@ class AlteredStandaredROIHeadsTi(AlteredStandaredROIHeads):
             return pred_instances
 
 
+# TODO fix ddp error when passing swin to this module
 class SwinROIHeads(ROIHeads):
     @configurable
     def __init__(
@@ -1401,6 +1534,7 @@ class SwinROIHeads(ROIHeads):
         *,
         in_features: List[str],
         pooler: ROIPooler,
+        # box_head,
         box_predictor: nn.Module,
         **kwargs,
     ):
@@ -1409,9 +1543,10 @@ class SwinROIHeads(ROIHeads):
         self.pooler = pooler
         self.box_predictor = box_predictor
         self.mask_on = False
+        # self.box_head = box_head
 
     @classmethod
-    def from_config(cls, cfg, input_shape):
+    def from_config(cls, cfg, input_shape):  # , box_head):
         # fmt: off
         ret = super().from_config(cfg)
         in_features = ret["in_features"] = cfg.MODEL.ROI_HEADS.IN_FEATURES
@@ -1434,6 +1569,7 @@ class SwinROIHeads(ROIHeads):
         ret["box_predictor"] = FastRCNNOutputLayersPs(
             cfg, ShapeSpec(channels=out_channels, height=1, width=1)
         )
+        # ret["box_head"] = box_head
 
         return ret
 
@@ -1655,13 +1791,94 @@ class SwinROIHeads(ROIHeads):
             return instances
 
 
+from psd2.modeling.roi_heads import FastRCNNConvFCHead
+
+
+class FastRCNNConvFCHeadAttach(FastRCNNConvFCHead):
+    @classmethod
+    def from_config(cls, cfg, input_shape):
+        head_cfg = cfg.PERSON_SEARCH.DET.MODEL.ROI_BOX_HEAD
+        num_conv = head_cfg.NUM_CONV
+        conv_dim = head_cfg.CONV_DIM
+        num_fc = head_cfg.NUM_FC
+        fc_dim = head_cfg.FC_DIM
+        return {
+            "input_shape": input_shape,
+            "conv_dims": [conv_dim] * num_conv,
+            "fc_dims": [fc_dim] * num_fc,
+            "conv_norm": head_cfg.NORM,
+        }
+
+
 class SeqSwinROIHeads(SwinROIHeads):
     @configurable
-    def __init__(self, *args, **kwargs):
+    def __init__(self, side_box_predictor, box_head_attach, swin, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.side_box_predictor = copy.deepcopy(self.box_predictor)
+        self.side_box_predictor = side_box_predictor
+        self.box_head_attach = box_head_attach
+        self.swin = swin
+        for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
+            if (
+                "side_stages.0.downsample" not in n
+                and "side_stages.1" not in n
+                and "side_semantic_embed_w.0" not in n
+                and "side_semantic_embed_b.0" not in n
+                and "side_semantic_embed_w.1" not in n
+                and "side_semantic_embed_b.1" not in n
+                and not n.startswith("side_norm3")
+                and not n.startswith("side_norm2")
+            ):
+                p.requires_grad = False
 
-    def _shared_roi_transform_stage2(self, features, boxes, swin):
+    def train(self, mode=True):
+        self.training = mode
+        if mode:
+            # training:
+            self.swin.eval()
+            self.swin.side_stages[-1].train()
+            self.swin.side_stages[-2].downsample.train()
+            if hasattr(self.swin, "side_semantic_embed_w"):
+                self.swin.side_semantic_embed_w[-1].train()
+                self.swin.side_semantic_embed_b[-1].train()
+                self.swin.side_semantic_embed_w[-2].train()
+                self.swin.side_semantic_embed_b[-2].train()
+                self.swin.softplus.train()
+            self.swin.side_norm2.train()
+            self.swin.side_norm3.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
+    @classmethod
+    def from_config(cls, cfg, input_shape, swin):
+        # fmt: off
+        ret = super().from_config(cfg,input_shape)
+        
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        out_channels = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER.OUT_CHANNELS
+        ret["side_box_predictor"] = ret.pop("box_predictor")
+        box_head_attach = FastRCNNConvFCHeadAttach(
+            cfg,
+            ShapeSpec(
+                channels=out_channels,
+                height=pooler_resolution[0],
+                width=pooler_resolution[1],
+            ),
+        )
+        ret["box_head_attach"] = box_head_attach
+        ret["box_predictor"] = FastRCNNOutputLayersPs(
+            cfg,
+            ShapeSpec(
+                channels=box_head_attach.output_shape.channels, height=1, width=1
+            ),
+        )
+        ret["swin"]=swin
+
+        return ret
+
+    def _shared_roi_transform(self, features, boxes):
+        swin = self.swin
         x = self.pooler(features, boxes)
         if swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * swin.semantic_weight
@@ -1672,7 +1889,52 @@ class SeqSwinROIHeads(SwinROIHeads):
         x = torch.flatten(x, 2)
         x = x.permute(0, 2, 1)
         bonenum = 3
-        x, hw_shape = swin.stages[bonenum - 1].downsample(x, hw_shape)
+        x, hw_shape = swin.side_stages[bonenum - swin.side_start_stage].downsample(
+            x, hw_shape
+        )
+        if swin.semantic_weight >= 0:
+            sw = swin.side_semantic_embed_w[bonenum - swin.side_start_stage](
+                semantic_weight
+            ).unsqueeze(1)
+            sb = swin.side_semantic_embed_b[bonenum - swin.side_start_stage](
+                semantic_weight
+            ).unsqueeze(1)
+            x = x * swin.softplus(sw) + sb
+        for i, stage in enumerate(
+            swin.side_stages[bonenum - swin.side_start_stage + 1 :]
+        ):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if swin.semantic_weight >= 0:
+                sw = swin.side_semantic_embed_w[
+                    bonenum - swin.side_start_stage + 1 + i
+                ](semantic_weight).unsqueeze(1)
+                sb = swin.side_semantic_embed_b[
+                    bonenum - swin.side_start_stage + 1 + i
+                ](semantic_weight).unsqueeze(1)
+                x = x * swin.softplus(sw) + sb
+            if i == len(swin.stages) - bonenum - 1:
+                norm_layer = getattr(swin, f"side_norm{bonenum+i}")
+                out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, swin.num_features[bonenum + i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+        return out
+
+    def _shared_roi_transform_stage2(self, features, boxes):
+        swin = self.swin
+        x = self.pooler(features, boxes)
+        if swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+
+        hw_shape = x.shape[-2:]
+        x = torch.flatten(x, 2)
+        x = x.permute(0, 2, 1)
+        bonenum = 3
+        x, hw_shape = self.swin.stages[bonenum - 1].downsample(x, hw_shape)
         if swin.semantic_weight >= 0:
             sw = swin.semantic_embed_w[bonenum - 1](semantic_weight).unsqueeze(1)
             sb = swin.semantic_embed_b[bonenum - 1](semantic_weight).unsqueeze(1)
@@ -1695,7 +1957,6 @@ class SeqSwinROIHeads(SwinROIHeads):
 
     def forward(
         self,
-        swin,
         images: ImageList,
         features: Dict[str, torch.Tensor],
         proposals: List[Instances],
@@ -1715,7 +1976,7 @@ class SeqSwinROIHeads(SwinROIHeads):
 
         proposal_boxes = [x.proposal_boxes for x in proposals]
         box_features = self._shared_roi_transform(
-            [features[f] for f in self.in_features], proposal_boxes, swin
+            [features[f] for f in self.in_features], proposal_boxes
         )
         predictions = self.side_box_predictor(
             box_features.mean(dim=[2, 3])
@@ -1743,9 +2004,9 @@ class SeqSwinROIHeads(SwinROIHeads):
         del targets
         proposal_boxes = [x.proposal_boxes for x in proposals]
         box_features = self._shared_roi_transform_stage2(
-            [features[f] for f in self.in_features], proposal_boxes, swin
+            [features[f] for f in self.in_features], proposal_boxes
         )
-        predictions = self.box_predictor(box_features.mean(dim=[2, 3]))
+        predictions = self.box_predictor(self.box_head_attach(box_features))
         del features
         if self.training:
             losses2 = self.box_predictor.losses(predictions, proposals)
@@ -1770,7 +2031,7 @@ class SeqSwinROIHeads(SwinROIHeads):
                 pred_instances,
                 {},
                 None,
-                box_features if return_box_feat else pred_instances,
+                box_features) if return_box_feat else (pred_instances,
                 {},
                 None,
             )

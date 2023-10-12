@@ -119,7 +119,7 @@ def _load_coco_person(dataset_dir, subset="train", allow_crowd=True):
     ann_keys = ["bbox"]  # "category_id"]
     next_pid = 0
 
-    for (img_dict, anno_dict_list) in imgs_anns:
+    for img_dict, anno_dict_list in imgs_anns:
         record = {}
         if img_dict["file_name"] in error_imgs:
             continue
@@ -162,7 +162,9 @@ def _load_coco_person(dataset_dir, subset="train", allow_crowd=True):
     return dataset_dicts
 
 
-def _load_crowd_human(dataset_dir, subset="train", allow_crowd=True):
+def _load_crowd_human(
+    dataset_dir, subset="train", allow_crowd=True, filter_esmall=False
+):
     from pycocotools.coco import COCO
 
     assert subset in subsets
@@ -246,7 +248,7 @@ def _load_crowd_human(dataset_dir, subset="train", allow_crowd=True):
     ann_keys = ["bbox"]  # , "category_id"]
     next_pid = 0
 
-    for (img_dict, anno_dict_list) in imgs_anns:
+    for img_dict, anno_dict_list in imgs_anns:
         record = {}
         record["file_name"] = opj(img_root, img_dict["file_name"])
         record["height"] = img_dict["height"]
@@ -274,6 +276,9 @@ def _load_crowd_human(dataset_dir, subset="train", allow_crowd=True):
                     f"One annotation of image {image_id} contains empty 'bbox' value! "
                     "This json does not have valid COCO format."
                 )
+            if filter_esmall:
+                if obj["bbox"][2] * obj["bbox"][3] < 16**2:
+                    continue
             obj["bbox"][2] += obj["bbox"][0]
             obj["bbox"][3] += obj["bbox"][1]
             obj["bbox_mode"] = BoxMode.XYXY_ABS
@@ -281,6 +286,9 @@ def _load_crowd_human(dataset_dir, subset="train", allow_crowd=True):
             obj["person_id"] = next_pid
             next_pid += 1
             objs.append(obj)
+        if len(objs) == 0:
+            # filter emplty
+            continue
         record["annotations"] = objs
         dataset_dicts.append(record)
 

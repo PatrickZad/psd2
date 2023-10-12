@@ -900,6 +900,162 @@ class SwinF4RCNNPS2BoxAug(SwinF4RCNNPS2):
 
 
 @META_ARCH_REGISTRY.register()
+class SwinSimFPNLiteRCNNPS2BoxAugOpen(SwinSimFPNRCNNPS):
+    @configurable
+    def __init__(self, box_aug, *args, **kws):
+        super().__init__(*args, **kws)
+        self.box_aug = box_aug
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+        for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
+            if (
+                "side_stages.0.downsample" not in n
+                and "side_stages.1" not in n
+                and "side_semantic_embed_w.0" not in n
+                and "side_semantic_embed_b.0" not in n
+                and "side_semantic_embed_w.1" not in n
+                and "side_semantic_embed_b.1" not in n
+                and not n.startswith("side_norm3")
+                and not n.startswith("side_norm2")
+            ):
+                p.requires_grad = True
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        ret["box_aug"] = build_box_augmentor(cfg.PERSON_SEARCH.REID.BOX_AUGMENTATION)
+        return ret
+
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        bonenum = 3
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if i == bonenum - 1:
+                norm_layer = getattr(self.swin, f"side_norm{i}")
+                outd = norm_layer(out)
+                outd = (
+                    outd.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(outd)  # for det
+                norm_layer = getattr(self.swin, f"norm{i}")
+                outr = norm_layer(out)
+                outr = (
+                    outr.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(outr)  # for det
+        return {"side_stage3": outs[0], "stage3": outs[1]}
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        fpn_features = self.sim_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, fpn_features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list, fpn_features, proposals, gt_instances
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        if self.training:
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            pos_boxes, pos_ids = [], []
+            for gts_i in gt_instances:
+                # append gt
+                pos_boxes.append(gts_i.gt_boxes.tensor)
+                pos_ids.append(gts_i.gt_pids)
+            pos_boxes, pos_ids = self.box_aug.augment_boxes(
+                pos_boxes,
+                pos_ids,
+                det_boxes=None,
+                det_pids=None,
+                img_sizes=[gti.image_size for gti in gt_instances],
+            )
+            reid_loss = self.reid_head(image_list, features, pos_boxes, pos_ids)
+            losses.update(reid_loss)
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            reid_feats = self.reid_head(image_list, features, roi_boxes)
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, feats_i, gt_i in zip(pred_instances, reid_feats, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.reid_feats = feats_i[keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
+
+@META_ARCH_REGISTRY.register()
 class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
     @configurable
     def __init__(
@@ -2398,20 +2554,21 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         pred_instances = []
         for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
             inst = Instances(gt_i.image_size)
-            inst.pred_boxes =Boxes(roi_boxes[i]) #gt_i.gt_boxes 
-            #inst.pred_scores = (
+            inst.pred_boxes = Boxes(roi_boxes[i])  # gt_i.gt_boxes
+            # inst.pred_scores = (
             #    torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
-            #)
+            # )
             inst.pred_scores = self.pred_rst[gt_i.image_id][:, 4]
-            # inst.pred_classes =torch.zeros_like(gt_i.gt_pids)  
+            # inst.pred_classes =torch.zeros_like(gt_i.gt_pids)
             inst.pred_classes = torch.zeros_like(
                 self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
             )
-            
-            # inst.assign_ids =gt_i.gt_pids 
-            inst.assign_ids =torch.zeros_like(
-                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64)
-            
+
+            # inst.assign_ids =gt_i.gt_pids
+            inst.assign_ids = torch.zeros_like(
+                self.pred_rst[gt_i.image_id][:, 4], dtype=torch.int64
+            )
+
             inst.reid_feats = feats_i
             # back to org scale
             org_h, org_w = gt_i.org_img_size
@@ -3006,13 +3163,67 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
 class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
     @classmethod
     def from_config(cls, cfg):
-        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,cls).from_config(cfg)
-        
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug, cls).from_config(cfg)
 
     @torch.no_grad()
     def task_query(self, backbone_features):
-        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug,self).task_query(backbone_features)
+        return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug, self).task_query(
+            backbone_features
+        )
 
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAugHeadOpen(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        for p in self.roi_heads.parameters():
+            p.requires_grad = True
+
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAugRpnOpen(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        for p in self.roi_heads.parameters():
+            p.requires_grad = True
+        for p in self.proposal_generator.parameters():
+            p.requires_grad = True
+
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAugFpnOpen(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        for p in self.roi_heads.parameters():
+            p.requires_grad = True
+        for p in self.proposal_generator.parameters():
+            p.requires_grad = True
+        for p in self.sim_fpn.parameters():
+            p.requires_grad = True
 
 
 import torch.nn.functional as tF

@@ -104,7 +104,7 @@ INPUT:
   MAX_SIZE_TEST: 1333
 DATASETS:
   TRAIN: ("PRW_Train",) 
-  TEST: ("PRW_GalleryGT","PRW_QueryGT",) #
+  TEST: ("PRW_Gallery","PRW_Query",) #
 TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 1266
