@@ -1,6 +1,6 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug"
+  META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAugFpnOpen"
   WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign/model_0316479.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
@@ -41,15 +41,15 @@ MODEL:
     POOLER_TYPE: "ROIAlignV2"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
-  INCREMENTAL:
-    NUM_TASKS: 3
-    CUR_TASK: 0
-    LEN_KEYS: 5
-    LOSS_WEIGHT_INC: 0.1
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [16,16,16,16]
-    PROMPT_TYPE: "FixedTaskInc"
+    NUM_PROMPTS: [4,4,4,4]
+    POOL_SIZE: 12
+    PROMPT_TYPE: "L2PppMask"
+    NUM_TASKS: 3
+    CURRECT_TASK: 0
+    LOSS_WEIGHT: 0.1
+    TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
@@ -79,8 +79,8 @@ PERSON_SEARCH:
         ULB_LAYER: "ulb_full"
         LB_FACTOR: 30
         ULB_FACTOR: 30
-        NUM_LB: [5532,]
-        LEN_ULB: [5000,]
+        NUM_LB: [483,]
+        LEN_ULB: [500,]
         FEAT_DIM: 768
         NORM_FEAT: True
         SYNC_MEMORY: True
@@ -90,23 +90,23 @@ PERSON_SEARCH:
         LOSS_WEIGHT: 1.0
 SOLVER:
   OPTIM: "Adam"
-  BASE_LR: 0.0003
-  STEPS: (33624,67248)
-  MAX_ITER: 70050 # 1401 * 50
-  CHECKPOINT_PERIOD: 2802
+  BASE_LR: 0.0005
+  STEPS: (22800,)
+  MAX_ITER: 34200 # 950 * 36
+  CHECKPOINT_PERIOD: 1900
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
-  IMS_PER_BATCH: 8
+  IMS_PER_BATCH: 6
 INPUT:
   MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
   MAX_SIZE_TRAIN: 1333
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
 DATASETS:
-  TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ( "CUHK-SYSU_GalleryGT","CUHK-SYSU_TestG100",) #
+  TRAIN: ("PRW_Train",) 
+  TEST: ("PRW_Gallery","PRW_Query",) #
 TEST:
-  IMS_PER_PROC: 2
-  EVAL_PERIOD: 2802
+  IMS_PER_PROC: 3
+  EVAL_PERIOD: 1900
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-ti-l2pppMask-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-fo-ign-l2pppMask-ps-prepend16-boxaug4_prw_adam_incoim_0wd"

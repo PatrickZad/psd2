@@ -1101,19 +1101,17 @@ class FixedPromptsTaskInc(nn.Module):
     def process_task_count(self, task_id):
         self.task_count = task_id
 
-    def forward(self, x_query, vis_mark, train=False, task_id=None):
+    def forward(self, nL, task_id):
         """
         select all layers in one pass
         NOTE assume x_query to be batch_size * num_layer * c
         """
-        assert task_id is not None
-        B, nL, C = x_query.shape
         assert nL == len(self.e_layers)
         # e prompts
         p_return = []
         for l in range(nL):
             p = getattr(self, f"e_p_{l}")[task_id]  # 0 based indexing here
-            p_return.append(p.unsqueeze(0).expand(B, -1, -1))
+            p_return.append(p)
         p_return = torch.stack(p_return, dim=0)
         return p_return
 

@@ -2526,7 +2526,9 @@ class SideSwinTransformer(SwinTransformer):
         self.side_start_stage = side_start_stage
         self.init_side()
 
-    def init_side(self):
+    def init_side(
+        self,
+    ):
         self.side_stages = ModuleList()
         if self.semantic_weight >= 0:
             self.side_semantic_embed_w = ModuleList()
@@ -2590,7 +2592,7 @@ class SideSwinTransformer(SwinTransformer):
                         n_idx = idx - self.side_start_stage + 1
                         n_k = ".".join([str(n_idx)] + k_kws[2:])
                         semantic_emb_b_params[n_k] = v
-            
+
             res = self.side_stages.load_state_dict(stages_params, strict=False)
             print("parameters of *side_stages* haved been loaded:\n", str(res))
             for i, p in norm_params.items():
@@ -2601,13 +2603,15 @@ class SideSwinTransformer(SwinTransformer):
                     semantic_emb_w_params, strict=False
                 )
                 print(
-                    "parameters of *side_semantic_embed_w* haved been loaded:\n", str(res)
+                    "parameters of *side_semantic_embed_w* haved been loaded:\n",
+                    str(res),
                 )
                 res = self.side_semantic_embed_b.load_state_dict(
                     semantic_emb_b_params, strict=False
                 )
                 print(
-                    "parameters of *side_semantic_embed_b* haved been loaded:\n", str(res)
+                    "parameters of *side_semantic_embed_b* haved been loaded:\n",
+                    str(res),
                 )
 
 

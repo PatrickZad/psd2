@@ -1,0 +1,35 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "SwinF4RCNNSeq"
+  WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        SEMANTIC_WEIGHT: -1
+        WITH_CP: False
+      ROI_BOX_HEAD:
+        NAME: "FastRCNNConvFCHead"
+        NUM_FC: 1
+        FC_DIM: 1024
+        NUM_CONV: 4
+        CONV_DIM: 256
+        NORM: LN
+SOLVER:
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  WARMUP_ITERS: 1000
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.01
+  STEPS: (98900,197800)
+  MAX_ITER: 247250 # 4945 * 50
+  CHECKPOINT_PERIOD: 9890
+  GAMMA: 0.1
+  IMS_PER_BATCH: 16
+DATASETS:
+  TRAIN: ("COCO-CH",) 
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery",) #
+TEST:
+  EVAL_PERIOD: 9890
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/seqfrcnn-pd-pre_cococh_small-ign"

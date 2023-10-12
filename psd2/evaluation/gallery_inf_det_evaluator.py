@@ -23,7 +23,9 @@ from psd2.structures import Boxes, pairwise_iou
 import pandas
 import seaborn
 import matplotlib.pyplot as mplot
+
 logger = logging.getLogger(__name__)
+
 
 # NOTE evaluation in augmented box range
 class InfDetEvaluator(DatasetEvaluator):
@@ -115,7 +117,6 @@ class InfDetEvaluator(DatasetEvaluator):
         }
         self.tp_ious = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
 
-
     def process(self, inputs, outputs):
         """
         Args:
@@ -174,7 +175,6 @@ class InfDetEvaluator(DatasetEvaluator):
             self._det_proc(inputs, outputs, st)
 
     def _det_proc(self, inputs, outputs, sthred):
-
         for bi, in_dict in enumerate(inputs):
             gt_instances = in_dict["instances"].to(self._cpu_device)
             pred_instances = outputs[bi].to(self._cpu_device)
@@ -234,20 +234,20 @@ class InfDetEvaluator(DatasetEvaluator):
                 self.count_gt[iou_t][sthred] += num_gts
                 tfmat_lb = tfmat[gt_pids_t > -1, :]
                 if tfmat_lb.shape[0] > 0:
-                        cur_tp_lb = tfmat_lb.sum().item()
+                    cur_tp_lb = tfmat_lb.sum().item()
                 else:
-                        cur_tp_lb = 0
+                    cur_tp_lb = 0
                 self.count_tp_lb[iou_t][sthred] += cur_tp_lb
                 self.count_gt_lb[iou_t][sthred] += num_lb_gts
                 tfmat_ulb = tfmat[gt_pids_t == -1, :]
                 if tfmat_ulb.shape[0] > 0:
-                        cur_tp_ulb = tfmat_ulb.sum().item()
+                    cur_tp_ulb = tfmat_ulb.sum().item()
                 else:
-                        cur_tp_ulb = 0
+                    cur_tp_ulb = 0
                 self.count_tp_ulb[iou_t][sthred] += cur_tp_ulb
                 self.count_false[iou_t][sthred] += (
-                        tfmat.shape[1] - cur_tp_lb - cur_tp_ulb
-                    )
+                    tfmat.shape[1] - cur_tp_lb - cur_tp_ulb
+                )
                 tp_ious = ious[tfmat].cpu().numpy().tolist()
                 self.tp_ious[iou_t][sthred].extend(tp_ious)
                 s_recall = tfmat.sum().item() / num_gts
@@ -355,7 +355,12 @@ class InfDetEvaluator(DatasetEvaluator):
             count_false = self.count_false
             tp_ious = self.tp_ious
         save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
-        save_path = os.path.join(self._output_dir, "_gallery_gt_inf.pt" if "GT" not in self.dataset_name else "_gallery_gt_infgt.pt")
+        save_path = os.path.join(
+            self._output_dir,
+            "_gallery_gt_inf.pt"
+            if "GT" not in self.dataset_name
+            else "_gallery_gt_infgt.pt",
+        )
         if not os.path.exists(self._output_dir):
             os.makedirs(self._output_dir)
         torch.save(save_dict, save_path)
@@ -489,7 +494,9 @@ class InfDetEvaluator(DatasetEvaluator):
                         "ious": ious,
                     },
                 )
-                plt = seaborn.histplot(data=vis_data, x="ious", binwidth=0.05,stat="count")
+                plt = seaborn.histplot(
+                    data=vis_data, x="ious", binwidth=0.05, stat="count"
+                )
                 fig = plt.get_figure()
                 fig.savefig(
                     opj(
@@ -498,6 +505,7 @@ class InfDetEvaluator(DatasetEvaluator):
                     ),
                     dpi=400,
                 )
+
     def _vis_det_scores(self, det_scores, det_labels):
         for iou_t in self.iou_threshs:
             for st in self.threshs:
@@ -517,7 +525,12 @@ class InfDetEvaluator(DatasetEvaluator):
                     },
                 )
                 plt = seaborn.histplot(
-                    data=vis_data, x="scores", hue="type", binwidth=0.05,multiple="dodge",stat="count"
+                    data=vis_data,
+                    x="scores",
+                    hue="type",
+                    binwidth=0.05,
+                    multiple="dodge",
+                    stat="count",
                 )
                 fig = plt.get_figure()
                 fig.savefig(
@@ -527,6 +540,7 @@ class InfDetEvaluator(DatasetEvaluator):
                     ),
                     dpi=400,
                 )
+
 
 def _trivial_vis(*args, **kw):
     pass

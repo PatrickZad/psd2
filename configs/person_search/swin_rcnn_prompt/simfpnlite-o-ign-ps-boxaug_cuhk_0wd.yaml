@@ -1,6 +1,6 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "TiPromptedMsSwinSimFPNLiteRCNNPSBoxAug"
+  META_ARCHITECTURE: "SwinSimFPNLiteRCNNPS2BoxAugOpen"
   WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign/model_0316479.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
@@ -41,15 +41,6 @@ MODEL:
     POOLER_TYPE: "ROIAlignV2"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
-  INCREMENTAL:
-    NUM_TASKS: 3
-    CUR_TASK: 0
-    LEN_KEYS: 5
-    LOSS_WEIGHT_INC: 0.1
-  PROMPT:
-    PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [16,16,16,16]
-    PROMPT_TYPE: "FixedTaskInc"
   DET:
     MODEL:
       TRANSFORMER:
@@ -70,9 +61,9 @@ PERSON_SEARCH:
       NAME: "dn_detr"
       H_CENTER: 0.4
       H_SCALE: 0.2
-      NUM_LABELED: 3
+      NUM_LABELED: 5
       APPEND_GT: True
-      NUM_UNLABLED: 3
+      NUM_UNLABLED: 5
     LOSS:
       INC_OIM:
         LB_LAYER: "lb_norm"
@@ -90,13 +81,13 @@ PERSON_SEARCH:
         LOSS_WEIGHT: 1.0
 SOLVER:
   OPTIM: "Adam"
-  BASE_LR: 0.0003
-  STEPS: (33624,67248)
-  MAX_ITER: 70050 # 1401 * 50
-  CHECKPOINT_PERIOD: 2802
+  BASE_LR: 0.001
+  STEPS: (53808,)
+  MAX_ITER: 80712 # 2242 * 36
+  CHECKPOINT_PERIOD: 4484
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
-  IMS_PER_BATCH: 8
+  IMS_PER_BATCH: 5
 INPUT:
   MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
   MAX_SIZE_TRAIN: 1333
@@ -104,9 +95,9 @@ INPUT:
   MAX_SIZE_TEST: 1333
 DATASETS:
   TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ( "CUHK-SYSU_GalleryGT","CUHK-SYSU_TestG100",) #
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100",) #
 TEST:
-  IMS_PER_PROC: 2
-  EVAL_PERIOD: 2802
+  IMS_PER_PROC: 4
+  EVAL_PERIOD: 4484
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-ti-l2pppMask-ps-prepend16-boxaug4_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-o-ign-ps-boxaug8_cuhk_adam_0wd"

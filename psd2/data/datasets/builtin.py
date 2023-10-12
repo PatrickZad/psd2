@@ -180,10 +180,26 @@ def register_cdps_all(datadir):
 
 def register_cococh_all(datadir):
     name = "COCO-CH"
-    DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
+    DatasetCatalog.register(
+        name, lambda: load_coco_ch(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCO-CH-ML"
+    DatasetCatalog.register(
+        name,
+        lambda: load_coco_ch(datadir, "train", allow_crowd=False, filter_esmall=True),
+    )
     MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-P"
-    DatasetCatalog.register(name, lambda: load_coco_p(datadir, "train"))
+    DatasetCatalog.register(
+        name, lambda: load_coco_p(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCO-P-ML"
+    DatasetCatalog.register(
+        name,
+        lambda: load_coco_p(datadir, "train", allow_crowd=False, filter_esmall=True),
+    )
     MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-CH_DINO"
     DatasetCatalog.register(name, lambda: load_coco_ch(datadir, "train"))
