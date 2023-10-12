@@ -1451,6 +1451,7 @@ class SeqSwinROIHeads(SwinROIHeads):
     @configurable
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # NOTE try re-id first principle
         self.side_box_predictor = copy.deepcopy(self.box_predictor)
 
     def _shared_roi_transform_stage2(self, features, boxes, swin):

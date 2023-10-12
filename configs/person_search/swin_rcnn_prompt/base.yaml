@@ -52,7 +52,7 @@ PERSON_SEARCH:
       TRANSFORMER:
         DEPTH: [2,2,18,2]
         NHEAD: [3, 6, 12, 24]
-        WIN_SIZE: 7
+        WIN_SIZE: [7,7,7,7]
         MLP_RATIO: 4
         QKV_BIAS: True
         DROPOUT: 0.0
