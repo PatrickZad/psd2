@@ -1212,7 +1212,9 @@ class SwinTransformer(BaseModule):
             self.init_cfg = init_cfg
         else:
             raise TypeError("pretrained must be a str or None")
-
+        # stage-wise window size
+        if isinstance(window_size,int):
+            window_size=[window_size]*len(depths)
         super(SwinTransformer, self).__init__()
 
         num_layers = len(depths)
@@ -1254,7 +1256,7 @@ class SwinTransformer(BaseModule):
                 num_heads=num_heads[i],
                 feedforward_channels=mlp_ratio * in_channels,
                 depth=depths[i],
-                window_size=window_size,
+                window_size=window_size[i],
                 qkv_bias=qkv_bias,
                 qk_scale=qk_scale,
                 drop_rate=drop_rate,
@@ -1385,6 +1387,10 @@ class PromptedSwinTransformer(BaseModule):
             self.init_cfg = init_cfg
         else:
             raise TypeError("pretrained must be a str or None")
+        
+        # stage-wise window size
+        if isinstance(window_size,int):
+            window_size=[window_size]*len(depths)
 
         super(PromptedSwinTransformer, self).__init__()
 
@@ -1442,7 +1448,7 @@ class PromptedSwinTransformer(BaseModule):
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,
                     depth=depths[i],
-                    window_size=window_size,
+                    window_size=window_size[i],
                     qkv_bias=qkv_bias,
                     qk_scale=qk_scale,
                     drop_rate=drop_rate,
@@ -1461,7 +1467,7 @@ class PromptedSwinTransformer(BaseModule):
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,
                     depth=depths[i],
-                    window_size=window_size,
+                    window_size=window_size[i],
                     qkv_bias=qkv_bias,
                     qk_scale=qk_scale,
                     drop_rate=drop_rate,
@@ -2049,6 +2055,10 @@ class PrefixPromptedSwinTransformer(BaseModule):
         else:
             raise TypeError("pretrained must be a str or None")
 
+        # stage-wise window size
+        if isinstance(window_size,int):
+            window_size=[window_size]*len(depths)
+
         super(PrefixPromptedSwinTransformer, self).__init__()
 
         num_layers = len(depths)
@@ -2092,7 +2102,7 @@ class PrefixPromptedSwinTransformer(BaseModule):
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,
                     depth=depths[i],
-                    window_size=window_size,
+                    window_size=window_size[i],
                     qkv_bias=qkv_bias,
                     qk_scale=qk_scale,
                     drop_rate=drop_rate,
@@ -2111,7 +2121,7 @@ class PrefixPromptedSwinTransformer(BaseModule):
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,
                     depth=depths[i],
-                    window_size=window_size,
+                    window_size=window_size[i],
                     qkv_bias=qkv_bias,
                     qk_scale=qk_scale,
                     drop_rate=drop_rate,

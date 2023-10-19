@@ -1368,7 +1368,7 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
             num_prompts = [num_prompts] * 4
         in_num_prompts = (
             [n * prompt_cfg.TOP_K for n in num_prompts]
-            if "L2P" in prompt_cfg.PROMPT_TYPE
+            if "L2P" in prompt_cfg.PROMPT_TYPE and "Attn" not in prompt_cfg.PROMPT_TYPE
             else num_prompts
         )
         # NOTE downsample module of stage3 is trainable
@@ -1424,6 +1424,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -1534,6 +1546,18 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2116,7 +2140,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             num_prompts = [num_prompts] * 4
         in_num_prompts = (
             [n * prompt_cfg.TOP_K for n in num_prompts]
-            if "L2P" in prompt_cfg.PROMPT_TYPE
+            if "L2P" in prompt_cfg.PROMPT_TYPE and "Attn" not in prompt_cfg.PROMPT_TYPE
             else num_prompts
         )
         # NOTE downsample module of stage3 is trainable
@@ -2140,7 +2164,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             attn_drop_rate=tr_cfg.ATTN_DROPOUT,
             drop_path_rate=tr_cfg.DROP_PATH,
             with_cp=tr_cfg.WITH_CP,
-            strides=(4, 2, 2, 1),  # NOTE remove last stride
+            strides=(4, 2, 2, 1),  # NOTE remove last stride    
         )
         swin_out_shape = {
             "stage{}".format(i + 1): ShapeSpec(
@@ -2189,6 +2213,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
                     emb_d=swin.num_features[si],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -2299,6 +2335,18 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=swin.num_features[-1],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -3106,6 +3154,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                     key_dim=sum(swin.num_features[-4:]),
                     vis_period=cfg.VIS_PERIOD,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=swin.num_features[si],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
                 prompt_stage = prompts.L2PppMaskBs(
                     emb_d=swin.num_features[si],
@@ -3206,6 +3266,18 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
                 prompt_stage = prompts.L2PppMask(
+                    emb_d=swin.num_features[-1],
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=tr_cfg.DEPTH[-1],
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=sum(swin.num_features[-4:]),
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
                     emb_d=swin.num_features[-1],
                     n_tasks=prompt_cfg.NUM_TASKS,
                     pool_size=prompt_cfg.POOL_SIZE,
@@ -3967,7 +4039,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         patch_embed = ret["backbone"]
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
-        if "L2P" in prompt_cfg.PROMPT_TYPE:
+        if "L2P" in prompt_cfg.PROMPT_TYPE and "Attn" not in prompt_cfg.PROMPT_TYPE:
             num_prompts = prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
         else:
             num_prompts = prompt_cfg.NUM_PROMPTS
