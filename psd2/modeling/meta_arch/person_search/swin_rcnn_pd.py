@@ -2026,14 +2026,17 @@ class SeqSwinROIHeads(SwinROIHeads):
                 )
             )
         else:
+            # FCS
+
             pred_instances = self.box_predictor.inference_unms(predictions, proposals)
             return (
-                pred_instances,
-                {},
-                None,
-                box_features) if return_box_feat else (pred_instances,
-                {},
-                None,
+                (pred_instances, {}, None, box_features)
+                if return_box_feat
+                else (
+                    pred_instances,
+                    {},
+                    None,
+                )
             )
 
 
@@ -2228,6 +2231,57 @@ class FastRCNNOutputLayersPs(FastRCNNOutputLayers):
                 scores = scores[valid_mask]
 
             scores = scores[:, :-1]
+            num_bbox_reg_classes = boxes.shape[1] // 4
+            # Convert to Boxes to use the `clip` function ...
+            boxes = Boxes(boxes.reshape(-1, 4))
+            boxes.clip(image_shape)
+            boxes = boxes.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
+
+            # 1. Filter results based on detection scores. It can make NMS more efficient
+            #    by filtering out low-confidence detections.
+            filter_mask = scores >= 0.0  # R x K NOTE disable this
+            # R' x 2. First column contains indices of the R predictions;
+            # Second column contains indices of classes.
+            filter_inds = filter_mask.nonzero()
+            if num_bbox_reg_classes == 1:
+                boxes = boxes[filter_inds[:, 0], 0]
+            else:
+                boxes = boxes[filter_mask]
+            scores = scores[filter_mask]
+
+            # 2. Apply NMS for each class independently. NOTE disable this
+
+            result = Instances(image_shape)
+            result.pred_boxes = Boxes(boxes)
+            result.pred_scores = scores
+            result.pred_classes = filter_inds[:, 1]
+            results.append(result)
+        return results
+
+
+# with first classification score in SeqNet
+class FastRCNNOutputLayersPsFcs(FastRCNNOutputLayers):
+    def inference_unms(self, predictions, proposals):
+        all_boxes = self.predict_boxes(predictions, proposals)
+        all_scores = self.predict_probs(predictions, proposals)
+        image_shapes = [x.image_size for x in proposals]
+        results = []
+        # borrowed from fast_rcnn_inference
+        for scores_2, boxes, image_shape, first_pred in zip(
+            all_scores, all_boxes, image_shapes, proposals
+        ):
+            scores = scores_2[
+                :, :-1
+            ]  # first_pred.objectness_logits.unsqueeze(1)  # 1-dim -> 2-dim
+            valid_mask = torch.isfinite(boxes).all(dim=1) & torch.isfinite(scores).all(
+                dim=1
+            )
+
+            if not valid_mask.all():
+                boxes = boxes[valid_mask]
+                scores = scores[valid_mask]
+
+            # scores_2 = scores_2[:, :-1]
             num_bbox_reg_classes = boxes.shape[1] // 4
             # Convert to Boxes to use the `clip` function ...
             boxes = Boxes(boxes.reshape(-1, 4))

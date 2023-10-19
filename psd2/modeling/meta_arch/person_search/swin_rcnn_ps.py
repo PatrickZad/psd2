@@ -25,6 +25,7 @@ from psd2.layers.mem_matching_losses import OIMLoss, IncOIMLoss
 from torch.nn.functional import normalize
 from .swin_rcnn_pd import (
     SwinF4RCNN,
+    SwinF4RCNNSeq,
     SwinROIHeads2,
     PromptedSwinROIHeads,
     SwinSimFPNRCNN,
@@ -718,6 +719,245 @@ class SwinSimFPNRCNNPS(SwinSimFPNRCNN):
                 )
                 outs.append(out)
         return {"stage3": outs[0], "stage4": outs[1]}
+
+
+@META_ARCH_REGISTRY.register()
+class SwinF4RCNNSeqPS(SwinF4RCNNSeq):
+    @configurable
+    def __init__(
+        self,
+        reid_in_feature,
+        oim_loss,
+        bn_neck,
+        pool_layer,
+        *args,
+        **kws,
+    ):
+        super().__init__(*args, **kws)
+        self.reid_in_feature = reid_in_feature
+        self.pool_layer = pool_layer
+        self.oim_loss = oim_loss
+        self.bn_neck = bn_neck
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+        for n, p in self.swin.named_parameters():  # norm2 is not supervised in solider
+            if (
+                "side_stages.0.downsample" not in n
+                and "side_stages.1" not in n
+                and "side_semantic_embed_w.0" not in n
+                and "side_semantic_embed_b.0" not in n
+                and "side_semantic_embed_w.1" not in n
+                and "side_semantic_embed_b.1" not in n
+                and not n.startswith("side_norm3")
+                and not n.startswith("side_norm2")
+            ):
+                p.requires_grad = True
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        ret["reid_in_feature"] = cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+        ret["bn_neck"] = bn_neck
+        ret["oim_loss"] = (
+            OIMLoss(cfg)
+            if hasattr(cfg.PERSON_SEARCH.REID.LOSS, "OIM")
+            else IncOIMLoss(cfg)
+        )
+        ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        return ret
+
+    def load_state_dict(self, *args, **kws):
+        state_dict = args[0]
+        if (
+            isinstance(self.oim_loss, IncOIMLoss)
+            and "oim_loss.lb_layers.0.lookup_table" not in state_dict
+        ):
+            # resume from plain oim trained
+            if "oim_loss.lb_layer.lookup_table" in state_dict:
+                lkt0 = state_dict.pop("oim_loss.lb_layer.lookup_table")
+                state_dict["oim_loss.lb_layers.0.lookup_table"] = lkt0
+            if "oim_loss.ulb_layer.queue" in state_dict:
+                q0 = state_dict.pop("oim_loss.ulb_layer.queue")
+                state_dict["oim_loss.ulb_layers.0.queue"] = q0
+            if "oim_loss.ulb_layer.tail" in state_dict:
+                q0 = state_dict.pop("oim_loss.ulb_layer.tail")
+                state_dict["oim_loss.ulb_layers.0.tail"] = q0
+        return super().load_state_dict(*args, **kws)
+
+    def train(self, mode=True):
+        self.training = mode
+        for module in self.children():
+            module.train(mode)
+
+    @torch.no_grad()
+    def visualize_training_ps(self, images, p_feat_maps, p_boxes):
+        storage = get_event_storage()
+        trans_t2img_t = lambda t: t.detach().cpu() * self.pixel_std.cpu().view(
+            -1, 1, 1
+        ) + self.pixel_mean.cpu().view(-1, 1, 1)
+        feat_map_size = p_feat_maps[0].shape[-2:]
+        tg_size = [feat_map_size[0] * 16, feat_map_size[1] * 16]
+        bs = len(p_boxes)
+        for bi in range(bs):
+            boxes_bi = p_boxes[bi].cpu()  # n x 4
+            box_areas = (boxes_bi[:, 2] - boxes_bi[:, 0]) * boxes_bi[:, 3] - boxes_bi[
+                :, 1
+            ]
+            sort_idxs = torch.argsort(box_areas, dim=0, descending=True)
+            feats_bi = p_feat_maps[bi].cpu()  # n x roi_h x roi_w
+            idxs = sort_idxs[: min(10, sort_idxs.shape[0])]
+            img_rgb_t = trans_t2img_t(images[bi].cpu())  # 3 x h x w
+            assigns_on_boxes = []
+            for i in idxs:
+                assign_on_box = _render_attn_on_box(
+                    img_rgb_t * 255, boxes_bi[i], feats_bi[i], tgt_size=tg_size
+                )
+                assigns_on_boxes.append(assign_on_box)
+            cat_assigns_on_boxes = torch.cat(assigns_on_boxes, dim=2)
+            storage.put_image("img_{}/attn".format(bi), cat_assigns_on_boxes / 255.0)
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            self.swin, image_list, features, proposals, gt_instances
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        if self.training:
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            reid_loss = self.reid_head(image_list, features, roi_boxes, assign_ids)
+            losses.update(reid_loss)
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            reid_feats = self.reid_head(image_list, features, roi_boxes)
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, feats_i, gt_i in zip(pred_instances, reid_feats, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.reid_feats = feats_i[keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
+    def forward_gallery_vis(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            self.swin, image_list, features, proposals, gt_instances
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        # nms
+        reid_feats = self.reid_head(image_list, features, roi_boxes)
+        score_t = self.roi_heads.box_predictor.test_score_thresh
+        iou_t = self.roi_heads.box_predictor.test_nms_thresh
+        for pred_i, feats_i in zip(pred_instances, reid_feats):
+            pred_boxes_t = pred_i.pred_boxes.tensor
+            pred_scores = pred_i.pred_scores
+            filter_mask = pred_scores >= score_t
+            pred_boxes_t = pred_boxes_t[filter_mask]
+            pred_scores = pred_scores[filter_mask]
+            cate_idx = pred_scores.new_zeros(pred_scores.shape[0], dtype=torch.int64)
+            # nms
+            keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+            pred_boxes_t = pred_boxes_t[keep]
+            pred_scores = pred_scores[keep]
+            pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+            pred_i.pred_scores = pred_scores
+            pred_i.reid_feats = feats_i[keep]
+            pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+        return pred_instances, [feat.detach() for feat in features.values()]
+
+    def forward_gallery_gt(self, image_list, gt_instances):
+        assert not self.training
+        features = self.swin_backbone(image_list.tensor)
+        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        reid_feats = self.reid_head(image_list, features, roi_boxes)
+        pred_instances = []
+        for i, (gt_i, feats_i) in enumerate(zip(gt_instances, reid_feats)):
+            inst = Instances(gt_i.image_size)
+            inst.pred_boxes = gt_i.gt_boxes
+            inst.pred_scores = (
+                torch.zeros_like(gt_i.gt_pids, dtype=feats_i.dtype) + 0.99
+            )
+            inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
+            inst.assign_ids = gt_i.gt_pids
+            inst.reid_feats = feats_i
+            # back to org scale
+            org_h, org_w = gt_i.org_img_size
+            h, w = gt_i.image_size
+            inst.pred_boxes.scale(org_w / w, org_h / h)
+            pred_instances.append(inst)
+
+        return pred_instances
+
+    def forward_query(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+        box_embs = self.reid_head(image_list, features, roi_boxes)
+        return [
+            Instances(gt_instances[i].image_size, reid_feats=box_embs[i])
+            for i in range(len(box_embs))
+        ]
 
 
 @META_ARCH_REGISTRY.register()
