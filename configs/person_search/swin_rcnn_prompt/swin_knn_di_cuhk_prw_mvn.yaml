@@ -1,9 +1,10 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinMsFFNCDI"
+  META_ARCHITECTURE: "SwinKnnDI"
   WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  QUERY_IMG_FEATS: ["outputs/swin_rcnn/swin_feat_extract/CUHK-SYSU_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/PRW_Train_img_feats.pth","outputs/swin_rcnn/swin_feat_extract/MovieNet_Train_app10_img_feats.pth"]
   DOMAIN_IDENTIFY:
     DOMAIN_NAMES: ["CUHK-SYSU","PRW","MovieNet"]
   DET:
@@ -11,25 +12,12 @@ PERSON_SEARCH:
       TRANSFORMER:
         WITH_CP: False
         SEMANTIC_WEIGHT: -1
-SOLVER:
-  OPTIM: "Adam"
-  BASE_LR: 0.0005
-  STEPS: (16870,)
-  MAX_ITER: 33740 # 1687 * 20
-  CHECKPOINT_PERIOD: 3374
-  GAMMA: 0.1
-  WEIGHT_DECAY: 0.0 # 5.0e-4
-  IMS_PER_BATCH: 16
 INPUT:
-  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
-  MAX_SIZE_TRAIN: 1333
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
 DATASETS:
-  TRAIN: ("CPM_Train",) 
   TEST: ("CUHK-SYSU_Gallery","PRW_Gallery","MovieNet_GalleryTestG2000") 
 TEST:
-  IMS_PER_PROC: 8
-  EVAL_PERIOD: 1687
+  IMS_PER_PROC: 16
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin_ffn_linear_di_cpm"
+OUTPUT_DIR: "outputs/swin_rcnn/swin_knn_di_cuhk_prw"

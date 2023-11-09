@@ -32,4 +32,4 @@ TEST:
   IMS_PER_PROC: 16
   EVAL_PERIOD: 630
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin6_ms_cos_div_cdi_cuhk2prw2mvn"
+OUTPUT_DIR: "outputs/swin_rcnn/swin6_ms_cos_cdi_cuhk2prw2mvn"

@@ -12,7 +12,7 @@ import warnings
 import math
 from psd2.structures import Instances, Boxes, BoxMode
 import torch
-
+from psd2.utils.simple_tokenizer import SimpleTokenizer
 
 class SearchMapper(object):
     def __init__(self, cfg, is_train) -> None:
@@ -302,3 +302,63 @@ class RandomInstanceErasingTensor:
 
 def trivial_rea(img, ins_boxes):
     pass
+
+class SearchMapperTextBased(SearchMapper):
+    def __init__(self, cfg, is_train) -> None:
+        super().__init__(cfg,is_train)
+        self.tokenizer=SimpleTokenizer()
+    def tokenize(self,caption: str, text_length=77, truncate=True) -> torch.LongTensor:
+        sot_token = self.tokenizer.encoder["<|startoftext|>"]
+        eot_token = self.tokenizer.encoder["<|endoftext|>"]
+        tokens = [sot_token] + self.tokenizer.encode(caption) + [eot_token]
+
+        result = torch.zeros(text_length, dtype=torch.long)
+        if len(tokens) > text_length:
+            if truncate:
+                tokens = tokens[:text_length]
+                tokens[-1] = eot_token
+            else:
+                raise RuntimeError(
+                    f"Input {caption} is too long for context length {text_length}"
+                )
+        result[:len(tokens)] = torch.tensor(tokens)
+        return result
+    def _transform_annotations(self, img_dict):
+        img_path = img_dict["file_name"]
+        img_arr = read_image(img_path, self.in_fmt)
+        boxes = []
+        ids = []
+        texts=[]
+        for ann in img_dict["annotations"]:
+            box_mode = ann["bbox_mode"]
+            boxes.append(
+                Boxes(ann["bbox"], box_mode)
+                .convert_mode(BoxMode.XYXY_ABS, img_arr.shape[:2])
+                .tensor[0]
+                .tolist()
+            )
+            ids.append(ann["person_id"])
+            if "descriptions" in ann:
+                texts.append([self.tokenize(t) for t in ann["descriptions"]])
+        org_boxes = np.array(boxes, dtype=np.float32)
+        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
+        transforms = self.augs(aug_input)
+        aug_img = aug_input.image
+        h, w = aug_img.shape[:2]
+        aug_boxes = aug_input.boxes
+        img_t = self.totensor(aug_img.copy())
+        self.rea(img_t, aug_boxes)
+        return {
+            "image": img_t,
+            "instances": Instances(
+                (h, w),
+                file_name=img_path,
+                image_id=img_dict["image_id"],
+                gt_boxes=Boxes(aug_boxes, BoxMode.XYXY_ABS),
+                gt_pids=torch.tensor(ids, dtype=torch.int64),
+                gt_classes=torch.zeros(len(ids), dtype=torch.int64),
+                org_img_size=(img_arr.shape[0], img_arr.shape[1]),
+                org_gt_boxes=Boxes(org_boxes, BoxMode.XYXY_ABS),
+                descriptions=texts
+            ),
+        }

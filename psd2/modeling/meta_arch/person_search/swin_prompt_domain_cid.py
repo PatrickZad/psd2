@@ -25,7 +25,7 @@ class SwinLinearCDI(SearchBase):
         super().__init__(*args, **kws)
         self.swin_org = swin_org
         self.swin_org_init_path = swin_org_init_path
-        self.id_head = nn.Linear(768, len(domain_names))
+        self.id_head = nn.Linear(768 if "small" in  self.swin_org_init_path else 1024, len(domain_names))
         self.domain_names = {name: i for i, name in enumerate(domain_names)}
         self.load_swin()
         for p in self.backbone.parameters():
@@ -182,8 +182,9 @@ class SwinFFNCDI(SwinLinearCDI):
     ):
         super().__init__(*args, **kws)
         del self.id_head
+        edim=768 if "small" in  self.swin_org_init_path else 1024
         self.id_head = nn.Sequential(
-            Mlp(768, 768 * 2, 768), nn.Linear(768, len(self.domain_names))
+            Mlp(edim, edim * 2, edim), nn.Linear(edim, len(self.domain_names))
         )
 
 
@@ -525,7 +526,7 @@ class SwinCosCDI(SwinLinearCDI):
         super().__init__(*args, **kws)
         self.topk = 4  # voting
         self.domain_keys = nn.Parameter(
-            torch.FloatTensor(self.topk * len(self.domain_names), 768)
+            torch.FloatTensor(self.topk * len(self.domain_names), 768 if "small" in  self.swin_org_init_path else 1024)
         )
         nn.init.uniform_(self.domain_keys)
 
@@ -698,7 +699,7 @@ class SwinContraCDI(SwinCosCDI):
                 )[: self.mem_len]
                 mem_samples.append(domain_feats[selected])
             else:
-                mem_samples.append(torch.zeros((512, 768), device=self.device))
+                mem_samples.append(torch.zeros((512, 768 if "small" in  self.swin_org_init_path else 1024), device=self.device))
         self.register_buffer("memory", torch.stack(mem_samples))
 
     @classmethod

@@ -1,0 +1,78 @@
+_BASE_: "base_prompts.yaml"
+MODEL:
+  META_ARCHITECTURE: "PromptedSwinF4RCNNSeqPS"
+  WEIGHTS: "outputs/swin_rcnn/seqfrcnn-pd-pre_cococh_small-ign_adamw/model_0148349.pth"
+  ROI_BOX_HEAD:
+    BBOX_REG_LOSS_WEIGHT: 1.0
+    SMOOTH_L1_BETA: 1.0
+  RPN:
+    SMOOTH_L1_BETA: 1.0
+  ROI_HEADS:
+    IOU_THRESHOLDS: [0.5]
+    IOU_LABELS: [0, 1]
+PERSON_SEARCH:
+  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  PROMPT:
+    PROMPT_START_STAGE: 1
+    NUM_PROMPTS: [4,4,4,4]
+    POOL_SIZE: 12
+    PROMPT_TYPE: "L2PppMask"
+    NUM_TASKS: 3
+    CURRECT_TASK: 0
+    LOSS_WEIGHT: 0.1
+    TOP_K: 4
+  DET:
+    MODEL:
+      TRANSFORMER:
+        WITH_CP: True
+        SEMANTIC_WEIGHT: -1
+      ROI_BOX_HEAD:
+        NAME: "FastRCNNConvFCHead"
+        NUM_FC: 1
+        FC_DIM: 1024
+        NUM_CONV: 4
+        CONV_DIM: 256
+        NORM: LN
+  REID:
+    MODEL:
+      EMB_DIM: 768
+      BN_NECK: False
+    ID_ASSIGN:
+      NAME: "det"
+    LOSS:
+      OIM:
+        LB_LAYER: "lb_norm"
+        ULB_LAYER: "ulb_full"
+        LB_FACTOR: 30
+        ULB_FACTOR: 30
+        NUM_LB: 5532
+        LEN_ULB: 5000
+        FEAT_DIM: 768
+        NORM_FEAT: True
+        SYNC_MEMORY: True
+        USE_FOCAL: True
+        FOCAL_ALPHA: 1.0
+        FOCAL_GAMMA: 2.0
+        LOSS_WEIGHT: 1.0
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0005
+  STEPS: (22416,44832)
+  MAX_ITER: 46700 # 70050 # 934 * 50
+  CHECKPOINT_PERIOD: 1868
+  GAMMA: 0.1
+  WEIGHT_DECAY: 0.0 # 5.0e-4
+  IMS_PER_BATCH: 12
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100",) #
+TEST:
+  IMS_PER_PROC: 3
+  EVAL_PERIOD: 1868
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/seqfrcnn-ign-l2pppMask-ps-prepend16-boxaug4_cuhk_adam_b8_oim_0wd"
