@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "SwinMsCosDivCDI"
-  WEIGHTS: ""
+  WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   DOMAIN_IDENTIFY:

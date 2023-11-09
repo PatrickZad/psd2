@@ -296,7 +296,7 @@ class PatchEmbed(PatchEmbed_, Backbone):
 #MVit
 class OverlappedPatchEmbed(Backbone):
     def __init__(
-        self, pretrain_size,kernel_size=16, stride=16, padding=0, in_chans=3, embed_dim=768
+        self, pretrain_size,size_div,kernel_size=16, stride=16, padding=0, in_chans=3, embed_dim=768
     ):
         """
         Args:
@@ -315,6 +315,7 @@ class OverlappedPatchEmbed(Backbone):
         self.stride=stride
         self.embed_dim=embed_dim
         self._out_features = ["out"]
+        self.size_div=size_div
 
     def forward(self, x):
         x = self.proj(x)
@@ -328,7 +329,7 @@ class OverlappedPatchEmbed(Backbone):
         dimension in the "bottom up" and "top down" paths. Set to 0 if no specific
         input size divisibility is required.
         """
-        return self.stride
+        return self.size_div
 
     def output_shape(self):
         """
@@ -387,6 +388,7 @@ def build_overlapped_patch_embed(cfg, input_shape):
     pt_cfg = cfg.MODEL.PATCH_EMBED
     return OverlappedPatchEmbed(
         pt_cfg.PRETRAIN_IMG_SIZE,
+        cfg.INPUT.SIZE_DIVISIBILITY,
         pt_cfg.KERNELS_SIZE,
         pt_cfg.STRIDE,
         pt_cfg.PADDING,

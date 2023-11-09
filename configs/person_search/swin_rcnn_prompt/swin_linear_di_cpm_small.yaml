@@ -1,6 +1,6 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinCosCDI"
+  META_ARCHITECTURE: "SwinLinearCDI"
   WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
@@ -14,9 +14,9 @@ PERSON_SEARCH:
 SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0005
-  STEPS: (14000,)
-  MAX_ITER: 28000 # 700 * 40
-  CHECKPOINT_PERIOD: 2800
+  STEPS: (33740,)
+  MAX_ITER: 67480 # 1687 * 40
+  CHECKPOINT_PERIOD: 3374
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
   IMS_PER_BATCH: 16
@@ -26,10 +26,10 @@ INPUT:
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
 DATASETS:
-  TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ("CUHK-SYSU_Gallery",) # "PRW_Gallery","MovieNet_GalleryTestG2000") 
+  TRAIN: ("CPM_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","PRW_Gallery","MovieNet_GalleryTestG2000") 
 TEST:
-  IMS_PER_PROC: 16
-  EVAL_PERIOD: 700
+  IMS_PER_PROC: 8
+  EVAL_PERIOD: 1687
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin_cos_cdi_cuhk"
+OUTPUT_DIR: "outputs/swin_rcnn/swin_linear_di_cpm_small"

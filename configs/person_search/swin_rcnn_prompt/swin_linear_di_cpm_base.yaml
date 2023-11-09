@@ -1,9 +1,11 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinMsFFNCDI"
-  WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  META_ARCHITECTURE: "SwinLinearCDI"
+  WEIGHTS: "Data/model_zoo/swin_base_patch4_window7_224_22k_d2.pkl"
+  PATCH_EMBED:
+    EMBED_DIM: 128
 PERSON_SEARCH:
-  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_base_patch4_window7_224_22k_d2.pkl"
   DOMAIN_IDENTIFY:
     DOMAIN_NAMES: ["CUHK-SYSU","PRW","MovieNet"]
   DET:
@@ -11,11 +13,13 @@ PERSON_SEARCH:
       TRANSFORMER:
         WITH_CP: False
         SEMANTIC_WEIGHT: -1
+        NHEAD: [4, 8, 16, 32]
+        OUT_CHANNELS: 1024
 SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0005
-  STEPS: (16870,)
-  MAX_ITER: 33740 # 1687 * 20
+  STEPS: (33740,)
+  MAX_ITER: 67480 # 1687 * 40
   CHECKPOINT_PERIOD: 3374
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
@@ -32,4 +36,4 @@ TEST:
   IMS_PER_PROC: 8
   EVAL_PERIOD: 1687
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin_ffn_linear_di_cpm"
+OUTPUT_DIR: "outputs/swin_rcnn/swin_linear_di_cpm_base"

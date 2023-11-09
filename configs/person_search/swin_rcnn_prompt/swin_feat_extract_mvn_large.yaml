@@ -1,6 +1,6 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "SwinMsExtracter"
+  META_ARCHITECTURE: "SwinExtracter"
   WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
@@ -10,8 +10,8 @@ PERSON_SEARCH:
         WITH_CP: False
         SEMANTIC_WEIGHT: -1
 INPUT:
-  MIN_SIZE_TEST: 240
-  MAX_SIZE_TEST: 720
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
 DATASETS:
   TEST: ("MovieNet_Train_app10",) 
 DATALOADER:
@@ -20,4 +20,4 @@ DATALOADER:
 TEST:
   IMS_PER_PROC: 16
 
-OUTPUT_DIR: "outputs/swin_rcnn/swin_ms_feat_extract"
+OUTPUT_DIR: "outputs/swin_rcnn/swin_feat_extract"
