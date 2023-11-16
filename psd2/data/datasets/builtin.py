@@ -6,7 +6,9 @@ from .. import mappers
 from ..catalog import DatasetCatalog, MapperCatalog, MetadataCatalog
 
 from .cuhk_sysu import load_cuhk_sysu
+from .cuhk_sysu_tbps import load_cuhk_sysu_tbps
 from .prw import load_prw
+from .prw_tbps import load_prw_tbps
 from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
 from .coco_ch import load_coco_ch, load_coco_p
@@ -51,6 +53,42 @@ def register_cuhk_sysu_all(datadir):
     MapperCatalog.register(name, mappers.CuhksysuMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
 
+def register_cuhk_sysu_tbps_all(datadir):
+    name = "CUHK-SYSU_TBPS_" + "Train"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Train"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    name = "CUHK-SYSU_TBPS_" + "Gallery"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Gallery"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "CUHK-SYSU_TBPS_" + "GalleryGT"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Gallery"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "CUHK-SYSU_TBPS_" + "TestG50"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG50"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG50GT"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG50"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG100"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG100"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG100GT"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG100"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG4000"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG4000"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG4000GT"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG4000"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
 
 def register_movie_net_all(datadir):
     name = "MovieNet_" + "Train_app10"
@@ -139,6 +177,26 @@ def register_prw_all(datadir):
     MapperCatalog.register(name, mappers.PrwMapper)
     MetadataCatalog.get(name).set(evaluator_type="det")
 
+def register_prw_tbps_all(datadir):
+    name = "PRW_TBPS_Train"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Train"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    name = "PRW_TBPS_Query"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Query"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "PRW_TBPS_QueryGT"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Query"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "PRW_TBPS_Gallery"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Gallery"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
+    name = "PRW_TBPS_GalleryGT"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Gallery"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="det")
 
 def register_ptk21_all(datadir):
     name = "PoseTrack21_Train"
@@ -232,5 +290,7 @@ register_cpm(
         os.path.join(_root, "movienet"),
     ]
 )
+register_cuhk_sysu_tbps_all(os.path.join(_root, "cuhk_sysu"))
+register_prw_tbps_all(os.path.join(_root, "PRW"))
 _root_det = "Data/DetData"
 register_cococh_all(_root_det)
