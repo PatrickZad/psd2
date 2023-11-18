@@ -1,6 +1,8 @@
 _BASE_: "base_tbps.yaml"
 PERSON_SEARCH:
   REID:
+    MODEL:
+      BN_NECK: True
     LOSS:
       OIM:
         NUM_LB: 5532
@@ -16,4 +18,4 @@ DATASETS:
   TEST: ("CUHK-SYSU_TBPS_Gallery", "CUHK-SYSU_TBPS_TestG100",)
 TEST:
   EVAL_PERIOD: 3736
-OUTPUT_DIR: "outputs/oim_clip/oim_cuhk"
+OUTPUT_DIR: "outputs/oim_clip/oim_cuhk_bn"

@@ -1,11 +1,16 @@
 _BASE_: "base_tbps.yaml"
+MODEL:
+  META_ARCHITECTURE: "OimClipSimple"
 PERSON_SEARCH:
   REID:
     LOSS:
       OIM:
         NUM_LB: 5532
         LEN_ULB: 5000
+        LB_FACTOR: 30
+        ULB_FACTOR: 30
 SOLVER:
+  OPTIM: "AdamW"
   MAX_ITER: 44832 # 1868 * 24
   STEPS: (29888,)
   CHECKPOINT_PERIOD: 3736
@@ -16,4 +21,4 @@ DATASETS:
   TEST: ("CUHK-SYSU_TBPS_Gallery", "CUHK-SYSU_TBPS_TestG100",)
 TEST:
   EVAL_PERIOD: 3736
-OUTPUT_DIR: "outputs/oim_clip/oim_cuhk"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_cuhk_30_adamw"

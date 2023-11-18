@@ -6,6 +6,8 @@ PERSON_SEARCH:
         NUM_LB: 483
         LEN_ULB: 500
 SOLVER:
+  OPTIM: "SGD"
+  BASE_LR: 0.0001
   MAX_ITER: 22824 # 951 * 24
   STEPS: (15216,) # 951 * 16
   CHECKPOINT_PERIOD: 1902
@@ -16,4 +18,4 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 951
-OUTPUT_DIR: "outputs/oim_clip/oim_prw"
+OUTPUT_DIR: "outputs/oim_clip/oim_prw_sgd"

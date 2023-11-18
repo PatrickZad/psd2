@@ -45,8 +45,10 @@ PERSON_SEARCH:
     NUM_CLASSES: 1
     CLIP:
       NAME: "RN50"
-      IMG_SIZE: [256,128] # 16 stride for 16x8 roi features
+      IMG_SIZE: [224,224] # pretrain image size
       STRIDE: 16
+      FREEZE_AT_STAGE2: True
+      FROZEN_BN: True
   REID:
     MODEL:
       EMB_DIM: 1024
@@ -90,7 +92,7 @@ SOLVER:
   IMS_PER_BATCH: 6
 
 TEST:
-  IMS_PER_PROC: 6
+  IMS_PER_PROC: 5
   DETECTIONS_PER_IMAGE: 100
 # SEED: 42
 VIS_PERIOD: 500

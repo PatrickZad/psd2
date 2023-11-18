@@ -1,4 +1,6 @@
 _BASE_: "base_tbps.yaml"
+MODEL:
+  META_ARCHITECTURE: "OimClipT2I"
 PERSON_SEARCH:
   REID:
     LOSS:
@@ -16,4 +18,4 @@ DATASETS:
   TEST: ("CUHK-SYSU_TBPS_Gallery", "CUHK-SYSU_TBPS_TestG100",)
 TEST:
   EVAL_PERIOD: 3736
-OUTPUT_DIR: "outputs/oim_clip/oim_cuhk"
+OUTPUT_DIR: "outputs/oim_clip/oim_cuhk_t2i"
