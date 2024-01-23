@@ -906,6 +906,7 @@ class Visualizer:
         color="g",
         bg_color="black",
         horizontal_alignment="center",
+        vertical_alignment="top",
         rotation=0
     ):
         """
@@ -937,7 +938,7 @@ class Visualizer:
             size=font_size * self.output.scale,
             family="sans-serif",
             bbox={"facecolor": bg_color, "alpha": 0.8, "pad": 0.7, "edgecolor": "none"},
-            verticalalignment="top",
+            verticalalignment=vertical_alignment,
             horizontalalignment=horizontal_alignment,
             color=color,
             zorder=10,

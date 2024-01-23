@@ -81,6 +81,18 @@ def register_cuhk_sysu_tbps_all(datadir):
     DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG100"))
     MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG500"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG500"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG1000"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG1000"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
+    name = "CUHK-SYSU_TBPS_" + "TestG2000"
+    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG2000"))
+    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
+    MetadataCatalog.get(name).set(evaluator_type="query")
     name = "CUHK-SYSU_TBPS_" + "TestG4000"
     DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG4000"))
     MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)

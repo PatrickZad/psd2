@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-
+from torch.utils.checkpoint import checkpoint
 
 logger = logging.getLogger("CLIP")
 
@@ -149,6 +149,8 @@ class AttentionPool2d(nn.Module):
         return x[0]
 
 
+
+
 class ModifiedResNet(nn.Module):
     """
     A ResNet class that is similar to torchvision's but contains the following changes:
@@ -258,8 +260,13 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor):
-        return self.resblocks(x)
+    def forward(self, x: torch.Tensor,ckpt=False):
+        if ckpt:
+            for blk in self.resblocks:
+                x=checkpoint(blk,x)
+            return x
+        else:
+            return self.resblocks(x)
 
 
 class VisionTransformer(nn.Module):
@@ -408,12 +415,12 @@ class CLIP(nn.Module):
     def encode_image(self, image):
         return self.visual(image.type(self.dtype))
 
-    def encode_text(self, text):
+    def encode_text(self, text,ckpt=False):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
 
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
+        x = self.transformer(x,ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x).type(self.dtype)
 

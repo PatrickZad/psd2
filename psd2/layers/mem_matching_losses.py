@@ -569,12 +569,9 @@ class OIMLoss(nn.Module):
         return ret
 
     def forward(self, pfeats, pids, lb_mms=None):
-        pos_mask = pids > -2
-        pfeats = pfeats[pos_mask]
-        pids = pids[pos_mask]
-        if pfeats.shape[0] == 0:
-            loss_oim = pfeats.sum()*0.0 #pfeats.new_tensor([0]) , to avoid backward failure when only oim is used for training 
-        else:
+            pos_mask = pids > -2
+            pfeats = pfeats[pos_mask]
+            pids = pids[pos_mask]
             if self.do_normalize:
                 pfeats = F.normalize(pfeats, dim=-1)
             lb_matching_scores = self.lb_layer(pfeats, pids, lb_mms) * self.lb_factor
@@ -589,7 +586,7 @@ class OIMLoss(nn.Module):
             pid_labels[pid_labels == -2] = -1
             n_lb_feats = (pid_labels > -1).sum()
             if n_lb_feats == 0:
-                loss_oim = loss_oim = matching_scores.sum() * 0.0 # lb_matching_scores.new_tensor([0])
+                loss_oim = matching_scores.sum() * 0.0 # make sure ulb queue get updated
             else:
                 if self.use_focal:
                     p_i = F.softmax(matching_scores, dim=1)
@@ -603,12 +600,12 @@ class OIMLoss(nn.Module):
                     loss_oim = F.cross_entropy(
                         matching_scores, pid_labels, reduction="none", ignore_index=-1
                     )
-        comm.synchronize()
-        all_num_lb = comm.all_gather(n_lb_feats)
-        num_lb = sum([num.to("cpu") for num in all_num_lb])
-        num_lb = torch.clamp(num_lb / comm.get_world_size(), min=1).item()
-        loss_val = loss_oim.sum() / num_lb
-        return {"loss_oim": loss_val * self.loss_weight}
+            comm.synchronize()
+            all_num_lb = comm.all_gather(n_lb_feats)
+            num_lb = sum([num.to("cpu") for num in all_num_lb])
+            num_lb = torch.clamp(num_lb / comm.get_world_size(), min=1).item()
+            loss_val = loss_oim.sum() / num_lb
+            return {"loss_oim": loss_val * self.loss_weight}
 
 
 

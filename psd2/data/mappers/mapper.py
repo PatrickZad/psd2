@@ -24,7 +24,7 @@ class SearchMapper(object):
                     dT.ResizeShortestEdge(
                         cfg.INPUT.MIN_SIZE_TRAIN,
                         cfg.INPUT.MAX_SIZE_TRAIN,
-                        size_divisibility=cfg.INPUT.SIZE_DIVISIBILITY,
+                        size_divisibility=1, # cfg.INPUT.SIZE_DIVISIBILITY, ImageList takes care
                         sample_style="choice",
                     ),
                     dT.RandomFlip(prob=0.5, horizontal=True, vertical=False),
@@ -339,7 +339,11 @@ class SearchMapperTextBased(SearchMapper):
             )
             ids.append(ann["person_id"])
             if "descriptions" in ann:
-                texts.append([self.tokenize(t) for t in ann["descriptions"]])
+                valid_ts=[]
+                for t in ann["descriptions"]:
+                    if len(t)>1:
+                        valid_ts.append(self.tokenize(t))
+                texts.append(valid_ts)
         org_boxes = np.array(boxes, dtype=np.float32)
         aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
         transforms = self.augs(aug_input)
