@@ -1,0 +1,18 @@
+_BASE_: "clip_detr_baseline.yaml"
+MODEL:
+  META_ARCHITECTURE: "ClipQueryGroundingDeform"
+SOLVER:
+  MAX_ITER: 57000 # 570 * 100
+  STEPS: (34200,) # 570 * 60
+  CHECKPOINT_PERIOD: 570
+  WARMUP_ITERS: 1140
+  IMS_PER_BATCH: 8
+  LR_FACTORS: [5.0,5.0,5.0,5.0]
+  LR_GROUP_REGEX: ["grounding_trans.+","bbox_embed.+","conf_embed.+","query_embed.+"]
+DATASETS:
+  TRAIN: ("PRW_TBPS_Train",) 
+  # TEST: ("PRW_TBPS_Query_QG","PRW_TBPS_Gallery_QG",)
+TEST:
+  EVAL_PERIOD: 60000
+OUTPUT_DIR: "outputs/query_gd/clip_deform_seed"
+SEED: 58216138

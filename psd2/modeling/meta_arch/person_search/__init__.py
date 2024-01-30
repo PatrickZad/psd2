@@ -13,3 +13,5 @@ from .swin_ps_reid import *
 from .swin_prompt_domain_cid import *
 from .mvit_rcnn_pd import *
 from .mvit_rcnn_ps import *
+from .oim_clip import *
+from .query_grounding import *

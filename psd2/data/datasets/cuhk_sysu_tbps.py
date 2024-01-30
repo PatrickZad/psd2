@@ -121,7 +121,7 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
             train_text=json.load(tf)
         imgorgid_to_text={}
         for item in train_text:
-            imgorgid_to_text["{}_{}}".format(item["pic_path"],item["id"])]=item["description"]
+            imgorgid_to_text[item["pic_path"]+"_"+str(item["id"])]=item["desrciption"]
 
         logger.info("Loading Training Person annotations :")
 
@@ -134,7 +134,7 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                     img_name = str(img_name[0])
                     box = box.squeeze().astype(np.int32)
                     _set_box_pid_text(
-                        img_boxes_dict[img_name], box, img_pids_dict[img_name], index,img_text_dict[img_name],imgorgid_to_text["{}_{}}".format(img_name,org_pid)]
+                        img_boxes_dict[img_name], box, img_pids_dict[img_name], index,img_text_dict[img_name],imgorgid_to_text[img_name+"_"+str(org_pid)]
                     )
                 pbar.update(1)
         # build anno dict
@@ -188,13 +188,13 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
             query_text=json.load(tf)
         imgorgid_to_text={}
         for item in query_text:
-            imgorgid_to_text["{}_{}}".format(item["pic_path"],item["id"])]=item["description"]
+            imgorgid_to_text[item["pic_path"]+"_"+str(item["id"])]=item["desrciption"]
         with tqdm(total=test_anno.shape[0]) as pbar:
             for index, item in enumerate(test_anno):
                 # test_id = max_train_id + 1 + index
                 # query
                 qimg_name = str(item["Query"][0, 0][0][0])
-                org_pid=int(item["Query"][0,0][0][0][1:])
+                org_pid=int(item["Query"][0,0][3][0][1:])
                 # qid_str = max_train_id+1+index
                 qbox = item["Query"][0, 0][1].squeeze().astype(np.int32)
                 _set_box_pid_text(
@@ -250,8 +250,8 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                 # to return
                 box = qbox.copy().astype(np.float32)
                 box[2:] = box[:2] + box[2:]
-                test_query_gallery.append(
-                    {
+                test_query_gallery.extend(
+                    [{
                         "query": {
                             "file_name": opj(dataset_dir, "Image", "SSM", qimg_name),
                             "image_id": qimg_name,
@@ -260,12 +260,12 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                                     "bbox": box,
                                     "bbox_mode": BoxMode.XYXY_ABS,
                                     "person_id": index + max_train_id + 1,
-                                    "descriptions": [ imgorgid_to_text["{}_{}}".format(qimg_name,org_pid)]]
+                                    "descriptions": [ des]
                                 }
                             ],
                         },
                         "gallery": gallery_dicts,
-                    }
+                    } for des in imgorgid_to_text[qimg_name+"_"+str(org_pid)]]
                 )
                 pbar.update(1)
         # build anno dict
