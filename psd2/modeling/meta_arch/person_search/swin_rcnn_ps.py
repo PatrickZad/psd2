@@ -978,6 +978,8 @@ class PromptedSwinF4RCNNSeqPS(SwinF4RCNNSeqPS):
                 nk = k[len("swin.") :]
                 if not isinstance(v, torch.Tensor):
                     state_dict[nk] = torch.tensor(v, device=self.device)
+                else:
+                    state_dict[nk]=v
         res = self.swin_org.load_state_dict(state_dict, strict=False)
         print("parameters of *swin_org* haved been loaded: \n")
         print(res)
@@ -1338,7 +1340,13 @@ class PromptedSwinF4RCNNSeqPS(SwinF4RCNNSeqPS):
             self.swin.eval()
             self.swin_org.eval()
             self.proposal_generator.train()  # to train the early prompts via rpn loss
+            for m in self.proposal_generator.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.roi_heads.train()  # to train the prompts via det loss
+            for m in self.roi_heads.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.stage_prompts.train()
             self.side_stage_prompts.train()
         else:
@@ -1890,6 +1898,8 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 nk = k[len("swin.") :]
                 if not isinstance(v, torch.Tensor):
                     state_dict[nk] = torch.tensor(v, device=self.device)
+                else:
+                    state_dict[nk]=v
         res = self.swin_org.load_state_dict(state_dict, strict=False)
         print("parameters of *swin_org* haved been loaded: \n")
         print(res)
@@ -1904,7 +1914,13 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
             self.swin.eval()
             self.swin_org.eval()
             self.proposal_generator.train()  # to train the early prompts via rpn loss
+            for m in self.proposal_generator.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.roi_heads.train()  # to train the prompts via det loss
+            for m in self.roi_heads.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.stage_prompts.train()
             self.side_stage_prompts.train()
         else:
@@ -2660,6 +2676,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 nk = k[len("swin.") :]
                 if not isinstance(v, torch.Tensor):
                     state_dict[nk] = torch.tensor(v, device=self.device)
+                else:
+                    state_dict[nk]=v
         res = self.swin_org.load_state_dict(state_dict, strict=False)
         print("parameters of *swin_org* haved been loaded: \n")
         print(res)
@@ -2674,10 +2692,19 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
             self.swin.eval()
             self.swin_org.eval()
             self.proposal_generator.train()  # to train the early prompts via rpn loss
+            for m in self.proposal_generator.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.roi_heads.train()  # to train the prompts via det loss
+            for m in self.roi_heads.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
             self.stage_prompts.train()
             self.side_stage_prompts.train()
             self.sim_fpn.train()
+            for m in self.sim_fpn.modules():
+                if isinstance(m,torch.nn.BatchNorm2d):
+                    m.eval()
         else:
             # eval:
             for module in self.children():

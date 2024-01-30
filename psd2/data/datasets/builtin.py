@@ -11,7 +11,8 @@ from .prw import load_prw
 from .prw_tbps import load_prw_tbps
 from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
-from .coco_ch import load_coco_ch, load_coco_p
+from .coco_ch import load_coco_ch, load_coco_p, load_cocofkp_ch
+from .samacoco_ch import load_samacoco_ch,load_samacoco_p
 from .cpm import load_cpm
 
 
@@ -254,10 +255,26 @@ def register_cococh_all(datadir):
         name, lambda: load_coco_ch(datadir, "train", allow_crowd=False)
     )
     MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCOFKP-CH"
+    DatasetCatalog.register(
+        name, lambda: load_cocofkp_ch(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "SAMA_COCO-CH"
+    DatasetCatalog.register(
+        name, lambda: load_samacoco_ch(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-CH-ML"
     DatasetCatalog.register(
         name,
         lambda: load_coco_ch(datadir, "train", allow_crowd=False, filter_esmall=True),
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "SAMA_COCO-CH_ML"
+    DatasetCatalog.register(
+        name,
+        lambda: load_samacoco_ch(datadir, "train", allow_crowd=False, filter_esmall=True),
     )
     MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-P"

@@ -1,0 +1,11 @@
+_BASE_: "base.yaml"
+PERSON_SEARCH:
+  PROMPT:
+    PROMPT_START_STAGE: 4
+    NUM_PROMPTS: 16
+    POOL_SIZE: 30
+    PROMPT_TYPE: "L2P" # CODAPrompt, DualPrompt is not supported for now
+    NUM_TASKS: 2
+    CURRECT_TASK: 0
+    TOP_K: 4 # only used by L2P
+    LOSS_WEIGHT: 1.0
