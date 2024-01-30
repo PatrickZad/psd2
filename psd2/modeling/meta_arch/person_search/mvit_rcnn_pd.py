@@ -15,7 +15,7 @@ from .. import META_ARCH_REGISTRY
 from psd2.modeling.extend.mvit import SideMViT,get_abs_pos
 from psd2.modeling.id_assign import build_id_assigner
 import copy
-from psd2.modeling.roi_heads import build_roi_heads
+
 
 
 @META_ARCH_REGISTRY.register()
@@ -212,7 +212,7 @@ class MViTF4RCNN(SearchBase):
         for i, blk in enumerate(self.trans.blocks):
             x = blk(x)
             if i == self.trans._last_block_indexes[-2]:
-                x_out = self.trans.side_norm0(x)
+                x_out = self.trans.side_norm2(x)
                 outs.append(x_out.permute(0, 3, 1, 2))
         return {"stage3": outs[-1]}
 
@@ -363,7 +363,7 @@ class MViTSimFPNRCNN(MViTF4RCNN):
                 x = blk(x)
             else:
                 x=self.trans.side_blocks[i-len_bk](x)
-        x_out = self.trans.side_norm1(x).permute(0, 3, 1, 2)
+        x_out = self.trans.side_norm3(x).permute(0, 3, 1, 2)
         return {"stage4": x_out}
         
 
@@ -948,48 +948,6 @@ class MViTROIHeads(ROIHeads):
 
     def _shared_roi_transform(self, features, boxes, swin):
         raise NotImplementedError
-        x = self.pooler(features, boxes)
-        if swin.semantic_weight >= 0:
-            w = torch.ones(x.shape[0], 1) * swin.semantic_weight
-            w = torch.cat([w, 1 - w], axis=-1)
-            semantic_weight = w.cuda()
-
-        hw_shape = x.shape[-2:]
-        x = torch.flatten(x, 2)
-        x = x.permute(0, 2, 1)
-        bonenum = 3
-        x, hw_shape = swin.side_stages[bonenum - swin.side_start_stage].downsample(
-            x, hw_shape
-        )
-        if swin.semantic_weight >= 0:
-            sw = swin.side_semantic_embed_w[bonenum - swin.side_start_stage](
-                semantic_weight
-            ).unsqueeze(1)
-            sb = swin.side_semantic_embed_b[bonenum - swin.side_start_stage](
-                semantic_weight
-            ).unsqueeze(1)
-            x = x * swin.softplus(sw) + sb
-        for i, stage in enumerate(
-            swin.side_stages[bonenum - swin.side_start_stage + 1 :]
-        ):
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
-            if swin.semantic_weight >= 0:
-                sw = swin.side_semantic_embed_w[
-                    bonenum - swin.side_start_stage + 1 + i
-                ](semantic_weight).unsqueeze(1)
-                sb = swin.side_semantic_embed_b[
-                    bonenum - swin.side_start_stage + 1 + i
-                ](semantic_weight).unsqueeze(1)
-                x = x * swin.softplus(sw) + sb
-            if i == len(swin.stages) - bonenum - 1:
-                norm_layer = getattr(swin, f"side_norm{bonenum+i}")
-                out = norm_layer(out)
-                out = (
-                    out.view(-1, *out_hw_shape, swin.num_features[bonenum + i])
-                    .permute(0, 3, 1, 2)
-                    .contiguous()
-                )
-        return out
 
     @torch.no_grad()
     def label_and_sample_proposals(

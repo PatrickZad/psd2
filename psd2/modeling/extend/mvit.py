@@ -447,16 +447,9 @@ class MViT(nn.Module):
 from copy import deepcopy
 from collections import OrderedDict
 class SideMViT(MViT):
-    # remove last stride
     def __init__(self, side_start_stage, *args, **kws):  # [1,2,3,4]
         super().__init__(*args, **kws)
         self.side_start_stage = side_start_stage
-        for li in range(self._last_block_indexes[-2]+1,self._last_block_indexes[-1]+1):
-            for m in [self.blocks[li].attn.pool_q,self.blocks[li].attn.pool_k,self.blocks[li].attn.pool_v]:
-                m.stride = (1,1)
-                m.padding = (0,0)
-            if hasattr(self.blocks[li],"pool_skip"):
-                self.blocks[li].pool_skip=nn.Identity()
         self.init_side()
     def init_side(
         self
@@ -513,38 +506,41 @@ class SideMViT(MViT):
 
 
 
-#TODO consider prompt pos
+#NOTE assume separately learned k-prompts and v-prompts 
 class PromptedMultiScaleAttention(MultiScaleAttention):
     def forward(self, x,prompts):
+        if prompts is None:
+            return super().forward(x)
         B, H, W, _ = x.shape
         # qkv with shape (3, B, nHead, H, W, C)
         qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, -1).permute(3, 0, 4, 1, 2, 5)
         # q, k, v with shape (B * nHead, H, W, C)
         q, k, v = qkv.reshape(3, B * self.num_heads, H, W, -1).unbind(0)
 
-        q = attention_pool(q, self.pool_q, self.norm_q)
+        q = attention_pool(q, self.pool_q, self.norm_q) # Bh * H * W * c
         k = attention_pool(k, self.pool_k, self.norm_k)
         v = attention_pool(v, self.pool_v, self.norm_v)
 
-        n_prompts=prompts.shape[1]
-        qkv_p=self.qkv(prompts).reshape(B, n_prompts, 3, self.num_heads, -1).permute(2, 0, 3, 1,4 )
-        qp,kp,vp=qkv_p.reshape(3,B * self.num_heads,n_prompts,-1).unbind(0)
-        qp = prompt_attention_pool(qp, self.pool_q, self.norm_q)
-        kp = prompt_attention_pool(kp, self.pool_k, self.norm_k)
-        vp = prompt_attention_pool(vp, self.pool_v, self.norm_v)
+        L,_=prompts.shape[1:]
+        kvp=prompts.reshape(B, L, 2, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        kp,vp=kvp.reshape(2, B * self.num_heads, L, -1).unbind(0) # Bh * L * c
 
         ori_q = q
         if self.window_size:
-            q, q_hw_pad = window_partition(q, self.q_win_size)
+            # Bh, H // w, w, W // w, w, c -> Bh, H//w, W // w, w, w, c -> (Bh * H * W // w // w) * w * w * c
+            q, q_hw_pad = window_partition(q, self.q_win_size) # b * w * w * c
             k, kv_hw_pad = window_partition(k, self.kv_win_size)
             v, _ = window_partition(v, self.kv_win_size)
             q_hw = (self.q_win_size, self.q_win_size)
             kv_hw = (self.kv_win_size, self.kv_win_size)
+            # repeat prompts
+            kp=kp.view(B * self.num_heads,1,1,L,-1).repeat(1,kv_hw_pad[0]//self.kv_win_size,kv_hw_pad[1]//self.kv_win_size, 1 , 1).contiguous().flatten(0,2)# (Bh * H * W // w // w) * L * c
+            vp=vp.view(B * self.num_heads,1,1,L,-1).repeat(1,kv_hw_pad[0]//self.kv_win_size,kv_hw_pad[1]//self.kv_win_size, 1 , 1).contiguous().flatten(0,2)
         else:
             q_hw = q.shape[1:3]
             kv_hw = k.shape[1:3]
 
-        q = q.view(q.shape[0], np.prod(q_hw), -1)
+        q = q.view(q.shape[0], np.prod(q_hw), -1) # b * hw * c
         k = k.view(k.shape[0], np.prod(kv_hw), -1)
         v = v.view(v.shape[0], np.prod(kv_hw), -1)
 
@@ -553,8 +549,6 @@ class PromptedMultiScaleAttention(MultiScaleAttention):
         if self.use_rel_pos:
             attn = add_decomposed_rel_pos(attn, q, self.rel_pos_h, self.rel_pos_w, q_hw, kv_hw)
         
-        kp=kp.unsqueeze(1).expand(-1,q.shape[0]//B,-1,-1).flatten(0,1)
-        vp=vp.unsqueeze(1).expand(-1,q.shape[0]//B,-1,-1).flatten(0,1)
 
         attn_img2prompt=(q * self.scale)@kp.transpose(-2, -1)
         attn=torch.cat([attn_img2prompt,attn],dim=-1)
@@ -813,3 +807,28 @@ class PromptedMViT(nn.Module):
             nn.init.constant_(m.weight, 1.0)
     def forward(self, x):
         raise NotImplementedError
+
+class SidePromptedMViT(SideMViT, PromptedMViT):
+    def __init__(self, side_start_stage, *args, **kws):
+        PromptedMViT.__init__(self, *args, **kws)
+        self.side_start_stage = side_start_stage
+        self.init_side()
+class SidePromptedMViTLS(SideMViT, PromptedMViT):
+    def __init__(self, side_start_stage, *args, **kws):
+        PromptedMViT.__init__(self, *args, **kws)
+        self.side_start_stage = side_start_stage
+        self.blocks[self._last_block_indexes[-2]+1].attn.pool_q.stride = (1,1)
+        self.blocks[self._last_block_indexes[-2]+1].attn.q_win_size*=2
+        if hasattr(self.blocks[self._last_block_indexes[-2]+1],"pool_skip"):
+                self.blocks[self._last_block_indexes[-2]+1].pool_skip=nn.Identity()
+        self.init_side()
+class SidePromptedMViTDC(SideMViT, PromptedMViT):
+    def __init__(self, side_start_stage, *args, **kws):
+        PromptedMViT.__init__(self, *args, **kws)
+        self.side_start_stage = side_start_stage
+        self.blocks[self._last_block_indexes[-2]+1].attn.pool_q.stride = (1,1)
+        self.blocks[self._last_block_indexes[-2]+1].attn.pool_q.padding = (2,2)
+        self.blocks[self._last_block_indexes[-2]+1].attn.pool_q.dilation=(2,2)
+        if hasattr(self.blocks[self._last_block_indexes[-2]+1],"pool_skip"):
+                self.blocks[self._last_block_indexes[-2]+1].pool_skip=nn.Identity()
+        self.init_side()
