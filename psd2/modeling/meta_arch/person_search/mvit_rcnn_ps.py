@@ -23,7 +23,7 @@ from torch.nn.functional import normalize
 from psd2.modeling import ShapeSpec
 from psd2.modeling.poolers import ROIPooler
 from .mvit_rcnn_pd import MViTF4RCNN,MViTSimFPNRCNN,SimpleFeaturePyramid,LastLevelMaxPool,AlteredStandaredROIHeads
-from psd2.modeling.extend.mvit import MViT,SidePromptedMViTLS,get_abs_pos
+from psd2.modeling.extend.mvit import MViT,SidePromptedMViTLS,SidePromptedMViTDC,get_abs_pos,SidePromptedMViT,SideSelfPromptedMViT,SideKernelPromptedMViT
 
 # NOTE to test finetune and upper-bound
 @META_ARCH_REGISTRY.register()
@@ -637,7 +637,7 @@ class PromptedMViTSimFPNRCNNPS(MViTSimFPNRCNNPS):
         if isinstance(num_prompts, int):
             num_prompts = [num_prompts] * 4
         # NOTE downsample module of stage3 is trainable
-        trans = SidePromptedMViTLS(
+        trans = SidePromptedMViT(
             side_start_stage=3,
             img_size=patch_embed.pretrain_img_size[0],
             patch_stride=(patch_embed.stride,patch_embed.stride)
@@ -656,6 +656,10 @@ class PromptedMViTSimFPNRCNNPS(MViTSimFPNRCNNPS):
             drop_path_rate=tr_cfg.DROP_PATH,
             with_cp=tr_cfg.WITH_CP, 
         )
+        # NOTE global attention in last stage 
+        for blk in trans.blocks[trans._last_block_indexes[-2]+1:]:
+            if blk.attn.window_size:
+                blk.attn.window_size=0
         trans_out_shape = {
             "stage{}".format(i + 1): ShapeSpec(
                 channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
@@ -1361,7 +1365,1657 @@ class PromptedMViTSimFPNLiteRCNNPS(PromptedMViTSimFPNRCNNPS):
                 pred_i.pred_boxes.scale(org_w / w, org_h / h)
             return pred_instances
 
+@META_ARCH_REGISTRY.register()
+class SelfPromptedMViTSimFPNLiteRCNNPS(PromptedMViTSimFPNLiteRCNNPS):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(MViTSimFPNRCNNPS, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        # NOTE downsample module of stage3 is trainable
+        trans = SideSelfPromptedMViT(
+            side_start_stage=3,
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP, 
+        )
+        # NOTE global attention in last stage 
+        for blk in trans.blocks[trans._last_block_indexes[-2]+1:]:
+            if blk.attn.window_size:
+                blk.attn.window_size=0
+        trans_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+            for i in range(4)
+        }
+        trans_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+                for i in range(4)
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            trans_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        stage_prompts = nn.ModuleList()
+        for si in range(len(tr_cfg.LAST_BLOCK_INDEXS)):
+            if si==0:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[0]+1
+            else:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[si]-tr_cfg.LAST_BLOCK_INDEXS[si-1]
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
+            #NOTE attention modules do not change the dim 
+            input_dim=trans._out_feature_channels[f"scale{si+2}"] # if si==0 else trans._out_feature_channels[si]//2
+            prompt_embed_dim=input_dim
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            stage_prompts.append(prompt_stage)
+        side_stage_prompts = nn.ModuleList()
+        if isinstance(num_prompts, int):
+            stage_num_prompts = num_prompts
+        else:
+            stage_num_prompts = num_prompts[-1]
+        if stage_num_prompts == 0:
+            stage_prompts.append(nn.Identity())
+        else:
+            input_dim=trans._out_feature_channels["scale5"]
+            prompt_embed_dim=input_dim
+            nl=tr_cfg.LAST_BLOCK_INDEXS[-1]-tr_cfg.LAST_BLOCK_INDEXS[-2]
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            side_stage_prompts.append(prompt_stage)
 
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "trans": trans,
+                "sim_fpn": sim_fpn,
+                "stage_prompts": stage_prompts,
+                "side_stage_prompts": side_stage_prompts,
+            }
+        )
+        trans_org = MViT(
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+        )
+        ret["trans_org"] = trans_org
+        ret["trans_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        ret["reid_in_feature"] = cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+        ret["bn_neck"] = bn_neck
+        ret["oim_loss"] = (
+            OIMLoss(cfg)
+            if hasattr(cfg.PERSON_SEARCH.REID.LOSS, "OIM")
+            else IncOIMLoss(cfg)
+        )
+        ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / trans_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"] = reid_box_pooler
+        return ret
+
+    def trans_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]].permute(0,2,3,1).contiguous()
+        task_query = self.task_query(x)
+        task_query_x = task_query.unsqueeze(1)
+        if self.trans.pos_embed is not None:
+            x = x + get_abs_pos(self.trans.pos_embed, self.trans.pretrain_use_cls_token, x.shape[1:3])
+        # all stage prompts
+        si_prompts=[]
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        for si in range(3):
+            num_stage_blocks=(self.trans._last_block_indexes[0]+1) if si==0 else self.trans._last_block_indexes[si]-self.trans._last_block_indexes[si-1]
+            task_query_stage = task_query_x.expand(-1, num_stage_blocks, -1)
+            stage_prompts,pi_loss=self.stage_prompts[si](
+                    task_query_stage, si, train=self.training
+                ) # layers * b * L * c
+            prompt_loss+=pi_loss
+            si_prompts.append(stage_prompts)
+        
+        si=0
+        outs=[]
+        for i, blk in enumerate(self.trans.blocks):
+            li=i if si==0 else i-(self.trans._last_block_indexes[si-1]+1)
+            stage_prompts=si_prompts[si]
+            x =ckpt.checkpoint( blk,x,stage_prompts[li])
+            if i==self.trans._last_block_indexes[-2]:
+                outs.append(x.permute(0, 3, 1, 2).contiguous())
+                outs.append(self.trans.side_norm2(x).permute(0, 3, 1, 2).contiguous())
+                break
+
+            for lsi,bi in enumerate(self.trans._last_block_indexes):
+                if i==bi:
+                    si=lsi+1
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss}
+        return {"stage3": outs[0], "side_stage3": outs[1]}, task_query, prompt_loss
+@META_ARCH_REGISTRY.register()
+class KernelPromptedMViTSimFPNLiteRCNNPS(PromptedMViTSimFPNLiteRCNNPS):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(MViTSimFPNRCNNPS, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        # NOTE downsample module of stage3 is trainable
+        trans = SideKernelPromptedMViT(
+            side_start_stage=3,
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP, 
+        )
+        # NOTE global attention in last stage 
+        for blk in trans.blocks[trans._last_block_indexes[-2]+1:]:
+            if blk.attn.window_size:
+                blk.attn.window_size=0
+        trans_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+            for i in range(4)
+        }
+        trans_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+                for i in range(4)
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            trans_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        stage_prompts = nn.ModuleList()
+        for si in range(len(tr_cfg.LAST_BLOCK_INDEXS)):
+            if si==0:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[0]+1
+            else:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[si]-tr_cfg.LAST_BLOCK_INDEXS[si-1]
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
+            #NOTE attention modules do not change the dim 
+            input_dim=trans._out_feature_channels[f"scale{si+2}"] # if si==0 else trans._out_feature_channels[si]//2
+            prompt_embed_dim=input_dim
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            stage_prompts.append(prompt_stage)
+        side_stage_prompts = nn.ModuleList()
+        if isinstance(num_prompts, int):
+            stage_num_prompts = num_prompts
+        else:
+            stage_num_prompts = num_prompts[-1]
+        if stage_num_prompts == 0:
+            stage_prompts.append(nn.Identity())
+        else:
+            input_dim=trans._out_feature_channels["scale5"]
+            prompt_embed_dim=input_dim
+            nl=tr_cfg.LAST_BLOCK_INDEXS[-1]-tr_cfg.LAST_BLOCK_INDEXS[-2]
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            side_stage_prompts.append(prompt_stage)
+
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "trans": trans,
+                "sim_fpn": sim_fpn,
+                "stage_prompts": stage_prompts,
+                "side_stage_prompts": side_stage_prompts,
+            }
+        )
+        trans_org = MViT(
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+        )
+        ret["trans_org"] = trans_org
+        ret["trans_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        ret["reid_in_feature"] = cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+        ret["bn_neck"] = bn_neck
+        ret["oim_loss"] = (
+            OIMLoss(cfg)
+            if hasattr(cfg.PERSON_SEARCH.REID.LOSS, "OIM")
+            else IncOIMLoss(cfg)
+        )
+        ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / trans_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"] = reid_box_pooler
+        return ret
+
+    def trans_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]].permute(0,2,3,1).contiguous()
+        task_query = self.task_query(x)
+        task_query_x = task_query.unsqueeze(1)
+        if self.trans.pos_embed is not None:
+            x = x + get_abs_pos(self.trans.pos_embed, self.trans.pretrain_use_cls_token, x.shape[1:3])
+        # all stage prompts
+        si_prompts=[]
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        for si in range(3):
+            num_stage_blocks=(self.trans._last_block_indexes[0]+1) if si==0 else self.trans._last_block_indexes[si]-self.trans._last_block_indexes[si-1]
+            task_query_stage = task_query_x.expand(-1, num_stage_blocks, -1)
+            stage_prompts,pi_loss=self.stage_prompts[si](
+                    task_query_stage, si, train=self.training
+                ) # layers * b * L * c
+            prompt_loss+=pi_loss
+            si_prompts.append(stage_prompts)
+        
+        si=0
+        outs=[]
+        for i, blk in enumerate(self.trans.blocks):
+            li=i if si==0 else i-(self.trans._last_block_indexes[si-1]+1)
+            stage_prompts=si_prompts[si]
+            x =ckpt.checkpoint( blk,x,stage_prompts[li])
+            if i==self.trans._last_block_indexes[-2]:
+                outs.append(x.permute(0, 3, 1, 2).contiguous())
+                outs.append(self.trans.side_norm2(x).permute(0, 3, 1, 2).contiguous())
+                break
+
+            for lsi,bi in enumerate(self.trans._last_block_indexes):
+                if i==bi:
+                    si=lsi+1
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss}
+        return {"stage3": outs[0], "side_stage3": outs[1]}, task_query, prompt_loss
+import torch.utils.checkpoint as ckpt
+@META_ARCH_REGISTRY.register()
+class PromptedMViTSimFPNLiteRCNNPSLS(PromptedMViTSimFPNLiteRCNNPS):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(MViTSimFPNRCNNPS, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        trans = SidePromptedMViTLS(
+            side_start_stage=3,
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP, 
+        )
+        # NOTE global attention in last stage 
+        for blk in trans.blocks[trans._last_block_indexes[-2]+1:]:
+            if blk.attn.window_size:
+                blk.attn.window_size=0
+        trans_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+            for i in range(4)
+        }
+        trans_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+                for i in range(4)
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            trans_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        stage_prompts = nn.ModuleList()
+        for si in range(len(tr_cfg.LAST_BLOCK_INDEXS)):
+            if si==0:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[0]+1
+            else:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[si]-tr_cfg.LAST_BLOCK_INDEXS[si-1]
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
+            #NOTE attention modules do not change the dim 
+            input_dim=trans._out_feature_channels[f"scale{si+2}"] # if si==0 else trans._out_feature_channels[si]//2
+            prompt_embed_dim=input_dim*2*tr_cfg.NHEAD # seperate kp, vp
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            stage_prompts.append(prompt_stage)
+        side_stage_prompts = nn.ModuleList()
+        if isinstance(num_prompts, int):
+            stage_num_prompts = num_prompts
+        else:
+            stage_num_prompts = num_prompts[-1]
+        if stage_num_prompts == 0:
+            stage_prompts.append(nn.Identity())
+        else:
+            input_dim=trans._out_feature_channels["scale5"]
+            prompt_embed_dim=input_dim*2*tr_cfg.NHEAD # seperate kp, vp
+            nl=tr_cfg.LAST_BLOCK_INDEXS[-1]-tr_cfg.LAST_BLOCK_INDEXS[-2]
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            side_stage_prompts.append(prompt_stage)
+
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "trans": trans,
+                "sim_fpn": sim_fpn,
+                "stage_prompts": stage_prompts,
+                "side_stage_prompts": side_stage_prompts,
+            }
+        )
+        trans_org = MViT(
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+        )
+        ret["trans_org"] = trans_org
+        ret["trans_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        ret["reid_in_feature"] = cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+        ret["bn_neck"] = bn_neck
+        ret["oim_loss"] = (
+            OIMLoss(cfg)
+            if hasattr(cfg.PERSON_SEARCH.REID.LOSS, "OIM")
+            else IncOIMLoss(cfg)
+        )
+        ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / trans_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"] = reid_box_pooler
+        return ret
+    def trans_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]].permute(0,2,3,1).contiguous()
+        task_query = self.task_query(x)
+        task_query_x = task_query.unsqueeze(1)
+        if self.trans.pos_embed is not None:
+            x = x + get_abs_pos(self.trans.pos_embed, self.trans.pretrain_use_cls_token, x.shape[1:3])
+        # all stage prompts
+        si_prompts=[]
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        for si in range(3):
+            num_stage_blocks=(self.trans._last_block_indexes[0]+1) if si==0 else self.trans._last_block_indexes[si]-self.trans._last_block_indexes[si-1]
+            task_query_stage = task_query_x.expand(-1, num_stage_blocks, -1)
+            stage_prompts,pi_loss=self.stage_prompts[si](
+                    task_query_stage, si, train=self.training
+                ) # layers * b * L * c
+            prompt_loss+=pi_loss
+            si_prompts.append(stage_prompts)
+        
+        si=0
+        outs=[]
+        for i, blk in enumerate(self.trans.blocks):
+            li=i if si==0 else i-(self.trans._last_block_indexes[si-1]+1)
+            stage_prompts=si_prompts[si]
+            x =ckpt.checkpoint( blk,x,stage_prompts[li])
+            if i==self.trans._last_block_indexes[-2]:
+                outs.append(x.permute(0, 3, 1, 2).contiguous())
+                outs.append(self.trans.side_norm2(x).permute(0, 3, 1, 2).contiguous())
+                break
+
+            for lsi,bi in enumerate(self.trans._last_block_indexes):
+                if i==bi:
+                    si=lsi+1
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss}
+        return {"stage3": outs[0], "side_stage3": outs[1]}, task_query, prompt_loss
+@META_ARCH_REGISTRY.register()
+class PromptedMViTSimFPNLiteRCNNPSDC(PromptedMViTSimFPNLiteRCNNPSLS):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(MViTSimFPNRCNNPS, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        trans = SidePromptedMViTDC(
+            side_start_stage=3,
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP, 
+        )
+        # NOTE global attention in last stage 
+        for blk in trans.blocks[trans._last_block_indexes[-2]+1:]:
+            if blk.attn.window_size:
+                blk.attn.window_size=0
+        trans_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+            for i in range(4)
+        }
+        trans_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                channels=patch_embed.embed_dim*2**i, stride=4*2**(i if i<3 else i-1)
+            )
+                for i in range(4)
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            trans_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        stage_prompts = nn.ModuleList()
+        for si in range(len(tr_cfg.LAST_BLOCK_INDEXS)):
+            if si==0:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[0]+1
+            else:
+                nl=tr_cfg.LAST_BLOCK_INDEXS[si]-tr_cfg.LAST_BLOCK_INDEXS[si-1]
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            if stage_num_prompts == 0:
+                stage_prompts.append(nn.Identity())
+                continue
+            #NOTE attention modules do not change the dim 
+            input_dim=trans._out_feature_channels[f"scale{si+2}"] # if si==0 else trans._out_feature_channels[si]//2
+            prompt_embed_dim=input_dim*2*tr_cfg.NHEAD # seperate kp, vp
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            stage_prompts.append(prompt_stage)
+        side_stage_prompts = nn.ModuleList()
+        if isinstance(num_prompts, int):
+            stage_num_prompts = num_prompts
+        else:
+            stage_num_prompts = num_prompts[-1]
+        if stage_num_prompts == 0:
+            stage_prompts.append(nn.Identity())
+        else:
+            input_dim=trans._out_feature_channels["scale5"]
+            prompt_embed_dim=input_dim*2*tr_cfg.NHEAD # seperate kp, vp
+            nl=tr_cfg.LAST_BLOCK_INDEXS[-1]-tr_cfg.LAST_BLOCK_INDEXS[-2]
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = prompts.L2Ppp(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = prompts.L2PppMask(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = prompts.L2PppMaskAttn(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = prompts.L2PppMaskBs(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = prompts.L2PppMask2(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = prompts.L2PppMaskM(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = prompts.L2PppMaskMC(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = prompts.FixedPrompts(
+                    emb_d=prompt_embed_dim,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = prompts.CodaPromptWd(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            else:  # CODAPrompt
+                prompt_stage = prompts.CodaPrompt(
+                    emb_d=prompt_embed_dim,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=nl,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=trans._out_feature_channels["scale5"],
+                    vis_period=cfg.VIS_PERIOD,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRECT_TASK)
+            side_stage_prompts.append(prompt_stage)
+
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "trans": trans,
+                "sim_fpn": sim_fpn,
+                "stage_prompts": stage_prompts,
+                "side_stage_prompts": side_stage_prompts,
+            }
+        )
+        trans_org = MViT(
+            img_size=patch_embed.pretrain_img_size[0],
+            patch_stride=(patch_embed.stride,patch_embed.stride)
+            if isinstance(patch_embed.stride, int)
+            else patch_embed.stride,
+            embed_dim=patch_embed.embed_dim,
+            depth=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            last_block_indexes=tr_cfg.LAST_BLOCK_INDEXS,
+            qkv_pool_kernel=tr_cfg.QKV_POOL_KERNEL,
+            adaptive_kv_stride=tr_cfg.ADAPTIVE_KV_STRIDE,
+            adaptive_window_size=tr_cfg.ADAPTIVE_WINDOW_SIZE,
+            residual_pooling=tr_cfg.RESIDUAL_POOLING,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+        )
+        ret["trans_org"] = trans_org
+        ret["trans_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        ret["reid_in_feature"] = cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT
+        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
+        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
+        if with_bn_neck:
+            bn_neck = nn.BatchNorm1d(feat_dim)
+            init.normal_(bn_neck.weight, std=0.01)
+            init.constant_(bn_neck.bias, 0)
+        else:
+            bn_neck = nn.Identity()
+        ret["bn_neck"] = bn_neck
+        ret["oim_loss"] = (
+            OIMLoss(cfg)
+            if hasattr(cfg.PERSON_SEARCH.REID.LOSS, "OIM")
+            else IncOIMLoss(cfg)
+        )
+        ret["pool_layer"] = nn.AdaptiveAvgPool2d((1, 1))
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        if isinstance(pooler_resolution, int):
+            pooler_resolution = (pooler_resolution, pooler_resolution)
+        assert len(pooler_resolution) == 2
+        assert isinstance(pooler_resolution[0], int) and isinstance(
+            pooler_resolution[1], int
+        )
+        pooler_scales = tuple(
+            1.0 / trans_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
+        sampling_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        reid_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        ret["reid_box_pooler"] = reid_box_pooler
+        return ret
 from psd2.modeling.box_augmentation import build_box_augmentor
 import copy
 
