@@ -4,13 +4,13 @@ from psd2.utils.events import get_event_storage
 from psd2.utils.visualizer import mat_heatmap
 import psd2.utils.comm as comm
 
-
+#TODO weight decay compatibility
 class CodaPrompt(nn.Module):
     def __init__(
         self,
         emb_d,
         n_tasks,
-        pool_size,
+        pool_size, 
         num_prompts,
         num_layers,
         loss_weight,
