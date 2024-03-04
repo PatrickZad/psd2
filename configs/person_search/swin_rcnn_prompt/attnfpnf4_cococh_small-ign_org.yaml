@@ -1,0 +1,69 @@
+_BASE_: "base.yaml"
+MODEL:
+  META_ARCHITECTURE: "OrgSwinF4AttnFPN"
+  WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  ANCHOR_GENERATOR:
+    NAME: "DefaultAnchorGenerator"
+    SIZES: [[32], [64], [128], [256]] # , [512] One size for each in feature map
+    ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
+  RPN:
+    HEAD_NAME: "StandardRPNHead"
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    PRE_NMS_TOPK_TRAIN: 2000 # Per FPN level
+    PRE_NMS_TOPK_TEST: 1000 # Per FPN level
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 300
+    CONV_DIMS: [-1,-1]
+  ROI_HEADS:
+    NAME: "StandardROIHeads" 
+    NUM_CLASSES: 1
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    IOU_THRESHOLDS: [0.3,0.7]
+    IOU_LABELS: [0, -1, 1]
+    BATCH_SIZE_PER_IMAGE: 128
+    POSITIVE_FRACTION: 0.5
+    SCORE_THRESH_TEST: 0.5
+    NMS_THRESH_TEST: 0.4
+    PROPOSAL_APPEND_GT: True
+  ROI_BOX_HEAD:
+    NAME: "FastRCNNConvFCHead"
+    NUM_FC: 1
+    FC_DIM: 1024
+    NUM_CONV: 4
+    CONV_DIM: 256
+    NORM: LN
+    BBOX_REG_LOSS_TYPE: "smooth_l1"
+    BBOX_REG_LOSS_WEIGHT: 10.0
+    BBOX_REG_WEIGHTS: [10.0, 10.0, 5.0, 5.0]
+    SMOOTH_L1_BETA: 1.0
+    POOLER_RESOLUTION: [14, 14]
+    POOLER_SAMPLING_RATIO: 2
+    POOLER_TYPE: "ROIAlignV2"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        WITH_CP: False
+        DROP_PATH: 0.0
+      ATTN_FPN:
+        IN_FEATURES: ["stage1","stage2","stage3"]
+        OUT_CHANNELS: 256
+
+SOLVER:
+  OPTIM: "AdamW"
+  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  WARMUP_ITERS: 1000
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.05
+  STEPS: (98900,197800)
+  MAX_ITER: 247250 # 4945 * 50
+  CHECKPOINT_PERIOD: 9890
+  GAMMA: 0.1
+  IMS_PER_BATCH: 16
+DATASETS:
+  TRAIN: ("COCO-CH",) 
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery") # ,"MovieNet_GalleryTestG2000") #
+TEST:
+  EVAL_PERIOD: 9890
+  DETECTION_SCORE_TS: [0.5,]
+OUTPUT_DIR: "outputs/swin_rcnn/pd-pre-attnfpnf4_cococh_small-ign_org"

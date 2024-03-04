@@ -1682,6 +1682,7 @@ class PromptedSwinBlock(SwinBlock):
         )
 
 
+
 class PromptedShiftWindowMSA(ShiftWindowMSA):
     def __init__(
         self,

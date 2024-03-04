@@ -635,8 +635,47 @@ class ClipQueryGroundingDeform(ClipQueryGroundingBaseline):
         else:
             raise NotImplementedError
 
+@META_ARCH_REGISTRY.register()
+class ClipQueryGrounding8Deform(ClipQueryGroundingDeform):
+    @classmethod
+    def _build_grounding_transformer(cls,embed_dim):
+        trans=RefineFullyDeformableCrossAttentionTransformer(width=embed_dim,
+                                                    layers=8,
+                                                    heads=embed_dim //
+                                                    64)
+        for p in trans.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        for m in trans.modules():
+            if isinstance(m, MSDeformAttn):
+                m._reset_parameters()
+        return trans
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(ClipQueryGroundingDeform,cls).from_config(cfg)
+        conf_embed=ret["conf_embed"]
+        bbox_embed=ret["bbox_embed"]
+        conf_embed=nn.ModuleList([copy.deepcopy(conf_embed) for _ in range(8)])
+        bbox_embed=nn.ModuleList([copy.deepcopy(bbox_embed) for _ in range(8)])
+        ret["conf_embed"]=conf_embed
+        ret["bbox_embed"]=bbox_embed
+        embed_dim=ret["clip_model"].text_projection.shape[1]
+        ref_pts=nn.Linear(embed_dim, 2)
+        xavier_uniform_(ref_pts.weight.data, gain=1.0)
+        constant_(ref_pts.bias.data, 0.)
+        ret["ref_points"]=ref_pts
+        return ret
 
-
+class MultiPosClipQueryGroundingDeform(ClipQueryGroundingDeform):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        self.query_embed = nn.Embedding(100, self.clip_model.text_projection.shape[1])
+        # TODO
 
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
@@ -746,7 +785,7 @@ class RefineFullyDeformableCrossAttentionTransformer(nn.Module):
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyDeformableCrossAttentionBlock(width, heads,1,4,) for _ in range(layers)])
-        self.box_embed=None # assign by parent module
+        self.bbox_embed=None # assign by parent module
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, src_padding_mask=None,with_ckpt=False):
         output = tgt

@@ -15,7 +15,7 @@ from .. import META_ARCH_REGISTRY
 from psd2.modeling.extend.solider import SideSwinTransformer, PatchMerging
 from psd2.modeling.id_assign import build_id_assigner
 import copy
-from psd2.modeling.roi_heads import build_roi_heads
+from psd2.modeling.extend.swin import SideSwinTransformer as OrgSideSwinTransformer
 
 
 @META_ARCH_REGISTRY.register()
@@ -57,7 +57,7 @@ class SwinF4RCNN(SearchBase):
             ):
                 p.requires_grad = False
 
-    def train(self, mode=True):
+    def train_bk(self, mode=True):
         # set train status for this class: disable all but the prompt-related modules
         self.training = mode
         if mode:
@@ -414,7 +414,7 @@ class SwinF4RCNNSeq(SwinF4RCNN):
             self.roi_heads.swin.load_side(state_dict)
         return out
 
-    def train(self, mode=True):
+    def train_bk(self, mode=True):
         self.training = mode
         if mode:
             # training:
@@ -563,7 +563,7 @@ class SwinSimFPNRCNN(SwinF4RCNN):
         for p in self.sim_fpn.parameters():  # norm2 is not supervised in solider
             p.requires_grad = True
 
-    def train(self, mode=True):
+    def train_bk(self, mode=True):
         # set train status for this class: disable all but the prompt-related modules
         super().train(mode)
         if mode:
@@ -720,6 +720,324 @@ class SwinSimFPNRCNN(SwinF4RCNN):
                 outs.append(out)
         return {"stage4": outs[-1]}
 
+@META_ARCH_REGISTRY.register()
+class OrgSwinSimFPNRCNN(SwinF4RCNN):
+    @configurable
+    def __init__(
+        self,
+        sim_fpn,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,
+            **kws,
+        )
+        self.sim_fpn = sim_fpn
+        for p in self.sim_fpn.parameters():  # norm2 is not supervised in solider
+            p.requires_grad = True
+
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(SwinF4RCNN, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        # NOTE downsample module of stage3 is trainable
+        swin = OrgSideSwinTransformer(
+            side_start_stage=3,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP
+        )
+
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.SIM_FPN
+        sim_fpn = SimpleFeaturePyramid(
+            swin_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            sim_fpn_cfg.SCALE_FACTORS,
+            top_block=LastLevelMaxPool(),
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "swin": swin,
+                "sim_fpn": sim_fpn,
+            }
+        )
+        return ret
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        features = self.sim_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list, features, proposals, gt_instances
+        )
+
+        if self.training:
+            losses.update(proposal_losses)
+            """
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            """
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = torch.zeros_like(
+                    instances_i.pred_scores, dtype=torch.int64
+                )  # assign_ids[i]
+                instances_i.reid_feats = instances_i.pred_boxes.tensor  # trivial impl
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, gt_i in zip(pred_instances, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
+    def swin_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        bonenum = 4
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if i == bonenum - 1:
+                norm_layer = getattr(self.swin, f"side_norm{i}")
+                out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(out)
+        return {"stage4": outs[-1]}
+
+@META_ARCH_REGISTRY.register()
+class OrgSwinF4AttnFPN(SwinF4RCNN):
+    @configurable
+    def __init__(
+        self,
+        attn_fpn,
+        *args,
+        **kws,
+    ):
+        super().__init__(
+            *args,**kws
+        )
+        self.attn_fpn = attn_fpn
+        for p in self.attn_fpn.parameters():  # norm2 is not supervised in solider
+            p.requires_grad = True
+        for i in range(3):
+            if hasattr(self.swin, f"norm{i}"):
+                norm_layer = getattr(self.swin, f"norm{i}")
+                for p in norm_layer.parameters():
+                    p.requires_grad=True
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(SwinF4RCNN, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        # NOTE downsample module of stage3 is trainable
+        swin = OrgSideSwinTransformer(
+            side_start_stage=3,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP
+        )
+
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
+        attn_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.ATTN_FPN
+        p5_m=LastLevelMaxPool()
+        p5_m.in_feature="p4"
+        attn_fpn = AttnFeaturePyramid(
+            swin_out_shape,
+            attn_fpn_cfg.IN_FEATURES,
+            attn_fpn_cfg.OUT_CHANNELS,
+            top_block=p5_m,
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, attn_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, attn_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "swin": swin,
+                "attn_fpn": attn_fpn,
+            }
+        )
+        return ret
+
+    def forward_gallery(self, image_list, gt_instances):
+        features = self.swin_backbone(image_list.tensor)
+        features = self.attn_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list, features, proposals, gt_instances
+        )
+
+        if self.training:
+            losses.update(proposal_losses)
+            """
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            """
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = torch.zeros_like(
+                    instances_i.pred_scores, dtype=torch.int64
+                )  # assign_ids[i]
+                instances_i.reid_feats = instances_i.pred_boxes.tensor  # trivial impl
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i, gt_i in zip(pred_instances, gt_instances):
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                # back to org scale
+                org_h, org_w = gt_i.org_img_size
+                h, w = gt_i.image_size
+                pred_i.pred_boxes.scale(org_w / w, org_h / h)
+            return pred_instances
+
+    def swin_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = {}
+        bonenum = 3
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if hasattr(self.swin, f"norm{i}"):
+                norm_layer = getattr(self.swin, f"norm{i}")
+                out = norm_layer(out)
+            out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+            outs["stage{}".format(i+1)]=out
+        return outs
+
 
 @META_ARCH_REGISTRY.register()
 class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
@@ -756,6 +1074,36 @@ class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
                 )
                 outs.append(out)
         return {"stage3": outs[-1]}
+
+
+@META_ARCH_REGISTRY.register()
+class OrgSwinSimFPNRCNNLite(OrgSwinSimFPNRCNN):
+    def swin_backbone(self, x):
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = []
+        bonenum = 3
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if i == bonenum - 1:
+                if hasattr(self.swin, f"side_norm{i}"):
+                    norm_layer = getattr(self.swin, f"side_norm{i}")
+                    out = norm_layer(out)
+                out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs.append(out)
+        return {"stage3": outs[-1]}
+
 
 
 from psd2.modeling.meta_arch import RetinaNet
@@ -831,7 +1179,7 @@ class SwinSimFPNRetina(SearchBase, RetinaNet):
             ):
                 p.requires_grad = False
 
-    def train(self, mode=True):
+    def train_bk(self, mode=True):
         # set train status for this class: disable all but the prompt-related modules
         self.training = mode
         if mode:
@@ -1294,7 +1642,7 @@ class AlteredStandaredROIHeads(StandardROIHeads):
                         proposals_per_image.proposal_boxes = Boxes(pred_boxes_per_image)
             return losses
         else:
-            pred_instances = self.box_predictor.inference_unms(predictions, proposals)
+            pred_instances = self.box_predictor.inference(predictions, proposals)
             return pred_instances
 
 
@@ -2530,6 +2878,51 @@ class FastRCNNOutputLayersPs(FastRCNNOutputLayers):
             result.pred_classes = filter_inds[:, 1]
             results.append(result)
         return results
+    def inference(self, predictions, proposals):
+        all_boxes = self.predict_boxes(predictions, proposals)
+        all_scores = self.predict_probs(predictions, proposals)
+        image_shapes = [x.image_size for x in proposals]
+        results = []
+        # borrowed from fast_rcnn_inference
+        for scores, boxes, image_shape in zip(all_scores, all_boxes, image_shapes):
+            valid_mask = torch.isfinite(boxes).all(dim=1) & torch.isfinite(scores).all(
+                dim=1
+            )
+            if not valid_mask.all():
+                boxes = boxes[valid_mask]
+                scores = scores[valid_mask]
+
+            scores = scores[:, :-1]
+            num_bbox_reg_classes = boxes.shape[1] // 4
+            # Convert to Boxes to use the `clip` function ...
+            boxes = Boxes(boxes.reshape(-1, 4))
+            boxes.clip(image_shape)
+            boxes = boxes.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
+
+            # 1. Filter results based on detection scores. It can make NMS more efficient
+            #    by filtering out low-confidence detections.
+            filter_mask =scores > self.test_score_thresh
+            # R' x 2. First column contains indices of the R predictions;
+            # Second column contains indices of classes.
+            filter_inds = filter_mask.nonzero()
+            if num_bbox_reg_classes == 1:
+                boxes = boxes[filter_inds[:, 0], 0]
+            else:
+                boxes = boxes[filter_mask]
+            scores = scores[filter_mask]
+
+            # 2. Apply NMS for each class independently.
+            keep = batched_nms(boxes, scores, filter_inds[:, 1], self.test_nms_thresh)
+            if self.test_topk_per_image >= 0:
+                keep = keep[:self.test_topk_per_image]
+            boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
+
+            result = Instances(image_shape)
+            result.pred_boxes = Boxes(boxes)
+            result.pred_scores = scores
+            result.pred_classes = filter_inds[:, 1]
+            results.append(result)
+        return results
 
 
 # with first classification score in SeqNet
@@ -2788,3 +3181,618 @@ def _assert_strides_are_log2_contiguous(strides):
         assert (
             stride == 2 * strides[i - 1]
         ), "Strides {} {} are not log2 contiguous".format(stride, strides[i - 1])
+
+#NOTE borrowed from MViT
+from psd2.modeling.extend.utils import window_partition,window_unpartition,add_decomposed_rel_pos
+class Attention(nn.Module):
+    """Multiscale Multi-head Attention block."""
+
+    def __init__(
+        self,
+        dim,
+        dim_out,
+        num_heads,
+        qkv_bias=True,
+        window_size=0,
+        use_rel_pos=False,
+        rel_pos_zero_init=True,
+        input_size=None,
+    ):
+        """
+        Args:
+            dim (int): Number of input channels.
+            dim_out (int): Number of output channels.
+            num_heads (int): Number of attention heads.
+            qkv_bias (bool:  If True, add a learnable bias to query, key, value.
+            norm_layer (nn.Module): Normalization layer.
+            pool_kernel (tuple): kernel size for qkv pooling layers.
+            stride_q (int): stride size for q pooling layer.
+            stride_kv (int): stride size for kv pooling layer.
+            residual_pooling (bool): If true, enable residual pooling.
+            use_rel_pos (bool): If True, add relative postional embeddings to the attention map.
+            rel_pos_zero_init (bool): If True, zero initialize relative positional parameters.
+            input_size (int or None): Input resolution.
+        """
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim_out // num_heads
+        self.scale = head_dim**-0.5
+
+        self.qkv = nn.Linear(dim, dim_out * 3, bias=qkv_bias)
+        self.proj = nn.Linear(dim_out, dim_out)
+
+        self.window_size = window_size
+        if window_size:
+            self.q_win_size = window_size
+            self.kv_win_size = window_size
+        self.residual_pooling = False
+
+        self.use_rel_pos = use_rel_pos
+        if self.use_rel_pos:
+            # initialize relative positional embeddings
+            assert input_size[0] == input_size[1]
+            size = input_size[0]
+            rel_dim = 2 * size - 1
+            self.rel_pos_h = nn.Parameter(torch.zeros(rel_dim, head_dim))
+            self.rel_pos_w = nn.Parameter(torch.zeros(rel_dim, head_dim))
+
+            if not rel_pos_zero_init:
+                nn.init.trunc_normal_(self.rel_pos_h, std=0.02)
+                nn.init.trunc_normal_(self.rel_pos_w, std=0.02)
+
+    def forward(self, x):
+        B, H, W, _ = x.shape
+        # qkv with shape (3, B, nHead, H, W, C)
+        qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, -1).permute(3, 0, 4, 1, 2, 5).contiguous()
+        # q, k, v with shape (B * nHead, H, W, C)
+        q, k, v = qkv.reshape(3, B * self.num_heads, H, W, -1).unbind(0)
+
+        ori_q = q
+        if self.window_size:
+            q, q_hw_pad = window_partition(q, self.q_win_size)
+            k, kv_hw_pad = window_partition(k, self.kv_win_size)
+            v, _ = window_partition(v, self.kv_win_size)
+            q_hw = (self.q_win_size, self.q_win_size)
+            kv_hw = (self.kv_win_size, self.kv_win_size)
+        else:
+            q_hw = q.shape[1:3]
+            kv_hw = k.shape[1:3]
+
+        q = q.view(q.shape[0], np.prod(q_hw), -1)
+        k = k.view(k.shape[0], np.prod(kv_hw), -1)
+        v = v.view(v.shape[0], np.prod(kv_hw), -1)
+
+        attn = (q * self.scale) @ k.transpose(-2, -1)
+
+        if self.use_rel_pos:
+            attn = add_decomposed_rel_pos(attn, q, self.rel_pos_h, self.rel_pos_w, q_hw, kv_hw)
+
+        attn = attn.softmax(dim=-1)
+        x = attn @ v
+
+        x = x.view(x.shape[0], q_hw[0], q_hw[1], -1)
+
+        if self.window_size:
+            x = window_unpartition(x, self.q_win_size, q_hw_pad, ori_q.shape[1:3])
+
+        if self.residual_pooling:
+            x += ori_q
+
+        H, W = x.shape[1], x.shape[2]
+        x = x.view(B, self.num_heads, H, W, -1).permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
+        x = self.proj(x)
+        return x
+
+class PromptedAttention(Attention):
+    def forward(self, x,prompts):
+        B, H, W, _ = x.shape
+        # qkv with shape (3, B, nHead, H, W, C)
+        qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, -1).permute(3, 0, 4, 1, 2, 5).contiguous()
+        # q, k, v with shape (B * nHead, H, W, C)
+        q, k, v = qkv.reshape(3, B * self.num_heads, H, W, -1).unbind(0)
+
+        L,_=prompts.shape[1:]
+        # qkv with shape (3, B, nHead, H, W, C)
+        pqkv = self.qkv(prompts).reshape(B, L, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        # q, k, v with shape (B * nHead, H, W, C)
+        _, kp, vp = pqkv.reshape(3, B * self.num_heads, L, -1).unbind(0)
+
+        ori_q = q
+        if self.window_size:
+            q, q_hw_pad = window_partition(q, self.q_win_size)
+            k, kv_hw_pad = window_partition(k, self.kv_win_size)
+            v, _ = window_partition(v, self.kv_win_size)
+            q_hw = (self.q_win_size, self.q_win_size)
+            kv_hw = (self.kv_win_size, self.kv_win_size)
+            # repeat prompts
+            kp=kp.view(B * self.num_heads,1,1,L,-1).repeat(1,kv_hw_pad[0]//self.kv_win_size,kv_hw_pad[1]//self.kv_win_size, 1 , 1).contiguous().flatten(0,2)# (Bh * H * W // w // w) * L * c
+            vp=vp.view(B * self.num_heads,1,1,L,-1).repeat(1,kv_hw_pad[0]//self.kv_win_size,kv_hw_pad[1]//self.kv_win_size, 1 , 1).contiguous().flatten(0,2)
+        else:
+            q_hw = q.shape[1:3]
+            kv_hw = k.shape[1:3]
+
+        q = q.view(q.shape[0], np.prod(q_hw), -1)
+        k = k.view(k.shape[0], np.prod(kv_hw), -1)
+        v = v.view(v.shape[0], np.prod(kv_hw), -1)
+
+        attn = (q * self.scale) @ k.transpose(-2, -1)
+
+        if self.use_rel_pos:
+            attn = add_decomposed_rel_pos(attn, q, self.rel_pos_h, self.rel_pos_w, q_hw, kv_hw)
+        
+        attn_img2prompt=(q * self.scale)@kp.transpose(-2, -1)
+        attn=torch.cat([attn_img2prompt,attn],dim=-1)
+
+        attn = attn.softmax(dim=-1)
+        x = attn @ torch.cat([vp,v],dim=1)
+
+        x = x.view(x.shape[0], q_hw[0], q_hw[1], -1)
+
+        if self.window_size:
+            x = window_unpartition(x, self.q_win_size, q_hw_pad, ori_q.shape[1:3])
+
+        if self.residual_pooling:
+            x += ori_q
+
+        H, W = x.shape[1], x.shape[2]
+        x = x.view(B, self.num_heads, H, W, -1).permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
+        x = self.proj(x)
+        return x
+
+class Block(nn.Module):
+    """Transformer blocks"""
+
+    def __init__(
+        self,
+        dim,
+        dim_out,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        drop_path=0.0,
+        norm_layer=nn.LayerNorm,
+        act_layer=nn.GELU,
+        window_size=0,
+        use_rel_pos=False,
+        rel_pos_zero_init=True,
+        input_size=None,
+    ):
+        """
+        Args:
+            dim (int): Number of input channels.
+            dim_out (int): Number of output channels.
+            num_heads (int): Number of attention heads in the MViT block.
+            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+            qkv_bias (bool): If True, add a learnable bias to query, key, value.
+            drop_path (float): Stochastic depth rate.
+            norm_layer (nn.Module): Normalization layer.
+            act_layer (nn.Module): Activation layer.
+            qkv_pool_kernel (tuple): kernel size for qkv pooling layers.
+            stride_q (int): stride size for q pooling layer.
+            stride_kv (int): stride size for kv pooling layer.
+            residual_pooling (bool): If true, enable residual pooling.
+            window_size (int): Window size for window attention blocks. If it equals 0, then not
+                use window attention.
+            use_rel_pos (bool): If True, add relative postional embeddings to the attention map.
+            rel_pos_zero_init (bool): If True, zero initialize relative positional parameters.
+            input_size (int or None): Input resolution.
+        """
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn =Attention(
+            dim,
+            dim_out,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            window_size=window_size,
+            use_rel_pos=use_rel_pos,
+            rel_pos_zero_init=rel_pos_zero_init,
+            input_size=input_size,
+        )
+
+        from timm.models.layers import DropPath, Mlp
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim_out)
+        self.mlp = Mlp(
+            in_features=dim_out,
+            hidden_features=int(dim_out * mlp_ratio),
+            out_features=dim_out,
+            act_layer=act_layer,
+        )
+
+        if dim != dim_out:
+            self.proj = nn.Linear(dim, dim_out)
+
+
+    def forward(self, x):
+        x=x.permute(0,2,3,1).contiguous() # bchw -> bhwc
+        x_norm = self.norm1(x)
+        x_block = self.attn(x_norm)
+
+        if hasattr(self, "proj"):
+            x = self.proj(x_norm)
+
+        x = x + self.drop_path(x_block)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x=x.permute(0,3,1,2).contiguous() # bhwc -> bchw
+        return x
+from torch.utils.checkpoint import checkpoint as ckpt
+class PromptedBlock(nn.Module):
+    """Transformer blocks"""
+
+    def __init__(
+        self,
+        dim,
+        dim_out,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        drop_path=0.0,
+        norm_layer=nn.LayerNorm,
+        act_layer=nn.GELU,
+        window_size=0,
+        use_rel_pos=False,
+        rel_pos_zero_init=True,
+        input_size=None,
+        with_cp=False
+    ):
+        """
+        Args:
+            dim (int): Number of input channels.
+            dim_out (int): Number of output channels.
+            num_heads (int): Number of attention heads in the MViT block.
+            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+            qkv_bias (bool): If True, add a learnable bias to query, key, value.
+            drop_path (float): Stochastic depth rate.
+            norm_layer (nn.Module): Normalization layer.
+            act_layer (nn.Module): Activation layer.
+            qkv_pool_kernel (tuple): kernel size for qkv pooling layers.
+            stride_q (int): stride size for q pooling layer.
+            stride_kv (int): stride size for kv pooling layer.
+            residual_pooling (bool): If true, enable residual pooling.
+            window_size (int): Window size for window attention blocks. If it equals 0, then not
+                use window attention.
+            use_rel_pos (bool): If True, add relative postional embeddings to the attention map.
+            rel_pos_zero_init (bool): If True, zero initialize relative positional parameters.
+            input_size (int or None): Input resolution.
+        """
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn =PromptedAttention(
+            dim,
+            dim_out,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            window_size=window_size,
+            use_rel_pos=use_rel_pos,
+            rel_pos_zero_init=rel_pos_zero_init,
+            input_size=input_size,
+        )
+
+        from timm.models.layers import DropPath, Mlp
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim_out)
+        self.mlp = Mlp(
+            in_features=dim_out,
+            hidden_features=int(dim_out * mlp_ratio),
+            out_features=dim_out,
+            act_layer=act_layer,
+        )
+
+        if dim != dim_out:
+            self.proj = nn.Linear(dim, dim_out)
+        self.with_cp=with_cp
+
+
+    def forward(self, x,prompts):
+        x=x.permute(0,2,3,1).contiguous() # bchw -> bhwc
+        def inner_forward(x):
+            x_norm = self.norm1(x)
+            prompts_norm=self.norm1(prompts)
+            x_block = self.attn(x_norm,prompts_norm)
+
+            if hasattr(self, "proj"):
+                x = self.proj(x_norm)
+
+            x = x + self.drop_path(x_block)
+            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            return x
+        if self.with_cp:
+            x=ckpt(inner_forward,x)
+        else:
+            x=inner_forward(x)
+        x=x.permute(0,3,1,2).contiguous() # bhwc -> bchw
+        return x
+
+import fvcore.nn.weight_init as weight_init
+import torch.nn.functional as F
+class AttnFeaturePyramid(Backbone):
+    """
+    This module modifies SimpleFeaturePyramid in :paper:`vitdet`.
+    It creates pyramid features built on top of the input feature map.
+    """
+
+    def __init__(
+        self,
+        input_shapes,
+        in_features,
+        out_channels,
+        top_block=None,
+        norm="LN",
+        fuse_type="sum",
+    ):
+        """
+        Args:
+            net (Backbone): module representing the subnetwork backbone.
+                Must be a subclass of :class:`Backbone`.
+            in_feature (str): names of the input feature maps coming
+                from the net.
+            out_channels (int): number of channels in the output feature maps.
+            scale_factors (list[float]): list of scaling factors to upsample or downsample
+                the input features for creating pyramid features.
+            top_block (nn.Module or None): if provided, an extra operation will
+                be performed on the output of the last (smallest resolution)
+                pyramid output, and the result will extend the result list. The top_block
+                further downsamples the feature map. It must have an attribute
+                "num_levels", meaning the number of extra pyramid levels added by
+                this block, and "in_feature", which is a string representing
+                its input feature (e.g., p5).
+            norm (str): the normalization to use.
+            square_pad (int): If > 0, require input images to be padded to specific square size.
+        """
+        super(AttnFeaturePyramid, self).__init__()
+
+        strides = [input_shapes[f].stride for f in in_features]
+        _assert_strides_are_log2_contiguous(strides)
+
+        in_channels_per_feature = [input_shapes[f].channels for f in in_features]
+
+        lateral_convs = []
+        output_convs = []
+
+        use_bias = norm == ""
+        for idx, in_channels in enumerate(in_channels_per_feature):
+            output_norm = get_norm(norm, out_channels)
+
+            lateral_conv =Block(in_channels,out_channels,num_heads=8,window_size=7,use_rel_pos=True,input_size=(7,7)) # same as swin
+            output_conv = Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=use_bias,
+                norm=output_norm,
+            )
+            weight_init.c2_xavier_fill(output_conv)
+            stage = int(math.log2(strides[idx]))
+            self.add_module("fpn_lateral{}".format(stage), lateral_conv)
+            self.add_module("fpn_output{}".format(stage), output_conv)
+
+            lateral_convs.append(lateral_conv)
+            output_convs.append(output_conv)
+
+        self.in_features = in_features
+        self.lateral_convs = lateral_convs[::-1]
+        self.output_convs = output_convs[::-1]
+        self.top_block = top_block
+        # Return feature names are "p<stage>", like ["p2", "p3", ..., "p6"]
+        self._out_feature_strides = {
+            "p{}".format(int(math.log2(s))): s for s in strides
+        }
+        # top block output feature maps.
+        if self.top_block is not None:
+            for s in range(stage, stage + self.top_block.num_levels):
+                self._out_feature_strides["p{}".format(s + 1)] = 2 ** (s + 1)
+
+        self._out_features = list(self._out_feature_strides.keys())
+        self._out_feature_channels = {k: out_channels for k in self._out_features}
+        self._size_divisibility = strides[-1]
+        assert fuse_type in {"avg", "sum"}
+        self._fuse_type = fuse_type
+    @property
+    def size_divisibility(self):
+        return self._size_divisibility
+    def forward(self, x):
+        """
+        Args:
+            input (dict[str->Tensor]): mapping feature map name (e.g., "res5") to
+                feature map tensor for each feature level in high to low resolution order.
+
+        Returns:
+            dict[str->Tensor]:
+                mapping from feature map name to FPN feature map tensor
+                in high to low resolution order. Returned feature names follow the FPN
+                paper convention: "p<stage>", where stage has stride = 2 ** stage e.g.,
+                ["p2", "p3", ..., "p6"].
+        """
+        bottom_up_features = x
+        results = []
+        prev_features = self.lateral_convs[0](bottom_up_features[self.in_features[-1]])
+        results.append(self.output_convs[0](prev_features))
+
+        # Reverse feature maps into top-down order (from low to high resolution)
+        for idx, (lateral_conv, output_conv) in enumerate(
+            zip(self.lateral_convs, self.output_convs)
+        ):
+            # Slicing of ModuleList is not supported https://github.com/pytorch/pytorch/issues/47336
+            # Therefore we loop over all modules but skip the first one
+            if idx > 0:
+                features = self.in_features[-idx - 1]
+                features = bottom_up_features[features]
+                top_down_features = F.interpolate(
+                    prev_features, scale_factor=2.0, mode="nearest"
+                )
+                lateral_features = lateral_conv(features)
+                prev_features = lateral_features + top_down_features
+                if self._fuse_type == "avg":
+                    prev_features /= 2
+                results.insert(0, output_conv(prev_features))
+
+        if self.top_block is not None:
+            if self.top_block.in_feature in bottom_up_features:
+                top_block_in_feature = bottom_up_features[self.top_block.in_feature]
+            else:
+                top_block_in_feature = results[
+                    self._out_features.index(self.top_block.in_feature)
+                ]
+            results.extend(self.top_block(top_block_in_feature))
+        assert len(self._out_features) == len(results)
+        return {f: res for f, res in zip(self._out_features, results)}
+
+    def output_shape(self):
+        return {
+            name: ShapeSpec(
+                channels=self._out_feature_channels[name],
+                stride=self._out_feature_strides[name],
+            )
+            for name in self._out_features
+        }
+
+class PromptedAttnFeaturePyramid(Backbone):
+    """
+    This module modifies SimpleFeaturePyramid in :paper:`vitdet`.
+    It creates pyramid features built on top of the input feature map.
+    """
+
+    def __init__(
+        self,
+        input_shapes,
+        in_features,
+        out_channels,
+        top_block=None,
+        norm="LN",
+        fuse_type="sum",
+        with_cp=False,
+    ):
+        """
+        Args:
+            net (Backbone): module representing the subnetwork backbone.
+                Must be a subclass of :class:`Backbone`.
+            in_feature (str): names of the input feature maps coming
+                from the net.
+            out_channels (int): number of channels in the output feature maps.
+            scale_factors (list[float]): list of scaling factors to upsample or downsample
+                the input features for creating pyramid features.
+            top_block (nn.Module or None): if provided, an extra operation will
+                be performed on the output of the last (smallest resolution)
+                pyramid output, and the result will extend the result list. The top_block
+                further downsamples the feature map. It must have an attribute
+                "num_levels", meaning the number of extra pyramid levels added by
+                this block, and "in_feature", which is a string representing
+                its input feature (e.g., p5).
+            norm (str): the normalization to use.
+            square_pad (int): If > 0, require input images to be padded to specific square size.
+        """
+        super(PromptedAttnFeaturePyramid, self).__init__()
+
+        strides = [input_shapes[f].stride for f in in_features]
+        _assert_strides_are_log2_contiguous(strides)
+
+        in_channels_per_feature = [input_shapes[f].channels for f in in_features]
+
+        lateral_convs = []
+        output_convs = []
+
+        use_bias = norm == ""
+        for idx, in_channels in enumerate(in_channels_per_feature):
+            output_norm = get_norm(norm, out_channels)
+
+            lateral_conv =PromptedBlock(in_channels,out_channels,num_heads=8,window_size=7,use_rel_pos=True,input_size=(7,7),with_cp=with_cp) # same as swin
+            output_conv = Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=use_bias,
+                norm=output_norm,
+            )
+            weight_init.c2_xavier_fill(output_conv)
+            stage = int(math.log2(strides[idx]))
+            self.add_module("fpn_lateral{}".format(stage), lateral_conv)
+            self.add_module("fpn_output{}".format(stage), output_conv)
+
+            lateral_convs.append(lateral_conv)
+            output_convs.append(output_conv)
+
+        self.in_features = in_features
+        self.lateral_convs = lateral_convs[::-1]
+        self.output_convs = output_convs[::-1]
+        self.top_block = top_block
+        # Return feature names are "p<stage>", like ["p2", "p3", ..., "p6"]
+        self._out_feature_strides = {
+            "p{}".format(int(math.log2(s))): s for s in strides
+        }
+        # top block output feature maps.
+        if self.top_block is not None:
+            for s in range(stage, stage + self.top_block.num_levels):
+                self._out_feature_strides["p{}".format(s + 1)] = 2 ** (s + 1)
+
+        self._out_features = list(self._out_feature_strides.keys())
+        self._out_feature_channels = {k: out_channels for k in self._out_features}
+        self._size_divisibility = strides[-1]
+        assert fuse_type in {"avg", "sum"}
+        self._fuse_type = fuse_type
+    @property
+    def size_divisibility(self):
+        return self._size_divisibility
+    def forward(self, x):
+        """
+        Args:
+            input (dict[str->Tensor]): mapping feature map name (e.g., "res5") to
+                feature map tensor for each feature level in high to low resolution order.
+
+        Returns:
+            dict[str->Tensor]:
+                mapping from feature map name to FPN feature map tensor
+                in high to low resolution order. Returned feature names follow the FPN
+                paper convention: "p<stage>", where stage has stride = 2 ** stage e.g.,
+                ["p2", "p3", ..., "p6"].
+        """
+        bottom_up_features = x
+        results = []
+        prev_features = self.lateral_convs[0](bottom_up_features[self.in_features[-1]],bottom_up_features[self.in_features[-1]+"_prompts"])
+        results.append(self.output_convs[0](prev_features))
+
+        # Reverse feature maps into top-down order (from low to high resolution)
+        for idx, (lateral_conv, output_conv) in enumerate(
+            zip(self.lateral_convs, self.output_convs)
+        ):
+            # Slicing of ModuleList is not supported https://github.com/pytorch/pytorch/issues/47336
+            # Therefore we loop over all modules but skip the first one
+            if idx > 0:
+                features = self.in_features[-idx - 1]
+                feature_prompts=bottom_up_features["{}_prompts".format(features)]
+                features = bottom_up_features[features]
+                top_down_features = F.interpolate(
+                    prev_features, scale_factor=2.0, mode="nearest"
+                )
+                lateral_features = lateral_conv(features,feature_prompts)
+                prev_features = lateral_features + top_down_features
+                if self._fuse_type == "avg":
+                    prev_features /= 2
+                results.insert(0, ckpt(output_conv,prev_features))
+
+        if self.top_block is not None:
+            if self.top_block.in_feature in bottom_up_features:
+                top_block_in_feature = bottom_up_features[self.top_block.in_feature]
+            else:
+                top_block_in_feature = results[
+                    self._out_features.index(self.top_block.in_feature)
+                ]
+            results.extend(self.top_block(top_block_in_feature))
+        assert len(self._out_features) == len(results)
+        return {f: res for f, res in zip(self._out_features, results)}
+
+    def output_shape(self):
+        return {
+            name: ShapeSpec(
+                channels=self._out_feature_channels[name],
+                stride=self._out_feature_strides[name],
+            )
+            for name in self._out_features
+        }
+

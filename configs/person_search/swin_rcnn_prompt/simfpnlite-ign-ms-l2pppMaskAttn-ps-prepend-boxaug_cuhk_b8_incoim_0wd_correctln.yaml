@@ -47,7 +47,7 @@ PERSON_SEARCH:
     POOL_SIZE: 30
     PROMPT_TYPE: "L2PppMaskAttn"
     NUM_TASKS: 3
-    CURRECT_TASK: 0
+    CURRENT_TASK: 0
     LOSS_WEIGHT: [0.01,0.1]
     TOP_K: 10
   DET:
@@ -109,4 +109,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMaskAttn-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMaskAttn-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln"

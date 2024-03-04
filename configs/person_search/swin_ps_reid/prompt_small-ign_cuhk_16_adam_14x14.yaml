@@ -1,0 +1,33 @@
+_BASE_: "prompt_small-ign_prw.yaml"
+MODEL:
+  ROI_BOX_HEAD:
+      POOLER_RESOLUTION: [14, 14]
+PERSON_SEARCH:
+  PRE_INFERENCE_RESULT: "outputs/swin_rcnn/attnfpnf4-ign-l2pppMask-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd/inference/_gallery_gt_inf.pt"
+  PROMPT:
+    NUM_PROMPTS: 16
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+    BOX_AUGMENTATION:
+      NUM_LABELED: 4
+      NUM_UNLABLED: 4
+  DET:
+    MODEL:
+      TRANSFORMER:
+        SEMANTIC_WEIGHT: -1.0
+        WITH_CP: True
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") #
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0003
+  STEPS: (33624,67248)
+  MAX_ITER: 70050 # 1401 * 50
+  CHECKPOINT_PERIOD: 2802
+TEST:
+  EVAL_PERIOD: 2802
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt16_cuhk_adam_14x14_re"

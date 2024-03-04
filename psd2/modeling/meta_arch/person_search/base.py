@@ -23,7 +23,7 @@ T_COLORS_BG = {
 @META_ARCH_REGISTRY.register()
 class SearchBase(nn.Module):
     @configurable
-    def __init__(self, backbone, pix_mean, pix_std, vis_period):
+    def __init__(self, backbone, pix_mean, pix_std, vis_period,input_size_div):
         # super(SearchBase, self).__init__()
         nn.Module.__init__(self)
         self.backbone = backbone
@@ -34,6 +34,7 @@ class SearchBase(nn.Module):
             self.pixel_mean.shape == self.pixel_std.shape
         ), f"{self.pixel_mean} and {self.pixel_std} have different shapes!"
         self.vis_period = vis_period
+        self.input_size_div=input_size_div
 
     @property
     def device(self):
@@ -47,6 +48,7 @@ class SearchBase(nn.Module):
             "pix_mean": cfg.MODEL.PIXEL_MEAN,
             "pix_std": cfg.MODEL.PIXEL_STD,
             "vis_period": cfg.VIS_PERIOD,
+            "input_size_div":cfg.INPUT.SIZE_DIVISIBILITY
         }
 
     def preprocess_input(self, input_list):
@@ -55,7 +57,7 @@ class SearchBase(nn.Module):
             image = in_dict["image"].clone().to(self.device)
             image = (image - self.pixel_mean) / self.pixel_std
             images.append(image)
-        images = ImageList.from_tensors(images, self.backbone.size_divisibility)
+        images = ImageList.from_tensors(images, self.input_size_div)
         return images
 
     def forward(self, input_list, infgt=False):

@@ -34,7 +34,7 @@ class SearchMapper(object):
             self.augs = dT.ResizeShortestEdge(
                 cfg.INPUT.MIN_SIZE_TEST,
                 cfg.INPUT.MAX_SIZE_TEST,
-                size_divisibility=cfg.INPUT.SIZE_DIVISIBILITY,
+                size_divisibility=1, # cfg.INPUT.SIZE_DIVISIBILITY, ImageList takes care
                 sample_style="choice",
             )
         self.totensor = (

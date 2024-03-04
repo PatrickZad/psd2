@@ -1128,3 +1128,122 @@ def tensor_prompt(*dims, ortho=False):
 
 def tensor_prompt_value(*dims, ortho=False):
     return tensor_prompt(*dims, ortho=ortho).data
+
+def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,emb_d,num_layers,key_dim,vis_period):
+        if stage_num_prompts == 0:
+            prompt_stage=nn.Identity() # trivial impl
+        else:
+            if prompt_cfg.PROMPT_TYPE == "L2Ppp":
+                prompt_stage = L2Ppp(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask":
+                prompt_stage = L2PppMask(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskAttn":
+                prompt_stage = L2PppMaskAttn(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskBs":
+                prompt_stage = L2PppMaskBs(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMask2":
+                prompt_stage = L2PppMask2(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskM":
+                prompt_stage = L2PppMaskM(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskMC":
+                prompt_stage = L2PppMaskMC(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "Fixed":
+                prompt_stage = FixedPrompts(
+                    emb_d=emb_d,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
+                prompt_stage = CodaPromptWd(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            else:  # CODAPrompt
+                prompt_stage = CodaPrompt(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            prompt_stage.process_task_count(prompt_cfg.CURRENT_TASK)
+        return prompt_stage

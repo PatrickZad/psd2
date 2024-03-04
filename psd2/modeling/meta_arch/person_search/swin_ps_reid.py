@@ -18,8 +18,7 @@ from psd2.modeling.extend.solider import (
     PrefixPromptedSwinTransformer,
     SwinTransformer,
 )
-
-import psd2.modeling.prompts as prompts
+from psd2.modeling.prompts import build_stage_prompt_pool
 from psd2.layers.metric_loss import TripletLoss
 from torch.nn import init
 from psd2.layers.mem_matching_losses import OIMLoss
@@ -27,6 +26,7 @@ from psd2.layers.mem_matching_losses import OIMLoss
 from psd2.modeling.box_augmentation import build_box_augmentor
 from psd2.modeling.poolers import ROIPooler
 from psd2.layers import ShapeSpec
+from .swin_rcnn_pd import OrgSwinF4AttnFPN
 
 
 @META_ARCH_REGISTRY.register()
@@ -92,13 +92,15 @@ class SwinF4PSReid(SearchBase):
             )
             for i in range(len(swin.stages))
         }
-        in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
+
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
         pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
-        pooler_scales     = (1.0 / swin_out_shape[in_features[0]].stride, )
+        pooler_scales = tuple(
+            1.0 / swin_out_shape[k].stride
+            for k in [cfg.PERSON_SEARCH.REID.MODEL.IN_FEAT]
+        )
         sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
         assert not cfg.MODEL.KEYPOINT_ON
-        assert len(in_features) == 1
 
         ret["roi_pooler"] = ROIPooler(
             output_size=pooler_resolution,
@@ -434,6 +436,7 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
         stage_prompts,
         swin_org,
         swin_org_init_path,
+        precomputed_box=None,
         *args,
         **kws,
     ):
@@ -447,6 +450,7 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
             p.requires_grad = False
         for p in self.swin_org.parameters():
             p.requires_grad = False
+        self.precomputed_box=precomputed_box
 
     def load_state_dict(self, *args, **kws):
         out = super().load_state_dict(*args, **kws)
@@ -514,67 +518,11 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
         )
         stage_prompts = nn.ModuleList()
         for si, nl in enumerate(tr_cfg.DEPTH):
-            if isinstance(num_prompts,int):
-                stage_num_prompts=num_prompts
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
             else:
-                stage_num_prompts=num_prompts[si]
-            if stage_num_prompts == 0:
-                stage_prompts.append(nn.Identity())
-                continue
-            if prompt_cfg.PROMPT_TYPE == "L2P":
-                prompt_stage = prompts.L2P(
-                    emb_d=swin.num_features[si],
-                    n_tasks=prompt_cfg.NUM_TASKS,
-                    pool_size=prompt_cfg.POOL_SIZE,
-                    num_prompts=stage_num_prompts,
-                    num_layers=nl,
-                    topk=prompt_cfg.TOP_K,
-                    loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=swin.num_features[-1],
-                    vis_period=cfg.VIS_PERIOD,
-                )
-            elif prompt_cfg.PROMPT_TYPE == "L2PO":
-                prompt_stage = prompts.L2POrg(
-                    emb_d=swin.num_features[si],
-                    n_tasks=prompt_cfg.NUM_TASKS,
-                    pool_size=prompt_cfg.POOL_SIZE,
-                    num_prompts=stage_num_prompts,
-                    num_layers=nl,
-                    topk=prompt_cfg.TOP_K,
-                    loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=swin.num_features[-1],
-                    vis_period=cfg.VIS_PERIOD
-                    )
-            elif prompt_cfg.PROMPT_TYPE=="L2POCos":
-                prompt_stage=prompts.L2POrgCos(
-                    emb_d=swin.num_features[si],
-                    n_tasks=prompt_cfg.NUM_TASKS,
-                    pool_size=prompt_cfg.POOL_SIZE,
-                    num_prompts=stage_num_prompts,
-                    num_layers=nl,
-                    topk=prompt_cfg.TOP_K,
-                    loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=swin.num_features[-1],
-                    vis_period=cfg.VIS_PERIOD
-                    )
-            elif prompt_cfg.PROMPT_TYPE == "Fixed":
-                prompt_stage = prompts.FixedPrompts(
-                    emb_d=swin.num_features[si],
-                    num_prompts=stage_num_prompts,
-                    num_layers=nl,
-                )
-            else:  # CODAPrompt
-                prompt_stage = prompts.CodaPrompt(
-                    emb_d=swin.num_features[si],
-                    n_tasks=prompt_cfg.NUM_TASKS,
-                    pool_size=prompt_cfg.POOL_SIZE,
-                    num_prompts=stage_num_prompts,
-                    num_layers=nl,
-                    loss_weight=prompt_cfg.LOSS_WEIGHT,
-                    key_dim=swin.num_features[-1],
-                    vis_period=cfg.VIS_PERIOD,
-                )
-            prompt_stage.task_count = prompt_cfg.CURRENT_TASK
+                stage_num_prompts = num_prompts[si]
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         ret.update(
             {
@@ -601,6 +549,13 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
         )
         ret["swin_org"] = swin_org
         ret["swin_org_init_path"] = cfg.PERSON_SEARCH.QUERY_ENCODER_WEIGHTS
+        if hasattr(cfg.PERSON_SEARCH,"PRE_INFERENCE_RESULT"):
+            inf_result=torch.load(cfg.PERSON_SEARCH.PRE_INFERENCE_RESULT,map_location="cpu")
+            infs=inf_result["infs"]
+            precomputed_box={}
+            for k,v in infs.items():
+                precomputed_box[k]=v[:,:5]
+            ret["precomputed_box"]=precomputed_box
         return ret
 
     @torch.no_grad()
@@ -676,8 +631,6 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
                 sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
                 x = x * self.swin.softplus(sw) + sb
             if i == bonenum - 1:
-                norm_layer = getattr(self.swin, f"norm{i}")
-                out = norm_layer(out)
                 out = (
                     out.view(-1, *out_hw_shape, self.swin.num_features[i])
                     .permute(0, 3, 1, 2)
@@ -834,21 +787,47 @@ class PromptedSwinF4PSReid(SwinF4PSReid):
 
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
-            roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+            if self.precomputed_box is not None:
+                roi_boxes=[]
+                scores=[]
+                for gt_i in gt_instances:
+                    inf_boxes=Boxes(self.precomputed_box[gt_i.image_id][:,:4])
+                    scores.append(self.precomputed_box[gt_i.image_id][:,4])
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inf_boxes.scale(w/org_w,h/org_h)
+                    gt_boxes_i=gt_i.gt_boxes
+                    roi_boxes.append(inf_boxes.tensor.to(self.device))
+            else:
+                roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
             reid_feats=self.reid_head(task_query,image_list, features, roi_boxes)
             pred_instances=[]
-            for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
-                inst=Instances(gt_i.image_size)
-                inst.pred_boxes=gt_i.gt_boxes
-                inst.pred_scores=torch.zeros_like(gt_i.gt_pids,dtype=feats_i.dtype)+0.99
-                inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
-                inst.assign_ids=gt_i.gt_pids
-                inst.reid_feats=feats_i
-                # back to org scale
-                org_h, org_w = gt_i.org_img_size
-                h, w = gt_i.image_size
-                inst.pred_boxes.scale(org_w / w, org_h / h)
-                pred_instances.append(inst)
+            if self.precomputed_box is not None:
+                for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+                    inst=Instances(gt_i.image_size)
+                    inst.pred_boxes=Boxes(roi_boxes[i])
+                    inst.pred_scores=scores[i].to(roi_boxes[i].device)
+                    inst.pred_classes = torch.zeros(roi_boxes[i].shape[0],dtype=gt_i.gt_pids.dtype)
+                    inst.assign_ids=torch.zeros(roi_boxes[i].shape[0],dtype=gt_i.gt_pids.dtype)
+                    inst.reid_feats=feats_i
+                    # back to org scale
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inst.pred_boxes.scale(org_w / w, org_h / h)
+                    pred_instances.append(inst)
+            else:
+                for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+                    inst=Instances(gt_i.image_size)
+                    inst.pred_boxes=gt_i.gt_boxes
+                    inst.pred_scores=torch.zeros_like(gt_i.gt_pids,dtype=feats_i.dtype)+0.99
+                    inst.pred_classes = torch.zeros_like(gt_i.gt_pids)
+                    inst.assign_ids=gt_i.gt_pids
+                    inst.reid_feats=feats_i
+                    # back to org scale
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inst.pred_boxes.scale(org_w / w, org_h / h)
+                    pred_instances.append(inst)
 
             return pred_instances
 
@@ -930,7 +909,6 @@ class PrefixPromptedSwinF4PSReid(PromptedSwinF4PSReid):
             num_prompts = prompt_cfg.NUM_PROMPTS * prompt_cfg.TOP_K
         else:
             num_prompts = prompt_cfg.NUM_PROMPTS
-        # NOTE downsample module of stage3 is trainable
         swin = PrefixPromptedSwinTransformer(
             prompt_start_stage=prompt_cfg.PROMPT_START_STAGE,
             num_prompts=num_prompts,
@@ -1032,3 +1010,356 @@ def _load_file(filename):
     if "model" not in loaded:
         loaded = {"model": loaded}
     return loaded
+
+from ...proposal_generator import build_proposal_generator
+from psd2.modeling.id_assign import build_id_assigner
+from .swin_rcnn_pd import LastLevelMaxPool,AlteredStandaredROIHeads,PromptedAttnFeaturePyramid
+from psd2.layers import batched_nms
+from torch.utils.checkpoint import checkpoint as ckpt
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinF4PSReidSGAttnFPN(PromptedSwinF4PSReid):
+    @configurable
+    def __init__(
+        self,
+        attn_fpn,
+        fpn_prompts,
+        proposal_generator,
+        roi_heads,
+        id_assigner,
+        *args,
+        **kws,
+    ):
+        PromptedSwinF4PSReid.__init__(
+            self,*args,**kws
+        )
+        self.attn_fpn = attn_fpn
+        self.proposal_generator = proposal_generator
+        self.roi_heads = roi_heads
+        self.id_assigner = id_assigner
+        self.fpn_prompts=fpn_prompts
+        for p in self.attn_fpn.parameters():  # norm2 is not supervised in solider
+            p.requires_grad = False
+        for p in self.proposal_generator.parameters():
+            p.requires_grad = False
+        for p in self.roi_heads.parameters():
+            p.requires_grad = False
+    def train(self, mode=True):
+        # set train status for this class: disable all but the prompt-related modules
+        self.training = mode
+        if mode:
+            # training:
+            self.backbone.eval()
+            self.swin.eval()
+            self.swin_org.eval()
+            self.stage_prompts.train()
+            self.fpn_prompts.train()
+            self.attn_fpn.train()
+            self.proposal_generator.train()
+            self.roi_heads.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+    def load_state_dict(self, *args, **kws):
+        return PromptedSwinF4PSReid.load_state_dict(self,*args, **kws)
+    @classmethod
+    def from_config(cls, cfg):
+        ret=PromptedSwinF4PSReid.from_config(cfg)
+        swin=ret["swin"]
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
+        attn_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.ATTN_FPN
+        p5_m=LastLevelMaxPool()
+        p5_m.in_feature="p4"
+        if hasattr(attn_fpn_cfg,"WITH_CP"):
+            with_cp=attn_fpn_cfg.WITH_CP
+        else:
+            with_cp=False
+        attn_fpn = PromptedAttnFeaturePyramid(
+            swin_out_shape,
+            attn_fpn_cfg.IN_FEATURES,
+            attn_fpn_cfg.OUT_CHANNELS,
+            top_block=p5_m,
+            with_cp=with_cp
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, attn_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, attn_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "swin": swin,
+                "attn_fpn": attn_fpn,
+            }
+        )
+        ret["box_aug"] = build_box_augmentor(cfg.PERSON_SEARCH.REID.BOX_AUGMENTATION)
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 3
+        
+        fpn_prompts = nn.ModuleList()
+        for si in range(len(tr_cfg.DEPTH)-1):
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[si]
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],1,swin.num_features[-1],cfg.VIS_PERIOD)
+            fpn_prompts.append(prompt_stage)
+        ret["fpn_prompts"]=fpn_prompts
+        return ret
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        task_query = self.task_query(x)
+
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = {}
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        prompt_loss_d = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        bonenum = 3
+        task_query_x = task_query.unsqueeze(1)
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[i](
+                    task_query_stage, i, train=self.training
+                )
+                prompt_loss += p_loss
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            norm_layer = getattr(self.swin, f"norm{i}")
+            outd = norm_layer(out).detach()
+            outd = (
+                    outd.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+            task_query_d = task_query_x.expand(-1, 1, -1)
+            selected_prompts_d, p_loss_d = self.fpn_prompts[i](
+                    task_query_d, "p{}".format(i+2), train=self.training
+                )
+            outs["side_stage{}".format(i+1)]=outd
+            outs["side_stage{}_prompts".format(i+1)]=selected_prompts_d[0] # 1 layer
+            prompt_loss_d += p_loss_d
+            if i==bonenum-1:
+                outr = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs["stage3"]=outr
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompts_det":prompt_loss_d}
+        return outs, task_query, prompt_loss
+    def forward_gallery(self, image_list, gt_instances):
+        features, task_query, prompt_loss = self.swin_backbone(image_list.tensor)
+        fpn_features = self.attn_fpn(features)
+        proposals, proposal_losses = self.proposal_generator(
+            image_list, fpn_features, gt_instances
+        )
+        pred_instances, losses, pos_match_indices = self.roi_heads(
+            image_list,
+            fpn_features,
+            proposals,
+            gt_instances,
+        )
+        roi_boxes = [inst.pred_boxes.tensor for inst in pred_instances]
+        if self.training:
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                roi_boxes,
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+            pos_boxes, pos_ids = [], []
+            for gts_i in gt_instances:
+                # append gt
+                pos_boxes.append(gts_i.gt_boxes.tensor)
+                pos_ids.append(gts_i.gt_pids)
+            pos_boxes, pos_ids = self.box_aug.augment_boxes(
+                pos_boxes,
+                pos_ids,
+                det_boxes=None,
+                det_pids=None,
+                img_sizes=[gti.image_size for gti in gt_instances],
+            )
+            reid_loss = self.reid_head(task_query,image_list, features, pos_boxes, pos_ids)
+            losses.update(reid_loss)
+            losses.update(prompt_loss)
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            # nms
+            score_t = self.roi_heads.box_predictor.test_score_thresh
+            iou_t = self.roi_heads.box_predictor.test_nms_thresh
+            for pred_i in pred_instances:
+                pred_boxes_t = pred_i.pred_boxes.tensor
+                pred_scores = pred_i.pred_scores
+                filter_mask = pred_scores >= score_t
+                pred_boxes_t = pred_boxes_t[filter_mask]
+                pred_scores = pred_scores[filter_mask]
+                cate_idx = pred_scores.new_zeros(
+                    pred_scores.shape[0], dtype=torch.int64
+                )
+                # nms
+                keep = batched_nms(pred_boxes_t, pred_scores, cate_idx, iou_t)
+                pred_boxes_t = pred_boxes_t[keep]
+                pred_scores = pred_scores[keep]
+                pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
+                pred_i.pred_scores = pred_scores
+                pred_i.reid_feats = pred_boxes_t  # trivial impl
+                pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
+                pred_i.assign_ids = pred_i.assign_ids[filter_mask][keep]
+            return pred_instances, [feat.detach() for feat in features.values() if feat.dim()==4], losses
+        else:
+            if self.precomputed_box is not None:
+                roi_boxes=[]
+                scores=[]
+                for gt_i in gt_instances:
+                    inf_boxes=Boxes(self.precomputed_box[gt_i.image_id][:,:4])
+                    scores.append(self.precomputed_box[gt_i.image_id][:,4])
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inf_boxes.scale(w/org_w,h/org_h)
+                    gt_boxes_i=gt_i.gt_boxes
+                    roi_boxes.append(inf_boxes.tensor.to(self.device))
+            
+            reid_feats=self.reid_head(task_query,image_list, features, roi_boxes)
+            
+            if self.precomputed_box is not None:
+                pred_instances=[]
+                for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+                    inst=Instances(gt_i.image_size)
+                    inst.pred_boxes=Boxes(roi_boxes[i])
+                    inst.pred_scores=scores[i].to(roi_boxes[i].device)
+                    inst.pred_classes = torch.zeros(roi_boxes[i].shape[0],dtype=gt_i.gt_pids.dtype)
+                    inst.assign_ids=torch.zeros(roi_boxes[i].shape[0],dtype=gt_i.gt_pids.dtype)
+                    inst.reid_feats=feats_i
+                    # back to org scale
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inst.pred_boxes.scale(org_w / w, org_h / h)
+                    pred_instances.append(inst)
+            else:
+                for i,(gt_i,feats_i) in enumerate(zip(gt_instances,reid_feats)):
+                    inst=pred_instances[i]
+                    inst.reid_feats=feats_i
+                    # back to org scale
+                    org_h, org_w = gt_i.org_img_size
+                    h, w = gt_i.image_size
+                    inst.pred_boxes.scale(org_w / w, org_h / h)
+
+            return pred_instances
+@META_ARCH_REGISTRY.register()
+class PromptedSwinF4PSReidAttnFPN(PromptedSwinF4PSReidSGAttnFPN):
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        task_query = self.task_query(x)
+
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = {}
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        prompt_loss_d = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        bonenum = 3
+        task_query_x = task_query.unsqueeze(1)
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[i](
+                    task_query_stage, i, train=self.training
+                )
+                prompt_loss += p_loss
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            norm_layer = getattr(self.swin, f"norm{i}")
+            outd = norm_layer(out) # .detach()
+            outd = (
+                    outd.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+            task_query_d = task_query_x.expand(-1, 1, -1)
+            selected_prompts_d, p_loss_d = self.fpn_prompts[i](
+                    task_query_d, "p{}".format(i+2), train=self.training
+                )
+            outs["side_stage{}".format(i+1)]=outd
+            outs["side_stage{}_prompts".format(i+1)]=selected_prompts_d[0] # 1 layer
+            prompt_loss_d += p_loss_d
+            if i==bonenum-1:
+                outr = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs["stage3"]=outr
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompts_det":prompt_loss_d}
+        return outs, task_query, prompt_loss

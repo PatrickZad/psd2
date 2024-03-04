@@ -1,0 +1,75 @@
+_BASE_: "prompt_small-ign_prw.yaml"
+MODEL:
+  META_ARCHITECTURE: "PromptedSwinF4PSReidAttnFPN"
+  WEIGHTS: "outputs/swin_rcnn/pd-pre-attnfpnf4_cococh_small-ign_org/model_0059339.pth"
+  ANCHOR_GENERATOR:
+    NAME: "DefaultAnchorGenerator"
+    SIZES: [[32], [64], [128], [256]] # One size for each in feature map
+    ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
+  RPN:
+    HEAD_NAME: "StandardRPNHead"
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    PRE_NMS_TOPK_TRAIN: 2000 # Per FPN level
+    PRE_NMS_TOPK_TEST: 1000 # Per FPN level
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 300
+    CONV_DIMS: [-1,-1]
+  ROI_HEADS:
+    NAME: "StandardROIHeads" 
+    NUM_CLASSES: 1
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    IOU_THRESHOLDS: [0.3,0.7]
+    IOU_LABELS: [0, -1, 1]
+    BATCH_SIZE_PER_IMAGE: 128
+    POSITIVE_FRACTION: 0.5
+    SCORE_THRESH_TEST: 0.5
+    NMS_THRESH_TEST: 0.4
+    PROPOSAL_APPEND_GT: True
+  ROI_BOX_HEAD:
+    NAME: "FastRCNNConvFCHead"
+    NUM_FC: 1
+    FC_DIM: 1024
+    NUM_CONV: 4
+    CONV_DIM: 256
+    NORM: LN
+    BBOX_REG_LOSS_TYPE: "smooth_l1"
+    BBOX_REG_LOSS_WEIGHT: 10.0
+    BBOX_REG_WEIGHTS: [10.0, 10.0, 5.0, 5.0]
+    SMOOTH_L1_BETA: 1.0
+    POOLER_RESOLUTION: [14, 14]
+    POOLER_SAMPLING_RATIO: 2
+    POOLER_TYPE: "ROIAlignV2"
+PERSON_SEARCH:
+  PRE_INFERENCE_RESULT: "outputs/swin_rcnn/attnfpnf4-ign-l2pppMask-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd/inference/_gallery_gt_inf.pt"
+  PROMPT:
+    NUM_PROMPTS: 16
+  REID:
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+    BOX_AUGMENTATION:
+      NUM_LABELED: 4
+      NUM_UNLABLED: 4
+  DET:
+    MODEL:
+      TRANSFORMER:
+        SEMANTIC_WEIGHT: -1.0
+        WITH_CP: True
+      ATTN_FPN:
+        IN_FEATURES: ["side_stage1","side_stage2","side_stage3"]
+        OUT_CHANNELS: 256
+        WITH_CP: True
+DATASETS:
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100") #
+SOLVER:
+  OPTIM: "Adam"
+  BASE_LR: 0.0003
+  STEPS: (33624,67248)
+  MAX_ITER: 70050 # 1401 * 50
+  CHECKPOINT_PERIOD: 2802
+TEST:
+  EVAL_PERIOD: 2802
+  IMS_PER_PROC: 2
+OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt16_cuhk_adam_14x14_attnfpn"

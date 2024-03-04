@@ -1,14 +1,14 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "PromptedMsSwinSimFPNLiteRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign_new/model_0148349.pth"
+  META_ARCHITECTURE: "PromptedOrgSwinF4SGAttnFPNPSBoxAug"
+  WEIGHTS: "outputs/swin_rcnn/pd-pre-attnfpnf4_cococh_small-ign_org/model_0059339.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
-    SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
+    SIZES: [[32], [64], [128], [256]] # One size for each in feature map
     ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
   RPN:
     HEAD_NAME: "StandardRPNHead"
-    IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
     PRE_NMS_TOPK_TRAIN: 2000 # Per FPN level
     PRE_NMS_TOPK_TEST: 1000 # Per FPN level
     POST_NMS_TOPK_TRAIN: 1000
@@ -18,8 +18,8 @@ MODEL:
     NAME: "StandardROIHeads" 
     NUM_CLASSES: 1
     IN_FEATURES: ["p2", "p3", "p4", "p5"]
-    IOU_THRESHOLDS: [0.5]
-    IOU_LABELS: [0, 1]
+    IOU_THRESHOLDS: [0.3,0.7]
+    IOU_LABELS: [0, -1, 1]
     BATCH_SIZE_PER_IMAGE: 128
     POSITIVE_FRACTION: 0.5
     SCORE_THRESH_TEST: 0.5
@@ -33,30 +33,30 @@ MODEL:
     CONV_DIM: 256
     NORM: LN
     BBOX_REG_LOSS_TYPE: "smooth_l1"
-    BBOX_REG_LOSS_WEIGHT: 1.0
+    BBOX_REG_LOSS_WEIGHT: 10.0
     BBOX_REG_WEIGHTS: [10.0, 10.0, 5.0, 5.0]
-    SMOOTH_L1_BETA: 0.0
-    POOLER_RESOLUTION: [16, 8]
+    SMOOTH_L1_BETA: 1.0
+    POOLER_RESOLUTION: [14, 14]
     POOLER_SAMPLING_RATIO: 2
     POOLER_TYPE: "ROIAlignV2"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [16,16,16,16]
-    POOL_SIZE: 30
-    PROMPT_TYPE: "L2PppMaskAttn"
+    NUM_PROMPTS: 16
+    PROMPT_TYPE: "Fixed"
     NUM_TASKS: 3
-    CURRECT_TASK: 0
-    LOSS_WEIGHT: [0.01,0.1]
-    TOP_K: 10
+    CURRENT_TASK: 0
   DET:
     MODEL:
       TRANSFORMER:
         WITH_CP: True
-        SEMANTIC_WEIGHT: -1
-      SIM_FPN:
-        IN_FEATURE: "side_stage3"
+        DROP_PATH: 0.0
+      ATTN_FPN:
+        IN_FEATURES: ["side_stage1","side_stage2","side_stage3"]
+        OUT_CHANNELS: 256
+      SIM_FPN: # Not used
+        IN_FEATURE: "stage3"
         OUT_CHANNELS: 256
         SCALE_FACTORS: [4.0, 2.0, 1.0, 0.5]
   REID:
@@ -92,10 +92,10 @@ SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0003
   STEPS: (33624,67248)
-  MAX_ITER: 70050 # 1401 * 50
+  MAX_ITER: 80050 # 70050 # 1401 * 50
   CHECKPOINT_PERIOD: 2802
   GAMMA: 0.1
-  WEIGHT_DECAY: 0.0 # 5.0e-4
+  WEIGHT_DECAY: 5.0e-4
   IMS_PER_BATCH: 8
 INPUT:
   MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
@@ -109,4 +109,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMaskAttn-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd"
+OUTPUT_DIR: "outputs/swin_rcnn/attnfpnf4sg-ign-fix-ps-prepend16-boxaug5_cuhk_adam_b8_incoim"
