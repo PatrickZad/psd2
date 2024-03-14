@@ -47,16 +47,16 @@ PERSON_SEARCH:
     POOL_SIZE: 12
     PROMPT_TYPE: "L2PppMask"
     NUM_TASKS: 3
-    CURRECT_TASK: 0
+    CURRENT_TASK: 0
     LOSS_WEIGHT: 0.1
     TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
         WITH_CP: True
-        SEMANTIC_WEIGHT: 0.0 # -1
+        SEMANTIC_WEIGHT: -1
       SIM_FPN:
-        IN_FEATURE: "stage4"
+        IN_FEATURE: "side_stage3"
         OUT_CHANNELS: 256
         SCALE_FACTORS: [4.0, 2.0, 1.0, 0.5]
   REID:

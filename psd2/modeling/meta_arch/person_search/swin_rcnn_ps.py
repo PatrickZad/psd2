@@ -2512,6 +2512,8 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 for roi_boxes_i in roi_boxes
             ]
         x = self.reid_box_pooler(features, roi_boxes)
+        if x.shape[0]==0:
+            return [ torch.zeros((0,features[0].shape[1]*2)) for _ in range(len(roi_boxes))]
         del features
         if self.swin.semantic_weight >= 0:
             w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight

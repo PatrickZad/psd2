@@ -43,20 +43,19 @@ PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [4,4,4,4]
-    POOL_SIZE: 12
-    PROMPT_TYPE: "L2PppMask"
+    NUM_PROMPTS: [16,16,16,16]
+    POOL_SIZE: 30
+    PROMPT_TYPE: "CODAPrompt"
     NUM_TASKS: 3
-    CURRECT_TASK: 0
+    CURRENT_TASK: 0
     LOSS_WEIGHT: 0.1
-    TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
         WITH_CP: True
-        SEMANTIC_WEIGHT: 0.0 # -1
+        SEMANTIC_WEIGHT: -1
       SIM_FPN:
-        IN_FEATURE: "stage4"
+        IN_FEATURE: "side_stage3"
         OUT_CHANNELS: 256
         SCALE_FACTORS: [4.0, 2.0, 1.0, 0.5]
   REID:
@@ -109,4 +108,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMask-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-coda-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln"

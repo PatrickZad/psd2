@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedMsSwinSimFPNLiteRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign_new/model_0148349.pth"
+  WEIGHTS: "outputs/swin_rcnn/simfpnlite-ign-ms-l2pppMaskAttn-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln/model_0039227.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -103,8 +103,8 @@ INPUT:
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
 DATASETS:
-  TRAIN: ("CUHK-SYSU_Train",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100",) #
+  TRAIN: ("PRW_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query",) #
 TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 1426
