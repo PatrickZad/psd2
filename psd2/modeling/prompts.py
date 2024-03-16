@@ -47,7 +47,7 @@ class CodaPrompt(nn.Module):
     def process_task_count(self, task_id):
         self.task_count = task_id
 
-    def forward(self, x_query, vis_mark, train=False, task_id=None):
+    def forward(self, x_query, vis_mark, train=False, task_id=None,domain_id=False):
         """
         select all layers in one pass
         NOTE assume x_query to be batch_size * num_layer * c
@@ -109,6 +109,10 @@ class CodaPrompt(nn.Module):
                     torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
                 )
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        if domain_id:
+            d_attn=vis_attn.reshape(B,self.n_tasks,-1).mean(2)
+            dids=torch.argmax(d_attn,dim=1)
+            return dids, p_return, p_loss
         return p_return, p_loss
 
 
