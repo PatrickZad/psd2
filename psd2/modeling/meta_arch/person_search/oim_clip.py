@@ -843,188 +843,6 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
         ret["oim_loss_text"]=oim_text
         return ret
 
-@META_ARCH_REGISTRY.register()
-class OimSeqClipSimpleBi(OimClipSimpleDC2Bi):
-    @classmethod
-    def from_config(cls, cfg):
-        ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
-        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
-        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
-        res_output_shape={
-            name: ShapeSpec(
-                channels=out_feature_channels[name],
-                stride=out_feature_strides[name],
-            )
-            for name in ["res2","res3","res4","res5"]
-        }
-        roi_feat_spatial=cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        roi_feat_spatial=[roi_feat_spatial[0]//2,roi_feat_spatial[1]//2]
-        # resize clip pos embedding
-        with torch.no_grad():
-            pos=clip_model.visual.attnpool.positional_embedding
-            cls_pos=pos[0]
-            spatial_size=round(pos[1:].shape[0]**0.5)
-            img_pos=pos[1:].reshape(spatial_size,spatial_size,-1).permute(2,0,1)
-            img_pos=F.interpolate(img_pos[None], size=roi_feat_spatial, mode='bicubic', align_corners=False)[0]
-            img_pos=img_pos.permute(1,2,0)
-            clip_model.visual.attnpool.positional_embedding=nn.Parameter(torch.cat([cls_pos[None],img_pos.flatten(0,1)]))
-        if cfg.PERSON_SEARCH.DET.CLIP.FROZEN_BN:
-            clip_model.visual=convert_frozen_bn(clip_model.visual)
-        ret["clip_model"]=clip_model
-        ret["freeze_at_stage2"]=cfg.PERSON_SEARCH.DET.CLIP.FREEZE_AT_STAGE2
-        ret["proposal_generator"] = build_proposal_generator(cfg, res_output_shape)
-        res5=copy.deepcopy(clip_model.visual.layer4) # without stride
-        ret["roi_heads"] = ClipRes5SeqROIHeadsPs(cfg, res5,res_output_shape)
-        ret["id_assigner"] = build_id_assigner(cfg)
-        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
-        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
-        if with_bn_neck:
-            bn_neck = nn.BatchNorm1d(feat_dim)
-            init.normal_(bn_neck.weight, std=0.01)
-            init.constant_(bn_neck.bias, 0)
-        else:
-            bn_neck = nn.Identity()
-        ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
-        oim_text=copy.deepcopy(ret["oim_loss"])
-        del oim_text.ulb_layer
-        oim_text.ulb_layer=None
-        ret["oim_loss_text"]=oim_text
-        return ret
-
-
-
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleBiSplit(OimClipSimpleDC2Bi):
-    @configurable
-    def __init__(
-        self,
-        *args,
-        **kws,
-    ) -> None:
-        super().__init__(*args, **kws)
-
-        # res5 for reid
-        for p in self.clip_model.visual.layer4.parameters():
-            p.requires_grad=True
-    @classmethod
-    def from_config(cls, cfg):
-        ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
-        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
-        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
-        res_output_shape={
-            name: ShapeSpec(
-                channels=out_feature_channels[name],
-                stride=out_feature_strides[name],
-            )
-            for name in ["res2","res3","res4","res5"]
-        }
-        roi_feat_spatial=cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        roi_feat_spatial=[roi_feat_spatial[0]//2,roi_feat_spatial[1]//2]
-        # resize clip pos embedding
-        with torch.no_grad():
-            pos=clip_model.visual.attnpool.positional_embedding
-            cls_pos=pos[0]
-            spatial_size=round(pos[1:].shape[0]**0.5)
-            img_pos=pos[1:].reshape(spatial_size,spatial_size,-1).permute(2,0,1)
-            img_pos=F.interpolate(img_pos[None], size=roi_feat_spatial, mode='bicubic', align_corners=False)[0]
-            img_pos=img_pos.permute(1,2,0)
-            clip_model.visual.attnpool.positional_embedding=nn.Parameter(torch.cat([cls_pos[None],img_pos.flatten(0,1)]))
-        if cfg.PERSON_SEARCH.DET.CLIP.FROZEN_BN:
-            clip_model.visual=convert_frozen_bn(clip_model.visual)
-        ret["clip_model"]=clip_model
-        ret["freeze_at_stage2"]=cfg.PERSON_SEARCH.DET.CLIP.FREEZE_AT_STAGE2
-        ret["proposal_generator"] = build_proposal_generator(cfg, res_output_shape)
-        res5=copy.deepcopy(clip_model.visual.layer4) # with stride
-        ret["roi_heads"] = ClipRes5ROIHeadsPsDetOnly(cfg, res5,res_output_shape)
-        ret["id_assigner"] = build_id_assigner(cfg)
-        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
-        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
-        if with_bn_neck:
-            bn_neck = nn.BatchNorm1d(feat_dim)
-            init.normal_(bn_neck.weight, std=0.01)
-            init.constant_(bn_neck.bias, 0)
-        else:
-            bn_neck = nn.Identity()
-        ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
-        oim_text=copy.deepcopy(ret["oim_loss"])
-        del oim_text.ulb_layer
-        oim_text.ulb_layer=None
-        ret["oim_loss_text"]=oim_text
-        return ret
-
-    def img_embes(self,roi_feats):
-        roi_feats=self.clip_model.visual.layer4(roi_feats)
-        return self.clip_model.visual.attnpool(roi_feats)
-
-
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleBiFPN(OimClipSimpleDC2Bi):
-    @configurable
-    def __init__(
-        self,
-        *args,
-        **kws,
-    ) -> None:
-        super().__init__(*args, **kws)
-
-        # res5 for reid
-        for p in self.clip_model.visual.layer4.parameters():
-            p.requires_grad=True
-    @classmethod
-    def from_config(cls, cfg):
-        ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
-        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
-        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
-        res_output_shape={
-            name: ShapeSpec(
-                channels=out_feature_channels[name],
-                stride=out_feature_strides[name],
-            )
-            for name in ["res2","res3","res4","res5"]
-        }
-        roi_feat_spatial=cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        roi_feat_spatial=[roi_feat_spatial[0]//2,roi_feat_spatial[1]//2]
-        # resize clip pos embedding
-        with torch.no_grad():
-            pos=clip_model.visual.attnpool.positional_embedding
-            cls_pos=pos[0]
-            spatial_size=round(pos[1:].shape[0]**0.5)
-            img_pos=pos[1:].reshape(spatial_size,spatial_size,-1).permute(2,0,1)
-            img_pos=F.interpolate(img_pos[None], size=roi_feat_spatial, mode='bicubic', align_corners=False)[0]
-            img_pos=img_pos.permute(1,2,0)
-            clip_model.visual.attnpool.positional_embedding=nn.Parameter(torch.cat([cls_pos[None],img_pos.flatten(0,1)]))
-        if cfg.PERSON_SEARCH.DET.CLIP.FROZEN_BN:
-            clip_model.visual=convert_frozen_bn(clip_model.visual)
-        ret["clip_model"]=clip_model
-        ret["freeze_at_stage2"]=cfg.PERSON_SEARCH.DET.CLIP.FREEZE_AT_STAGE2
-        ret["proposal_generator"] = build_proposal_generator(cfg, res_output_shape)
-        res5=copy.deepcopy(clip_model.visual.layer4) # with stride
-        ret["roi_heads"] = ClipRes5ROIHeadsPsDetOnly(cfg, res5,res_output_shape)
-        ret["id_assigner"] = build_id_assigner(cfg)
-        feat_dim = cfg.PERSON_SEARCH.REID.MODEL.EMB_DIM
-        with_bn_neck = cfg.PERSON_SEARCH.REID.MODEL.BN_NECK
-        if with_bn_neck:
-            bn_neck = nn.BatchNorm1d(feat_dim)
-            init.normal_(bn_neck.weight, std=0.01)
-            init.constant_(bn_neck.bias, 0)
-        else:
-            bn_neck = nn.Identity()
-        ret["bn_neck"] = bn_neck
-        ret["oim_loss"] = OIMLoss(cfg)
-        oim_text=copy.deepcopy(ret["oim_loss"])
-        del oim_text.ulb_layer
-        oim_text.ulb_layer=None
-        ret["oim_loss_text"]=oim_text
-        return ret
-
-    def img_embes(self,roi_feats):
-        roi_feats=self.clip_model.visual.layer4(roi_feats)
-        return self.clip_model.visual.attnpool(roi_feats)
 
 
 from psd2.utils.simple_tokenizer import SimpleTokenizer
@@ -1275,6 +1093,7 @@ class OimClipSimpleBiMLM(OimClipSimpleBi):
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             return super().forward_gallery(image_list, gt_instances)
+
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleBiVisionLanguageGTInfer(OimClipSimpleBi):
@@ -1846,6 +1665,218 @@ class OimClipSimpleBiMLMDFully(OimClipSimpleBiMLM):
 
         x = self.ln_post(x)
         return x
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIMDFully(OimClipSimpleBiMLMDFully):
+    @configurable
+    def __init__(
+        self,
+        mim_ratio,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIMDFully,self).__init__(*args, **kws)
+        self.mim_ratio=mim_ratio
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.mim_token=nn.Parameter(torch.randn(1, embed_dim)/ embed_dim ** 0.5)
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        ret["mim_ratio"]=cfg.PERSON_SEARCH.REID.MIM_RATIO
+        return ret
+    def random_masked_tokens_and_labels(self,all_tokens):
+        
+        all_masked_tokens=[]
+        for tokens in all_tokens:
+            num_tokens=tokens.shape[0]
+            prob = torch.rand(num_tokens,device=all_tokens.device)
+            re_idxs=torch.arange(0,num_tokens,dtype=torch.long,device=all_tokens.device)
+            re_idxs[prob<self.mim_ratio]=-1
+            cat_tokens=torch.cat([tokens,self.mim_token],dim=0)
+            masked_tokens=cat_tokens[re_idxs]
+            all_masked_tokens.append(masked_tokens)
+        return torch.stack(all_masked_tokens)
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
+        return {"loss_mim":cos_dist.sum()/num_i_tokens}
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMHMDFully(OimClipSimpleBiMIMDFully):
+    def random_masked_tokens_and_labels(self,all_tokens):
+        return super(OimClipSimpleBiMIMDFully,self).random_masked_tokens_and_labels(all_tokens)
+    def mlm_loss(self,i_features,tokens):
+        return super(OimClipSimpleBiMIMDFully,self).mlm_loss(i_features,tokens)
+    def random_masked_patches(self,patch_tokens):
+        all_masked_tokens=[]
+        for tokens in patch_tokens:
+            num_tokens=tokens.shape[0]
+            prob = torch.rand(num_tokens,device=patch_tokens.device)
+            re_idxs=torch.arange(0,num_tokens,dtype=torch.long,device=patch_tokens.device)
+            re_idxs[prob<self.mim_ratio]=-1
+            cat_tokens=torch.cat([tokens,self.mim_token],dim=0)
+            masked_tokens=cat_tokens[re_idxs]
+            all_masked_tokens.append(masked_tokens)
+        return torch.stack(all_masked_tokens)
+    def mim_loss(self,i_features,t_features):
+        masked_i_features=self.random_masked_patches(i_features)
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features,t_features)
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
+        return {"loss_mim":cos_dist.sum()/num_i_tokens}
+    
+    def text_embeds_features(self,text):
+        text_feats=self.clip_model.encode_text(text)
+        text_embes=text_feats[torch.arange(text_feats.shape[0]), text.argmax(dim=-1)]
+        text_embes=self.bn_neck_text(text_embes)
+        return text_feats,text_embes
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,box_feats = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    # there can be multiple text seq for one id
+                    if pid>-1:
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mlm"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim & mim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_features,text_embs=self.text_embeds_features(torch.stack(text_tokens).to(self.device))
+                losses.update(self.mim_loss(roi_feats,text_features))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMHM2DFully(OimClipSimpleBiMHMDFully):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMHM2DFully,self).__init__(*args, **kws)
+        self.cross_modal_transformer_mim=copy.deepcopy(self.cross_modal_transformer)
+    def cross_former_mim(self, q, k, v):
+        # inputs are NLD
+        # NLD -> LND
+        q=q.permute(1, 0, 2)
+        k=k.permute(1, 0, 2)
+        v=v.permute(1, 0, 2)
+        x = self.cross_modal_transformer_mim(q,k,v,with_ckpt=True)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
+    def mim_loss(self,i_features,t_features):
+        masked_i_features=self.random_masked_patches(i_features)
+        rec_i_features =ckpt.checkpoint(self.cross_former_mim,masked_i_features, t_features,t_features)
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
+        return {"loss_mim":cos_dist.sum()/num_i_tokens}
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFully(OimClipSimpleBiMIMDFully):
+
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="none")
+        return {"loss_mim":l2_dist.sum()/num_i_tokens*0.001}
+           
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMHML2DFully(OimClipSimpleBiMHMDFully):
+    def mim_loss(self,i_features,t_features):
+        masked_i_features=self.random_masked_patches(i_features)
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features,t_features)
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="none")
+        return {"loss_mim":l2_dist.sum()/num_i_tokens*0.001}
 
 from psd2.utils.simple_tokenizer import SimpleTokenizer
 import cv2
