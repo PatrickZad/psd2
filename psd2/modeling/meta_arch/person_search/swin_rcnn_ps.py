@@ -2459,6 +2459,9 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         bonenum = 4
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
@@ -2472,7 +2475,11 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 selected_prompts, p_loss = self.stage_prompts[i](
                     task_query_stage, i, train=self.training
                 )
-                prompt_loss += p_loss
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg+=p_loss[1]
+                else:
+                    prompt_loss += p_loss
                 x, hw_shape, out, out_hw_shape = stage(
                     x, hw_shape, deep_prompt_embd=selected_prompts
                 )
@@ -2491,7 +2498,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 )
                 outs.append(out)
         if self.training:
-            prompt_loss = {"loss_prompt": prompt_loss}
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompt_reg": prompt_reg}
         return {"stage3": outs[0], "stage4": outs[1]}, task_query, prompt_loss
 
     def reid_head(
@@ -2532,6 +2539,9 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[bonenum:]):
             if (
@@ -2544,7 +2554,11 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 selected_prompts, p_loss = self.stage_prompts[bonenum + i](
                     task_query_stage, f"reid{i}", train=self.training
                 )
-                prompt_loss += p_loss
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg += p_loss[1]
+                else:
+                    prompt_loss += p_loss
                 expanded_prompts = []
                 for bi in range(len(roi_boxes)):
                     expanded_prompts.append(
@@ -2587,7 +2601,7 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                     )
             del out
             reid_loss = self.oim_loss(embs, pos_ids)
-            reid_loss.update({"loss_prompt_reid": prompt_loss})
+            reid_loss.update({"loss_prompt_reid": prompt_loss,"loss_prompt_reg_reid": prompt_reg})
             return reid_loss
         else:
             embs = normalize(embs, dim=-1)
@@ -3124,6 +3138,9 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         bonenum = 3
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
@@ -3137,7 +3154,11 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 selected_prompts, p_loss = self.stage_prompts[i](
                     task_query_stage, i, train=self.training
                 )
-                prompt_loss += p_loss
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg += p_loss[1]
+                else:
+                    prompt_loss += p_loss
                 x, hw_shape, out, out_hw_shape = stage(
                     x, hw_shape, deep_prompt_embd=selected_prompts
                 )
@@ -3161,7 +3182,7 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 )
                 outs.append(outr)  # for reid
         if self.training:
-            prompt_loss = {"loss_prompt": prompt_loss}
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompt_reg": prompt_reg}
         return {"side_stage3": outs[0], "stage3": outs[1]}, task_query, prompt_loss
 
 
@@ -3176,6 +3197,40 @@ class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
         return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug, self).task_query(
             backbone_features
         )
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinSimFPNLiteRCNNPSBoxAugUnq(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @torch.no_grad()
+    def task_query(self, backbone_features):
+        x = backbone_features[list(backbone_features.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin_org.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin_org.drop_after_pos(x)
+
+        if self.swin_org.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin_org.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+
+        for i, stage in enumerate(self.swin_org.stages):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin_org.semantic_weight >= 0:
+                sw = self.swin_org.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin_org.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin_org.softplus(sw) + sb
+        # out = self.swin_org.norm3(out)
+        out = (
+            out.view(-1, *out_hw_shape, self.swin_org.num_features[i])
+            .permute(0, 3, 1, 2)
+            .contiguous()
+        )
+        x = self.swin_org.avgpool(out)
+        x = torch.flatten(x, 1)
+        return x
+
 
 @META_ARCH_REGISTRY.register()
 class PromptedSwinSimFPNLiteRCNNPSBoxAug2c(PromptedSwinSimFPNLiteRCNNPSBoxAug):
@@ -3777,6 +3832,9 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         bonenum = 3
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
@@ -3807,7 +3865,11 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 )
             outs["side_stage{}".format(i+1)]=outd
             outs["side_stage{}_prompts".format(i+1)]=selected_prompts_d[0] # 1 layer
-            prompt_loss += p_loss_d
+            if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg+=p_loss[1]
+            else:
+                    prompt_loss += p_loss
             if i==bonenum-1:
                 outr = (
                     out.view(-1, *out_hw_shape, self.swin.num_features[i])
@@ -3816,7 +3878,7 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 )
                 outs["stage3"]=outr
         if self.training:
-            prompt_loss = {"loss_prompt": prompt_loss}
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompt_reg": prompt_reg}
         return outs, task_query, prompt_loss
 
     def reid_head(
@@ -3848,6 +3910,9 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[bonenum:]):
             if (
@@ -3860,7 +3925,11 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 selected_prompts, p_loss = self.stage_prompts[bonenum + i](
                     task_query_stage, f"reid{i}", train=self.training
                 )
-                prompt_loss += p_loss
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg+=p_loss[1]
+                else:
+                    prompt_loss += p_loss
                 expanded_prompts = []
                 for bi in range(len(roi_boxes)):
                     expanded_prompts.append(
@@ -3896,7 +3965,7 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                     )
             del out
             reid_loss = self.oim_loss(embs, pos_ids)
-            reid_loss.update({"loss_prompt_reid": prompt_loss})
+            reid_loss.update({"loss_prompt_reid": prompt_loss,"loss_prompt_reg_reid": prompt_reg})
             return reid_loss
         else:
             embs = normalize(embs, dim=-1)
@@ -3920,6 +3989,9 @@ class PromptedOrgSwinF4SGAttnFPNPSBoxAug(PromptedOrgSwinF4AttnFPNPSBoxAug):
         prompt_loss = torch.zeros(
             (1,), dtype=task_query.dtype, device=task_query.device
         )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
         bonenum = 3
         task_query_x = task_query.unsqueeze(1)
         for i, stage in enumerate(self.swin.stages[:bonenum]):
@@ -3933,7 +4005,12 @@ class PromptedOrgSwinF4SGAttnFPNPSBoxAug(PromptedOrgSwinF4AttnFPNPSBoxAug):
                 selected_prompts, p_loss = self.stage_prompts[i](
                     task_query_stage, i, train=self.training
                 )
-                prompt_loss += p_loss
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg+=p_loss[1]
+                else:
+                    prompt_loss += p_loss
+
                 x, hw_shape, out, out_hw_shape = stage(
                     x, hw_shape, deep_prompt_embed=selected_prompts
                 )
