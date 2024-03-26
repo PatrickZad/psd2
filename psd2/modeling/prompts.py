@@ -300,6 +300,9 @@ class CodaPromptWd(nn.Module):
 def ortho_penalty(t):
     return ((t @ t.T - torch.eye(t.shape[0]).cuda()) ** 2).mean() * 1e-6 #NOTE
 
+def dis_sim_penalty(t1,t2):
+    sim=torch.mm(t1,t2.T)
+    return sim.mean()
 
 # @article{wang2022dualprompt,
 #   title={DualPrompt: Complementary Prompting for Rehearsal-free Continual Learning},
@@ -641,8 +644,9 @@ class L2PppMaskSeOrth(L2Ppp):
                     p_loss += loss
                     orth_loss+=o_loss
                 else:
-                    top_k = torch.topk(cos_sim, self.top_k, dim=1)
-                    k_idx = top_k.indices
+                    per_task_sim=cos_sim.reshape(B,-1,self.top_k).sum(-1).sum(0)
+                    task_id=torch.argmax(per_task_sim).item()
+                    k_idx=torch.arange(task_id*self.top_k,(task_id+1)*self.top_k).unsqueeze(0).repeat(B,1)
                     P_ = p[k_idx]
                 lp.append(P_)
 
@@ -658,6 +662,102 @@ class L2PppMaskSeOrth(L2Ppp):
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
         p_loss =p_loss* self.loss_weight
         orth_loss=orth_loss*self.orth_mu
+        if self.training:
+            return torch.stack(p_return, dim=0), [p_loss,orth_loss]
+        else:
+            return torch.stack(p_return, dim=0).flatten(2, 3), [p_loss,orth_loss]
+
+class L2PppMaskSeOrthTD(L2PppMaskSeOrth):
+    def __init__(
+        self,td_mu,*args, **kws):
+        super().__init__(*args, **kws)
+        self.td_mu=td_mu
+    def forward(self, x_query, vis_mark, train=False, task_id=None):
+        B, nL, C = x_query.shape
+        p_return = []
+        p_loss = 0.0
+        orth_loss=0.0
+        td_loss=0.0
+        vis_attn = []
+        for l in range(nL):
+            # e prompts
+            lp = []
+            if l in self.e_layers:
+                K = getattr(self, f"e_k_{l}")  # 0 based indexing here
+                p = getattr(self, f"e_p_{l}")  # 0 based indexing here
+                A = getattr(self, f"e_a_{l}")  # 0 based indexing here
+                n_A=nn.functional.normalize(A, dim=1)
+
+                # cosine similarity to match keys/querries
+                a_query = torch.einsum("bd,kd->bkd", x_query[:, l, :], A)
+                # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
+                n_K = nn.functional.normalize(K, dim=1)
+                q = nn.functional.normalize(a_query, dim=2)
+                cos_sim = torch.einsum("bkd,kd->bk", q, n_K)
+
+                if train:
+                    vis_attn.append(cos_sim.detach())
+                    # dual prompt during training uses task id
+                    loss = (
+                            1.0
+                            - cos_sim[
+                                :,
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,
+                            ]
+                        ).sum()
+                    o_loss=ortho_penalty(n_K[
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,:])+ortho_penalty(n_A[
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,:])
+                    if self.task_count>0:
+                        dis_loss=dis_sim_penalty(n_K[
+                                0 : self.task_count 
+                                * self.top_k,:],n_K[
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,:])+dis_sim_penalty(n_A[
+                                0 : self.task_count 
+                                * self.top_k,:],n_A[
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,:])
+                        td_loss+=dis_loss
+                    P_ = (
+                            p[
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k
+                            ]
+                            .flatten(0, 1)
+                            .unsqueeze(0)
+                            .expand(B, -1, -1)
+                        )  # B, num_e_prompts*topk, d
+                    p_loss += loss
+                    orth_loss+=o_loss
+                else:
+                    per_task_sim=cos_sim.reshape(B,-1,self.top_k).sum(-1).sum(0)
+                    task_id=torch.argmax(per_task_sim).item()
+                    k_idx=torch.arange(task_id*self.top_k,(task_id+1)*self.top_k).unsqueeze(0).repeat(B,1)
+                    P_ = p[k_idx]
+                lp.append(P_)
+
+            p_return.append(torch.cat(lp, dim=1))
+
+        if self.vis_period > 0 and train:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
+                vis_img = (
+                    torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        p_loss =p_loss* self.loss_weight
+        orth_loss=orth_loss*self.orth_mu+td_loss*self.td_mu
         if self.training:
             return torch.stack(p_return, dim=0), [p_loss,orth_loss]
         else:
@@ -1341,6 +1441,20 @@ def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,emb_d,num_layers,key_di
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskSeOrth":
                 prompt_stage = L2PppMaskSeOrth(
+                    orth_mu=prompt_cfg.ORTH_MU,
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskSeOrthTD":
+                prompt_stage = L2PppMaskSeOrthTD(
+                    td_mu=prompt_cfg.TD_MU,
                     orth_mu=prompt_cfg.ORTH_MU,
                     emb_d=emb_d,
                     n_tasks=prompt_cfg.NUM_TASKS,
