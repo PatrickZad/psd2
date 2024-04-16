@@ -1,7 +1,7 @@
 _BASE_: "base.yaml"
 MODEL:
   META_ARCHITECTURE: "SwinSimFPNRCNNLite"
-  WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
+  WEIGHTS: "Data/model_zoo/swin_rcnn_small_solider_d2.pkl"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -43,7 +43,7 @@ PERSON_SEARCH:
   DET:
     MODEL:
       TRANSFORMER:
-        SEMANTIC_WEIGHT: -1
+        SEMANTIC_WEIGHT: 0.6
         WITH_CP: False
       SIM_FPN:
         IN_FEATURE: "stage3"
@@ -61,13 +61,10 @@ SOLVER:
   CHECKPOINT_PERIOD: 9890
   GAMMA: 0.1
   IMS_PER_BATCH: 16
-INPUT:
-  MIN_SIZE_TEST: 240
-  MAX_SIZE_TEST: 720
 DATASETS:
   TRAIN: ("COCO-CH",) 
-  TEST: ("MovieNet_GalleryTestG2000",) # "PRW_Gallery","CUHK-SYSU_Gallery", 
+  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery") # ,"MovieNet_GalleryTestG2000") #
 TEST:
   EVAL_PERIOD: 9890
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign_new_14x14"
+OUTPUT_DIR: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-solider_new_16x8"

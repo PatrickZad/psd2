@@ -38,9 +38,8 @@ def setup(config_file):
 def test_vis(cfg, model, data_loader, writer):
     model.train()
     storage = get_event_storage()
-
     for batch_inputs in data_loader:
-        out = model.forward_vis(batch_inputs)
+        out = model.forward(batch_inputs)
         torch.cuda.empty_cache()
         writer.write()
         storage.step()
