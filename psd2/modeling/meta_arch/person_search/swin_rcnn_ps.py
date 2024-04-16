@@ -1035,14 +1035,14 @@ class PromptedSwinF4RCNNSeqPS(SwinF4RCNNSeqPS):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
             stage_num_prompts = num_prompts
         else:
             stage_num_prompts = num_prompts[-1]
-        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
+        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
         side_stage_prompts.append(prompt_stage)
 
         head_swin=copy.deepcopy(swin)
@@ -1748,14 +1748,14 @@ class PromptedSwinF4RCNNPS(SwinF4RCNNPS):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
             stage_num_prompts = num_prompts
         else:
             stage_num_prompts = num_prompts[-1]
-        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
+        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
         side_stage_prompts.append(prompt_stage)
 
         ret.update(
@@ -2328,14 +2328,14 @@ class PromptedSwinSimFPNRCNNPS(SwinSimFPNRCNNPS):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
             stage_num_prompts = num_prompts
         else:
             stage_num_prompts = num_prompts[-1]
-        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
+        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
         side_stage_prompts.append(prompt_stage)
 
 
@@ -3067,14 +3067,14 @@ class PromptedMsSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNRCNNPSBoxAug):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,sum(swin.num_features[-4:]),cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],nl,sum(swin.num_features[-4:]),cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
             stage_num_prompts = num_prompts
         else:
             stage_num_prompts = num_prompts[-1]
-        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[-1],tr_cfg.DEPTH[-1],sum(swin.num_features[-4:]),cfg.VIS_PERIOD)
+        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[-1],tr_cfg.DEPTH[-1],sum(swin.num_features[-4:]),cfg.VIS_PERIOD)
         side_stage_prompts.append(prompt_stage)
 
         ret.update(
@@ -3512,14 +3512,14 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],nl,swin.num_features[-1],cfg.VIS_PERIOD)
             stage_prompts.append(prompt_stage)
         side_stage_prompts = nn.ModuleList()
         if isinstance(num_prompts, int):
             stage_num_prompts = num_prompts
         else:
             stage_num_prompts = num_prompts[-1]
-        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
+        prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[-1],tr_cfg.DEPTH[-1],swin.num_features[-1],cfg.VIS_PERIOD)
         side_stage_prompts.append(prompt_stage)
 
         ret.update(
@@ -3571,7 +3571,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         return ret
 
 
-from psd2.modeling.meta_arch.person_search.swin_rcnn_pd import PromptedAttnFeaturePyramid
+from psd2.modeling.meta_arch.person_search.swin_rcnn_pd import PromptedAttnFeaturePyramid, PlainFeaturePyramid
 from psd2.modeling.extend.swin import SidePromptedSwinTransformer as SidePromptedOrgSwinTransformer
 @META_ARCH_REGISTRY.register()
 class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
@@ -3709,7 +3709,7 @@ class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):
                 stage_num_prompts = num_prompts
             else:
                 stage_num_prompts = num_prompts[si]
-            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,swin.num_features[si],1,swin.num_features[-1],cfg.VIS_PERIOD)
+            prompt_stage=build_stage_prompt_pool(prompt_cfg,stage_num_prompts,si,swin.num_features[si],1,swin.num_features[-1],cfg.VIS_PERIOD)
             fpn_prompts.append(prompt_stage)
         ret["fpn_prompts"]=fpn_prompts
         return ret
@@ -4038,6 +4038,123 @@ class PromptedOrgSwinF4SGAttnFPNPSBoxAug(PromptedOrgSwinF4AttnFPNPSBoxAug):
         if self.training:
             prompt_loss = {"loss_prompt": prompt_loss}
         return outs, task_query, prompt_loss
+
+
+@META_ARCH_REGISTRY.register()
+class PromptedSwinPlainFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(PromptedSwinPlainFPNLiteRCNNPSBoxAug, cls).from_config(cfg)
+        # NOTE downsample module of stage3 is trainable
+        swin = ret["swin"]
+
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.PLAIN_FPN
+        p5_m=LastLevelMaxPool()
+        p5_m.in_feature="p4"
+        sim_fpn = PlainFeaturePyramid(
+            swin_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            top_block=p5_m,
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "sim_fpn": sim_fpn,
+            }
+        )
+        return ret
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        task_query = self.task_query(x)
+
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = {}
+        prompt_loss = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        prompt_reg = torch.zeros(
+            (1,), dtype=task_query.dtype, device=task_query.device
+        )
+        bonenum = 3
+        task_query_x = task_query.unsqueeze(1)
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            if (
+                not isinstance(self.swin.num_prompts, int)
+                and self.swin.num_prompts[i] == 0
+            ):
+                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            else:
+                task_query_stage = task_query_x.expand(-1, len(stage.blocks), -1)
+                selected_prompts, p_loss = self.stage_prompts[i](
+                    task_query_stage, i, train=self.training
+                )
+                if isinstance(p_loss,list):
+                    prompt_loss += p_loss[0]
+                    prompt_reg += p_loss[1]
+                else:
+                    prompt_loss += p_loss
+                x, hw_shape, out, out_hw_shape = stage(
+                    x, hw_shape, deep_prompt_embd=selected_prompts
+                )
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if hasattr(self.swin, f"side_norm{i}"):
+                norm_layer = getattr(self.swin, f"side_norm{i}")
+                outd = norm_layer(out)
+            else:
+                outd=out
+            outd = (
+                    outd.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+            outs["side_stage{}".format(i+1)]=outd
+            if i == bonenum - 1:
+                outr = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+                outs["stage3"]=outr  # for reid
+        if self.training:
+            prompt_loss = {"loss_prompt": prompt_loss,"loss_prompt_reg": prompt_reg}
+        return outs, task_query, prompt_loss
+        
+
+
 
 import cv2
 

@@ -422,7 +422,7 @@ class DualPrompt(nn.Module):
                 lp.append(P_)
             p_return.append(torch.cat(lp, dim=1))
 
-        if self.vis_period > 0 and train:
+        if self.vis_period > 0 and train and len(vis_attn)>0:
             storage = get_event_storage()
             if storage.iter % self.vis_period == 0:
                 vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
@@ -430,6 +430,7 @@ class DualPrompt(nn.Module):
                     torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
                 )
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        
         return p_return, p_loss * self.loss_weight
 
 
@@ -540,10 +541,10 @@ class L2PppMaskOrth(L2Ppp):
                                 * self.top_k,
                             ]
                         ).sum()
-                    o_loss=ortho_penalty(n_K[
-                                self.task_count
-                                * self.top_k : (self.task_count + 1)
-                                * self.top_k,:])
+                    n_K_prev=n_K[0:self.task_count*self.top_k,:].detach()
+                    n_K_cur=n_K[self.task_count*self.top_k:(self.task_count + 1)
+                                * self.top_k,:]
+                    o_loss=ortho_penalty(torch.cat([n_K_prev,n_K_cur],dim=0))
                     P_ = (
                             p[
                                 self.task_count
@@ -572,11 +573,12 @@ class L2PppMaskOrth(L2Ppp):
                     torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
                 )
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
-        p_loss =p_loss* self.loss_weight+orth_loss*self.orth_mu
+        p_loss =p_loss* self.loss_weight
+        orth_loss=orth_loss*self.orth_mu
         if self.training:
-            return torch.stack(p_return, dim=0), p_loss
+            return torch.stack(p_return, dim=0), [p_loss,orth_loss]
         else:
-            return torch.stack(p_return, dim=0).flatten(2, 3), p_loss
+            return torch.stack(p_return, dim=0).flatten(2, 3), [p_loss,orth_loss]
 
 class L2PppMaskSeOrth(L2Ppp):
     def __init__(
@@ -666,6 +668,187 @@ class L2PppMaskSeOrth(L2Ppp):
             return torch.stack(p_return, dim=0), [p_loss,orth_loss]
         else:
             return torch.stack(p_return, dim=0).flatten(2, 3), [p_loss,orth_loss]
+
+class L2PppMaskSeOrthWD(nn.Module):
+    def __init__(
+        self,
+        emb_d,
+        n_tasks,
+        pool_size,
+        num_prompts,
+        num_layers,
+        loss_weight,
+        topk,
+        vis_period,
+        orth_mu,
+        key_dim=768,
+    ):
+        super().__init__()
+        self.task_count = 0
+        self.emb_d = emb_d
+        self.key_d = key_dim
+        self.n_tasks = n_tasks
+        self.top_k = topk
+        self.loss_weight = loss_weight
+        e_layers=list(range(num_layers))
+        self._init_smart(pool_size, num_prompts,  e_layers)
+        self.vis_period = vis_period
+        self.orth_mu=orth_mu
+
+        # e prompt init
+        for e in self.e_layers:
+            p = tensor_prompt(self.e_pool_size, self.e_p_length, emb_d)
+            k = tensor_prompt(self.e_pool_size, self.key_d)
+            a = tensor_prompt(self.e_pool_size, self.key_d)
+            for ti in range(n_tasks):
+                s = ti * topk
+                f = (ti + 1) * topk
+                if ti == 0:
+                    setattr(
+                        self,
+                        f"e_p_l{e}_t{ti}",
+                        torch.nn.Parameter(p[s:f], requires_grad=True),
+                    )
+                    setattr(
+                        self,
+                        f"e_k_l{e}_t{ti}",
+                        torch.nn.Parameter(k[s:f], requires_grad=True),
+                    )
+                    setattr(
+                        self,
+                        f"e_a_l{e}_t{ti}",
+                        torch.nn.Parameter(a[s:f], requires_grad=True),
+                    )
+                else:
+                    setattr(
+                        self,
+                        f"e_p_l{e}_t{ti}",
+                        torch.nn.Parameter(p[s:f], requires_grad=False),
+                    )
+                    setattr(
+                        self,
+                        f"e_k_l{e}_t{ti}",
+                        torch.nn.Parameter(k[s:f], requires_grad=False),
+                    )
+                    setattr(
+                        self,
+                        f"e_a_l{e}_t{ti}",
+                        torch.nn.Parameter(a[s:f], requires_grad=False),
+                    )
+
+    def _init_smart(
+        self, e_pool_size, num_e_prompts,  e_layers
+    ):
+        self.task_id_bootstrap = True
+
+        # prompt locations
+        self.e_layers = e_layers
+
+        # prompt pool size
+        self.e_p_length = num_e_prompts
+        self.e_pool_size = e_pool_size
+
+    def process_task_count(self, task_id):
+        self.task_count = task_id
+        for e in self.e_layers:
+            for ti in range(self.n_tasks):
+                if ti != task_id:
+                    getattr(self, f"e_p_l{e}_t{ti}").requires_grad = False
+                    getattr(self, f"e_k_l{e}_t{ti}").requires_grad = False
+                    getattr(self, f"e_a_l{e}_t{ti}").requires_grad = False
+                else:
+                    getattr(self, f"e_p_l{e}_t{ti}").requires_grad = True
+                    getattr(self, f"e_k_l{e}_t{ti}").requires_grad = True
+                    getattr(self, f"e_a_l{e}_t{ti}").requires_grad = True
+    def forward(self, x_query, vis_mark, train=False, task_id=None):
+        B, nL, C = x_query.shape
+        p_return = []
+        p_loss = 0.0
+        orth_loss=0.0
+        vis_attn = []
+        for l in range(nL):
+            # e prompts
+            lp = []
+            if l in self.e_layers:
+                K = getattr(self, f"e_k_l{l}_t{self.task_count}")  # 0 based indexing here
+                p = getattr(self, f"e_p_l{l}_t{self.task_count}")  # 0 based indexing here
+                A = getattr(self, f"e_a_l{l}_t{self.task_count}")  # 0 based indexing here
+                n_A=nn.functional.normalize(A, dim=1)
+
+                # cosine similarity to match keys/querries
+                a_query = torch.einsum("bd,kd->bkd", x_query[:, l, :], A)
+                # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
+                n_K = nn.functional.normalize(K, dim=1)
+                q = nn.functional.normalize(a_query, dim=2)
+                cos_sim = torch.einsum("bkd,kd->bk", q, n_K)
+
+                K_all = torch.cat(
+                    [
+                        getattr(self, f"e_k_l{l}_t{ti}")
+                        for ti in range(self.n_tasks)
+                    ],
+                    dim=0,
+                )
+                A_all = torch.cat(
+                    [
+                        getattr(self, f"e_a_l{l}_t{ti}")
+                        for ti in range(self.n_tasks)
+                    ],
+                    dim=0,
+                )
+                p_all = torch.cat(
+                    [
+                        getattr(self, f"e_p_l{l}_t{ti}")
+                        for ti in range(self.n_tasks)
+                    ],
+                    dim=0,
+                )
+
+                a_query_all = torch.einsum("bd,kd->bkd", x_query[:, l, :], A_all)
+                # # (b x k x d) - [1 x k x d] = (b x k) -> key = k x d
+                n_K_all = nn.functional.normalize(K_all, dim=1)
+                q_all = nn.functional.normalize(a_query_all, dim=2)
+                cos_sim_all = torch.einsum("bkd,kd->bk", q_all, n_K_all)
+
+                if train:
+                    vis_attn.append(cos_sim_all.detach())
+                    # dual prompt during training uses task id
+                    loss = (
+                            1.0
+                            - cos_sim
+                        ).sum()
+                    o_loss=ortho_penalty(n_K)+ortho_penalty(n_A)
+                    P_ = (
+                            p.flatten(0, 1)
+                            .unsqueeze(0)
+                            .expand(B, -1, -1)
+                        )  # B, num_e_prompts*topk, d
+                    p_loss += loss
+                    orth_loss+=o_loss
+                else:
+                    per_task_sim=cos_sim_all.reshape(B,-1,self.top_k).sum(-1).sum(0)
+                    task_id=torch.argmax(per_task_sim).item()
+                    k_idx=torch.arange(task_id*self.top_k,(task_id+1)*self.top_k).unsqueeze(0).repeat(B,1)
+                    P_ = p_all[k_idx]
+                lp.append(P_)
+
+            p_return.append(torch.cat(lp, dim=1))
+
+        if self.vis_period > 0 and train:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
+                vis_img = (
+                    torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        p_loss =p_loss* self.loss_weight
+        orth_loss=orth_loss*self.orth_mu
+        if self.training:
+            return torch.stack(p_return, dim=0), [p_loss,orth_loss]
+        else:
+            return torch.stack(p_return, dim=0).flatten(2, 3), [p_loss,orth_loss]
+
 
 class L2PppMaskSeOrthTD(L2PppMaskSeOrth):
     def __init__(
@@ -1398,7 +1581,7 @@ def tensor_prompt(*dims, ortho=False):
 def tensor_prompt_value(*dims, ortho=False):
     return tensor_prompt(*dims, ortho=ortho).data
 
-def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,emb_d,num_layers,key_dim,vis_period):
+def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,stage_idx,emb_d,num_layers,key_dim,vis_period):
         if stage_num_prompts == 0:
             prompt_stage=nn.Identity() # trivial impl
         else:
@@ -1441,6 +1624,19 @@ def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,emb_d,num_layers,key_di
                 )
             elif prompt_cfg.PROMPT_TYPE == "L2PppMaskSeOrth":
                 prompt_stage = L2PppMaskSeOrth(
+                    orth_mu=prompt_cfg.ORTH_MU,
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "L2PppMaskSeOrthWD":
+                prompt_stage = L2PppMaskSeOrthWD(
                     orth_mu=prompt_cfg.ORTH_MU,
                     emb_d=emb_d,
                     n_tasks=prompt_cfg.NUM_TASKS,
@@ -1526,6 +1722,27 @@ def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,emb_d,num_layers,key_di
                     key_dim=key_dim,
                     vis_period=vis_period,
                 )
+            elif prompt_cfg.PROMPT_TYPE == "DualPromptL2P":
+                stage_type=prompt_cfg.POOL_TYPE[stage_idx]
+                if stage_type=="e":
+                    prompt_stage = L2PppMask(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    pool_size=prompt_cfg.POOL_SIZE,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    topk=prompt_cfg.TOP_K,
+                    loss_weight=prompt_cfg.LOSS_WEIGHT,
+                    key_dim=key_dim,
+                    vis_period=vis_period,
+                )
+                else:
+                    prompt_stage = FixedPrompts(
+                        emb_d=emb_d,
+                        num_prompts=stage_num_prompts*prompt_cfg.TOP_K,
+                        num_layers=num_layers,
+                        )
+                    
             elif prompt_cfg.PROMPT_TYPE == "Fixed":
                 prompt_stage = FixedPrompts(
                     emb_d=emb_d,

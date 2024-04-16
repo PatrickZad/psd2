@@ -1075,6 +1075,103 @@ class SwinSimFPNRCNNLite(SwinSimFPNRCNN):
                 outs.append(out)
         return {"stage3": outs[-1]}
 
+@META_ARCH_REGISTRY.register()
+class SwinPlainFPNRCNNLite(SwinSimFPNRCNNLite):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(SwinPlainFPNRCNNLite, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        # NOTE downsample module of stage3 is trainable
+        swin = SideSwinTransformer(
+            side_start_stage=3,
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 2),  # NOTE remove last stride
+        )
+
+        swin_out_shape = {
+            "stage{}".format(i + 1): ShapeSpec(
+                channels=swin.num_features[i], stride=swin.strides[i]
+            )
+            for i in range(len(swin.stages))
+        }
+        swin_out_shape.update(
+            {
+                "side_stage{}".format(i + 1): ShapeSpec(
+                    channels=swin.num_features[i], stride=swin.strides[i]
+                )
+                for i in range(len(swin.stages))
+            }
+        )
+        sim_fpn_cfg = cfg.PERSON_SEARCH.DET.MODEL.PLAIN_FPN
+        p5_m=LastLevelMaxPool()
+        p5_m.in_feature="p4"
+        sim_fpn = PlainFeaturePyramid(
+            swin_out_shape,
+            sim_fpn_cfg.IN_FEATURE,
+            sim_fpn_cfg.OUT_CHANNELS,
+            top_block=p5_m,
+        )
+        roi_heads = AlteredStandaredROIHeads(cfg, sim_fpn.output_shape())
+        ret["id_assigner"] = build_id_assigner(cfg)
+        ret.update(
+            {
+                "proposal_generator": build_proposal_generator(
+                    cfg, sim_fpn.output_shape()
+                ),
+                "roi_heads": roi_heads,
+                "swin": swin,
+                "sim_fpn": sim_fpn,
+            }
+        )
+        return ret
+    def swin_backbone(self, x):
+        if self.swin.semantic_weight >= 0:
+            w = torch.ones(x.shape[0], 1) * self.swin.semantic_weight
+            w = torch.cat([w, 1 - w], axis=-1)
+            semantic_weight = w.cuda()
+        x = self.backbone(x)
+        x = x[list(x.keys())[-1]]
+        hw_shape = x.shape[2:]
+        x = x.flatten(2).transpose(1, 2)
+
+        if self.swin.use_abs_pos_embed:
+            x = x + self.swin.absolute_pos_embed
+        x = self.swin.drop_after_pos(x)
+
+        outs = {}
+        bonenum = 3
+        for i, stage in enumerate(self.swin.stages[:bonenum]):
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            if self.swin.semantic_weight >= 0:
+                sw = self.swin.semantic_embed_w[i](semantic_weight).unsqueeze(1)
+                sb = self.swin.semantic_embed_b[i](semantic_weight).unsqueeze(1)
+                x = x * self.swin.softplus(sw) + sb
+            if hasattr(self.swin, f"side_norm{i}"):
+                    norm_layer = getattr(self.swin, f"side_norm{i}")
+                    out = norm_layer(out)
+            out = (
+                    out.view(-1, *out_hw_shape, self.swin.num_features[i])
+                    .permute(0, 3, 1, 2)
+                    .contiguous()
+                )
+            outs["stage{}".format(i+1)]=out
+        return outs
 
 @META_ARCH_REGISTRY.register()
 class OrgSwinSimFPNRCNNLite(OrgSwinSimFPNRCNN):
@@ -3557,6 +3654,156 @@ class AttnFeaturePyramid(Backbone):
             output_norm = get_norm(norm, out_channels)
 
             lateral_conv =Block(in_channels,out_channels,num_heads=8,window_size=7,use_rel_pos=True,input_size=(7,7)) # same as swin
+            output_conv = Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=use_bias,
+                norm=output_norm,
+            )
+            weight_init.c2_xavier_fill(output_conv)
+            stage = int(math.log2(strides[idx]))
+            self.add_module("fpn_lateral{}".format(stage), lateral_conv)
+            self.add_module("fpn_output{}".format(stage), output_conv)
+
+            lateral_convs.append(lateral_conv)
+            output_convs.append(output_conv)
+
+        self.in_features = in_features
+        self.lateral_convs = lateral_convs[::-1]
+        self.output_convs = output_convs[::-1]
+        self.top_block = top_block
+        # Return feature names are "p<stage>", like ["p2", "p3", ..., "p6"]
+        self._out_feature_strides = {
+            "p{}".format(int(math.log2(s))): s for s in strides
+        }
+        # top block output feature maps.
+        if self.top_block is not None:
+            for s in range(stage, stage + self.top_block.num_levels):
+                self._out_feature_strides["p{}".format(s + 1)] = 2 ** (s + 1)
+
+        self._out_features = list(self._out_feature_strides.keys())
+        self._out_feature_channels = {k: out_channels for k in self._out_features}
+        self._size_divisibility = strides[-1]
+        assert fuse_type in {"avg", "sum"}
+        self._fuse_type = fuse_type
+    @property
+    def size_divisibility(self):
+        return self._size_divisibility
+    def forward(self, x):
+        """
+        Args:
+            input (dict[str->Tensor]): mapping feature map name (e.g., "res5") to
+                feature map tensor for each feature level in high to low resolution order.
+
+        Returns:
+            dict[str->Tensor]:
+                mapping from feature map name to FPN feature map tensor
+                in high to low resolution order. Returned feature names follow the FPN
+                paper convention: "p<stage>", where stage has stride = 2 ** stage e.g.,
+                ["p2", "p3", ..., "p6"].
+        """
+        bottom_up_features = x
+        results = []
+        prev_features = self.lateral_convs[0](bottom_up_features[self.in_features[-1]])
+        results.append(self.output_convs[0](prev_features))
+
+        # Reverse feature maps into top-down order (from low to high resolution)
+        for idx, (lateral_conv, output_conv) in enumerate(
+            zip(self.lateral_convs, self.output_convs)
+        ):
+            # Slicing of ModuleList is not supported https://github.com/pytorch/pytorch/issues/47336
+            # Therefore we loop over all modules but skip the first one
+            if idx > 0:
+                features = self.in_features[-idx - 1]
+                features = bottom_up_features[features]
+                top_down_features = F.interpolate(
+                    prev_features, scale_factor=2.0, mode="nearest"
+                )
+                lateral_features = lateral_conv(features)
+                prev_features = lateral_features + top_down_features
+                if self._fuse_type == "avg":
+                    prev_features /= 2
+                results.insert(0, output_conv(prev_features))
+
+        if self.top_block is not None:
+            if self.top_block.in_feature in bottom_up_features:
+                top_block_in_feature = bottom_up_features[self.top_block.in_feature]
+            else:
+                top_block_in_feature = results[
+                    self._out_features.index(self.top_block.in_feature)
+                ]
+            results.extend(self.top_block(top_block_in_feature))
+        assert len(self._out_features) == len(results)
+        return {f: res for f, res in zip(self._out_features, results)}
+
+    def output_shape(self):
+        return {
+            name: ShapeSpec(
+                channels=self._out_feature_channels[name],
+                stride=self._out_feature_strides[name],
+            )
+            for name in self._out_features
+        }
+
+class PlainFeaturePyramid(Backbone):
+    """
+    This module modifies SimpleFeaturePyramid in :paper:`vitdet`.
+    It creates pyramid features built on top of the input feature map.
+    """
+
+    def __init__(
+        self,
+        input_shapes,
+        in_features,
+        out_channels,
+        top_block=None,
+        norm="",
+        fuse_type="sum",
+    ):
+        """
+        Args:
+            net (Backbone): module representing the subnetwork backbone.
+                Must be a subclass of :class:`Backbone`.
+            in_feature (str): names of the input feature maps coming
+                from the net.
+            out_channels (int): number of channels in the output feature maps.
+            scale_factors (list[float]): list of scaling factors to upsample or downsample
+                the input features for creating pyramid features.
+            top_block (nn.Module or None): if provided, an extra operation will
+                be performed on the output of the last (smallest resolution)
+                pyramid output, and the result will extend the result list. The top_block
+                further downsamples the feature map. It must have an attribute
+                "num_levels", meaning the number of extra pyramid levels added by
+                this block, and "in_feature", which is a string representing
+                its input feature (e.g., p5).
+            norm (str): the normalization to use.
+            square_pad (int): If > 0, require input images to be padded to specific square size.
+        """
+        super(PlainFeaturePyramid, self).__init__()
+
+        strides = [input_shapes[f].stride for f in in_features]
+        _assert_strides_are_log2_contiguous(strides)
+
+        in_channels_per_feature = [input_shapes[f].channels for f in in_features]
+
+        lateral_convs = []
+        output_convs = []
+
+        use_bias = norm == ""
+        for idx, in_channels in enumerate(in_channels_per_feature):
+            lateral_norm = get_norm(norm, out_channels)
+            output_norm = get_norm(norm, out_channels)
+
+            lateral_conv =Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=1,
+                bias=use_bias,
+                norm=lateral_norm,
+            )
             output_conv = Conv2d(
                 out_channels,
                 out_channels,

@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14/model_0022415.pth"
+  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14_8p/model_0022415.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -43,14 +43,13 @@ PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [4,4,4,4]
+    NUM_PROMPTS: [2,2,2,2]
     POOL_SIZE: 12
-    PROMPT_TYPE: "L2PppMaskSeOrthTD"
+    PROMPT_TYPE: "L2PppMaskSeOrth"
     NUM_TASKS: 3
     CURRENT_TASK: 1
     LOSS_WEIGHT: 0.1
     ORTH_MU: 100000
-    TD_MU: 0.05
     TOP_K: 4
   DET:
     MODEL:
@@ -111,4 +110,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 1426
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrthTD-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14_8p"

@@ -1,7 +1,7 @@
 _BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14/model_0022415.pth"
+  WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign_new_14x14/model_0178019.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -43,14 +43,13 @@ PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
     PROMPT_START_STAGE: 1
-    NUM_PROMPTS: [4,4,4,4]
+    NUM_PROMPTS: [2,2,2,2]
     POOL_SIZE: 12
-    PROMPT_TYPE: "L2PppMaskSeOrthTD"
+    PROMPT_TYPE: "L2PppMaskSeOrth"
     NUM_TASKS: 3
-    CURRENT_TASK: 1
+    CURRENT_TASK: 0
     LOSS_WEIGHT: 0.1
     ORTH_MU: 100000
-    TD_MU: 0.05
     TOP_K: 4
   DET:
     MODEL:
@@ -81,8 +80,8 @@ PERSON_SEARCH:
         ULB_LAYER: "ulb_full"
         LB_FACTOR: 30
         ULB_FACTOR: 30
-        NUM_LB: [5532,483]
-        LEN_ULB: [5000,500]
+        NUM_LB: [5532,]
+        LEN_ULB: [5000,]
         FEAT_DIM: 768
         NORM_FEAT: True
         SYNC_MEMORY: True
@@ -93,9 +92,9 @@ PERSON_SEARCH:
 SOLVER:
   OPTIM: "Adam"
   BASE_LR: 0.0003
-  STEPS: (17112,34224)
-  MAX_ITER: 35650 # 713 * 50
-  CHECKPOINT_PERIOD: 1426
+  STEPS: (33624,67248)
+  MAX_ITER: 70050 # 1401 * 50
+  CHECKPOINT_PERIOD: 2802
   GAMMA: 0.1
   WEIGHT_DECAY: 0.0 # 5.0e-4
   IMS_PER_BATCH: 8
@@ -105,10 +104,10 @@ INPUT:
   MIN_SIZE_TEST: 800
   MAX_SIZE_TEST: 1333
 DATASETS:
-  TRAIN: ("PRW_Train",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query",) #
+  TRAIN: ("CUHK-SYSU_Train",) 
+  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100",) #
 TEST:
   IMS_PER_PROC: 2
-  EVAL_PERIOD: 1426
+  EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrthTD-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14_8p"
