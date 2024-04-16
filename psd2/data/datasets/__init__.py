@@ -5,5 +5,6 @@ from .cuhk_sysu import subset_names as cuhk_sysu_subsets
 from .prw import load_prw
 from .prw import subsets as prw_subsets
 from .coco_ch import subsets as cococh_subsets
+from .cpm import load_cpm
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]

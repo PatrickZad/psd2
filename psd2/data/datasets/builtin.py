@@ -303,9 +303,6 @@ def register_cpm(datadirs):
     name = "CPM_" + "Train"
     DatasetCatalog.register(name, lambda: load_cpm(datadirs, "Train"))
     MapperCatalog.register(name, mappers.SearchMapper)
-    name = "CPM_" + "Gallery"
-    DatasetCatalog.register(name, lambda: load_cpm(datadirs, "Gallery"))
-    MapperCatalog.register(name, mappers.SearchMapper)
 
 
 _root = os.getenv("PS_DATASETS", "Data/ReID")
