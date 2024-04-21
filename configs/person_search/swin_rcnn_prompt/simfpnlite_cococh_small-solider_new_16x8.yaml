@@ -63,7 +63,7 @@ SOLVER:
   IMS_PER_BATCH: 16
 DATASETS:
   TRAIN: ("COCO-CH",) 
-  TEST: ("PRW_Gallery","CUHK-SYSU_Gallery") # ,"MovieNet_GalleryTestG2000") #
+  TEST: ("MovieNet_GalleryTestG2000","PRW_Gallery","CUHK-SYSU_Gallery") # ,"MovieNet_GalleryTestG2000") #
 TEST:
   EVAL_PERIOD: 9890
   DETECTION_SCORE_TS: [0.5,]
