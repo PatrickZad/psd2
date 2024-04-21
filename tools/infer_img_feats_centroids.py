@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 def main(img_feats,n_clusters):
     domain_feats = torch.load(img_feats)
     
-    domain_feats = tF.normalize(domain_feats, dim=-1).cpu().numpy()
+    domain_feats = domain_feats.cpu().numpy() #tF.normalize(domain_feats, dim=-1).cpu().numpy()
     clusters = (
                 KMeans(n_clusters=n_clusters, random_state=0).fit(domain_feats).cluster_centers_
             )

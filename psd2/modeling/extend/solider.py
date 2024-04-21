@@ -1861,9 +1861,12 @@ class PromptedWindowMSA(WindowMSA):
             self.window_size[0] * self.window_size[1],
             -1,
         )  # Wh*Ww,Wh*Ww,nH
-        relative_position_bias = relative_position_bias.permute(
-            2, 0, 1
-        ).contiguous()  # nH, Wh*Ww, Wh*Ww
+        try:
+            relative_position_bias = relative_position_bias.permute(
+                2, 0, 1
+            ).contiguous()  # nH, Wh*Ww, Wh*Ww
+        except Exception as e:
+            print(e)
 
         # account for prompt nums for relative_position_bias
         # attn: [1920, 6, 649, 649]
@@ -1919,8 +1922,10 @@ class PromptedWindowMSA(WindowMSA):
         attn = self.softmax(attn)
 
         attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        try:
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        except Exception as e:
+            print(e)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

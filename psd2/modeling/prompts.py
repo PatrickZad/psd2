@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import torch
 import torch.nn as nn
 from psd2.utils.events import get_event_storage
@@ -1667,6 +1668,64 @@ class FixedPromptsTaskInc(nn.Module):
         return p_return
 
 
+class SPrompts(nn.Module):
+    def __init__(
+        self,
+        emb_d,
+        n_tasks,
+        n_keys,
+        keys_path,
+        num_prompts,
+        num_layers,
+        key_dim=768,
+    ):
+        super().__init__()
+        self.task_count = 0
+        self.emb_d = emb_d
+        self.key_d = key_dim
+        self.n_tasks = n_tasks
+        self.n_prompts=num_prompts
+        self.n_keys=n_keys
+        self.n_layers=num_layers
+        # prompt / key init
+        for e in range(self.n_layers):
+            p = tensor_prompt(self.n_tasks,num_prompts, emb_d)
+            k = torch.zeros(self.n_tasks, n_keys, self.key_d)
+            setattr(self, f"e_p_{e}", p)
+            self.register_buffer(f"e_k_{e}", k)
+        self.task_keys_temp=torch.load(keys_path,map_location=self.e_k_0.device)
+        self.load_key=False
+
+    def process_task_count(self, task_id):
+        self.task_count = task_id
+
+    def forward(self, x_query, vis_mark, train=False, task_id=None):
+        if not self.load_key:
+            for e in range(self.n_layers):
+                k = getattr(self,f"e_k_{e}")
+                k[self.task_count]=self.task_keys_temp.to(k.device)
+            self.load_key=True
+        B, nL, C = x_query.shape
+        p_loss = 0.0
+        lp = []
+        for l in range(nL):
+            # prompts
+            p = getattr(self, f"e_p_{l}")  # 0 based indexing here
+            k=getattr(self, f"e_k_{l}")[:self.task_count+1]
+            if train:
+                P_ = p[self.task_count].unsqueeze(0).expand(B, -1, -1)# B, num_prompts, d
+            else:
+                q=x_query[:,l]
+                dists= ((q.unsqueeze(1).unsqueeze(1) - k.unsqueeze(0))**2).sum(-1) #B x C - T x L x C -> B x T x L
+                dists_fl=dists.flatten(1,2) # B x TL
+                min_dists_idx=torch.argmin(dists_fl,dim=1)
+                match_tasks=min_dists_idx // self.n_keys
+                P_=p[match_tasks]
+            lp.append(P_)
+        
+        return torch.stack(lp, dim=0), p_loss
+
+
 # note - ortho init has not been found to help l2p/dual prompt
 def tensor_prompt(*dims, ortho=False):
     p = torch.nn.Parameter(torch.FloatTensor(*dims), requires_grad=True)
@@ -1861,6 +1920,16 @@ def build_stage_prompt_pool(prompt_cfg,stage_num_prompts,stage_idx,emb_d,num_lay
                     emb_d=emb_d,
                     num_prompts=stage_num_prompts,
                     num_layers=num_layers,
+                )
+            elif prompt_cfg.PROMPT_TYPE == "SPrompts":
+                prompt_stage = SPrompts(
+                    emb_d=emb_d,
+                    n_tasks=prompt_cfg.NUM_TASKS,
+                    n_keys=prompt_cfg.NUM_KEYS,
+                    keys_path=prompt_cfg.KEYS_PATH,
+                    num_prompts=stage_num_prompts,
+                    num_layers=num_layers,
+                    key_dim=key_dim,
                 )
             elif prompt_cfg.PROMPT_TYPE == "CODAPromptWd":
                 prompt_stage = CodaPromptWd(
