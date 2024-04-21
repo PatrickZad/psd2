@@ -9,7 +9,7 @@ PERSON_SEARCH:
         SEMANTIC_WEIGHT: -1
 DATASETS:
   TRAIN: ("PRW_Train",) 
-  TEST: ("CUHK-SYSU_Gallery",) # "PRW_Query"
+  TEST: ("MovieNet_GalleryTestG2000",) # "PRW_Query", "CUHK-SYSU_Gallery"
 INPUT:
   MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
   MAX_SIZE_TRAIN: 1333

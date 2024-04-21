@@ -1795,6 +1795,7 @@ class OimClipSimpleBiMLMDFullyAlign(OimClipSimpleBiMLMDFully):
         else:
             return super().forward_gallery(image_list, gt_instances)
 
+#refer to SimMIM 
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleBiMIMDFully(OimClipSimpleBiMLMDFully):
@@ -1808,24 +1809,20 @@ class OimClipSimpleBiMIMDFully(OimClipSimpleBiMLMDFully):
         super(OimClipSimpleBiMIMDFully,self).__init__(*args, **kws)
         self.mim_ratio=mim_ratio
         embed_dim=self.clip_model.text_projection.shape[1]
-        self.mim_token=nn.Parameter(torch.randn(1, embed_dim)/ embed_dim ** 0.5)
+        self.mim_token=nn.Parameter(torch.zeros(1,1, embed_dim))
+        trunc_normal_(self.mim_token, mean=0., std=.02)
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
         ret["mim_ratio"]=cfg.PERSON_SEARCH.REID.MIM_RATIO
         return ret
     def random_masked_tokens_and_labels(self,all_tokens):
-        
-        all_masked_tokens=[]
-        for tokens in all_tokens:
-            num_tokens=tokens.shape[0]
-            prob = torch.rand(num_tokens,device=all_tokens.device)
-            re_idxs=torch.arange(0,num_tokens,dtype=torch.long,device=all_tokens.device)
-            re_idxs[prob<self.mim_ratio]=-1
-            cat_tokens=torch.cat([tokens,self.mim_token],dim=0)
-            masked_tokens=cat_tokens[re_idxs]
-            all_masked_tokens.append(masked_tokens)
-        return torch.stack(all_masked_tokens)
+        prob = torch.rand(all_tokens.shape[:2],device=all_tokens.device).unsqueeze(2) # B x L x 1
+        masking_w=torch.zeros_like(prob)
+        masking_w[prob<self.mim_ratio]=1
+        mim_tokens=self.mim_token.expand(all_tokens.shape[0],all_tokens.shape[1],-1)
+        masked_tokens=all_tokens*(1-masking_w)+mim_tokens*masking_w
+        return masked_tokens
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
         text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
@@ -1987,6 +1984,145 @@ class OimClipSimpleBiMHM2DFully(OimClipSimpleBiMHMDFully):
         return {"loss_mim":cos_dist.sum()/num_i_tokens}
 
 @META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMHM2MutualDFully(OimClipSimpleBiMHM2DFully):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMHM2MutualDFully,self).__init__(*args, **kws)
+        self.mutual_loss=SupConLoss()
+    def mlm_loss(self,i_features,tokens):
+        masked_tokens,token_labels=self.random_masked_tokens_and_labels(tokens)
+        mlm_feats =ckpt.checkpoint(self.clip_model.encode_text,masked_tokens)
+        x =ckpt.checkpoint(self.cross_former,mlm_feats, i_features, i_features)
+
+        x =ckpt.checkpoint(self.mlm_head,x)  # [batch_size, text_len, num_colors]
+
+        scores = x.float().reshape(-1, self.clip_model.vocab_size)
+        mlm_embeds=mlm_feats[torch.arange(mlm_feats.shape[0]), torch.stack(tokens).to(self.device).argmax(dim=-1)]
+        # mlm_embeds=self.bn_neck_text_mlm(mlm_embeds)
+        
+        return {"loss_mlm":F.cross_entropy(scores,token_labels.reshape(-1),ignore_index=0) *0.1},mlm_embeds
+    def mim_loss(self,i_embs,i_features,t_features):#NOTE L2 distance
+        masked_i_features=self.random_masked_patches(i_features)
+        i_features=torch.cat([i_embs.unsqueeze(1),i_features],dim=1)
+        masked_i_features=torch.cat([i_embs.unsqueeze(1),masked_i_features],dim=1)
+        rec_i_features =ckpt.checkpoint(self.cross_former_mim,masked_i_features, t_features,t_features)
+        rec_i_embs=rec_i_features[:,0]
+        num_i_tokens=i_features.shape[0]*i_features.shape[1]
+        tgt_i_features=i_features.detach()
+        # cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        return {"loss_mim":l2_dist},rec_i_embs
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,box_feats = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            img_feature_embs=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            box_embs_per_img=torch.split(box_embs,num_ps_per_img)
+            for img_rois,roi_embs,roi_ids,img_gt in zip(box_features_per_img,box_embs_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    # there can be multiple text seq for one id
+                    if pid>-1:
+                        id_feats=img_rois[roi_ids==pid]
+                        id_embs=roi_embs[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                            id_embs=id_embs.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        img_feature_embs.append(id_embs[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mlm"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                roi_feat_embs=torch.cat(img_feature_embs)
+                mlm_loss,mlm_embs=self.mlm_loss(roi_feats,text_tokens)
+                mlm_embs=F.normalize(mlm_embs,dim=-1)
+                losses.update(mlm_loss)
+
+            # text oim & mim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+                losses["loss_mlm2mim"]=torch.tensor(0.,device=self.device)
+                losses["loss_mim2mlm"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_features,text_embs=self.text_embeds_features(torch.stack(text_tokens).to(self.device))
+                mim_loss,mim_embs=self.mim_loss(roi_feat_embs,roi_feats,text_features)
+                losses.update(mim_loss)
+                align_loss_mlm=self.mutual_loss(mlm_embs,mim_embs,text_pids,text_pids)
+                losses["loss_mlm2mim"]=align_loss_mlm*0.5
+                align_loss_mim=self.mutual_loss(mim_embs,mlm_embs,text_pids,text_pids)
+                losses["loss_mim2mlm"]=align_loss_mim*0.5
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
 class OimClipSimpleBiMIML2DFully(OimClipSimpleBiMIMDFully):
 
     def mlm_loss(self,i_features,tokens):
@@ -1997,7 +2133,142 @@ class OimClipSimpleBiMIML2DFully(OimClipSimpleBiMIMDFully):
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="none")
         return {"loss_mim":l2_dist.sum()/num_i_tokens*0.001}
-           
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFullyPred(OimClipSimpleBiMIMDFully):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIML2DFullyPred,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.mim_norm=nn.LayerNorm(embed_dim)
+        self.mim_head=nn.Linear(embed_dim,embed_dim)
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        return {"loss_mim":l2_dist}
+     
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMHML2DFullyPred(OimClipSimpleBiMIML2DFullyPred):
+    def random_masked_tokens_and_labels(self,all_tokens):
+        return super(OimClipSimpleBiMIMDFully,self).random_masked_tokens_and_labels(all_tokens)
+    def mlm_loss(self,i_features,tokens):
+        return super(OimClipSimpleBiMIMDFully,self).mlm_loss(i_features,tokens)
+    def mim_loss(self,i_features,t_features):        
+        masked_i_features=super(OimClipSimpleBiMIML2DFullyPred,self).random_masked_tokens_and_labels(i_features)
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features, t_features)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        return {"loss_mim":l2_dist}
+    
+    
+    def text_embeds_features(self,text):
+        text_feats=self.clip_model.encode_text(text)
+        text_embes=text_feats[torch.arange(text_feats.shape[0]), text.argmax(dim=-1)]
+        text_embes=self.bn_neck_text(text_embes)
+        return text_feats,text_embes
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,box_feats = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    # there can be multiple text seq for one id
+                    if pid>-1:
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mlm"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim & mim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_features,text_embs=self.text_embeds_features(torch.stack(text_tokens).to(self.device))
+                losses.update(self.mim_loss(roi_feats,text_features))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+
+
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleBiMHML2DFully(OimClipSimpleBiMHMDFully):
     def mim_loss(self,i_features,t_features):
@@ -3937,3 +4208,66 @@ class ProtoConLoss(nn.Module):
         loss = loss.mean()
 
         return loss
+
+
+import warnings
+
+def _trunc_normal_(tensor, mean, std, a, b):
+    # Cut & paste from PyTorch official master until it's in a few official releases - RW
+    # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
+    def norm_cdf(x):
+        # Computes standard normal cumulative distribution function
+        return (1. + math.erf(x / math.sqrt(2.))) / 2.
+
+    if (mean < a - 2 * std) or (mean > b + 2 * std):
+        warnings.warn("mean is more than 2 std from [a, b] in nn.init.trunc_normal_. "
+                      "The distribution of values may be incorrect.",
+                      stacklevel=2)
+
+    # Values are generated by using a truncated uniform distribution and
+    # then using the inverse CDF for the normal distribution.
+    # Get upper and lower cdf values
+    l = norm_cdf((a - mean) / std)
+    u = norm_cdf((b - mean) / std)
+
+    # Uniformly fill tensor with values from [l, u], then translate to
+    # [2l-1, 2u-1].
+    tensor.uniform_(2 * l - 1, 2 * u - 1)
+
+    # Use inverse cdf transform for normal distribution to get truncated
+    # standard normal
+    tensor.erfinv_()
+
+    # Transform to proper mean, std
+    tensor.mul_(std * math.sqrt(2.))
+    tensor.add_(mean)
+
+    # Clamp to ensure it's in the proper range
+    tensor.clamp_(min=a, max=b)
+    return tensor
+
+
+def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
+    r"""Fills the input Tensor with values drawn from a truncated
+    normal distribution. The values are effectively drawn from the
+    normal distribution :math:`\mathcal{N}(\text{mean}, \text{std}^2)`
+    with values outside :math:`[a, b]` redrawn until they are within
+    the bounds. The method used for generating the random values works
+    best when :math:`a \leq \text{mean} \leq b`.
+
+    NOTE: this impl is similar to the PyTorch trunc_normal_, the bounds [a, b] are
+    applied while sampling the normal with mean/std applied, therefore a, b args
+    should be adjusted to match the range of mean, std args.
+
+    Args:
+        tensor: an n-dimensional `torch.Tensor`
+        mean: the mean of the normal distribution
+        std: the standard deviation of the normal distribution
+        a: the minimum cutoff value
+        b: the maximum cutoff value
+    Examples:
+        >>> w = torch.empty(3, 5)
+        >>> nn.init.trunc_normal_(w)
+    """
+    with torch.no_grad():
+        return _trunc_normal_(tensor, mean, std, a, b)
