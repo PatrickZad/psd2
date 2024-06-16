@@ -11,7 +11,7 @@ from .prw import load_prw
 from .prw_tbps import load_prw_tbps
 from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
-from .coco_ch import load_coco_ch, load_coco_p, load_cocofkp_ch
+from .coco_ch import load_coco_ch, load_coco_p, load_cocofkp_ch,load_coco_ch_50,load_coco_ch_75
 from .samacoco_ch import load_samacoco_ch,load_samacoco_p
 from .cpm import load_cpm
 
@@ -239,10 +239,12 @@ def register_cdps_all(datadir):
     DatasetCatalog.register(name, lambda: load_cdps(datadir, "Query"))
     MapperCatalog.register(name, mappers.CdpsMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
+    """
     name = "CDPS_InfQ"
     DatasetCatalog.register(name, lambda: load_cdps(datadir, "Query"))
     MapperCatalog.register(name, mappers.CdpsSearchMapperInfQuery)
     MetadataCatalog.get(name).set(evaluator_type="query")
+    """
     name = "CDPS_Gallery"
     DatasetCatalog.register(name, lambda: load_cdps(datadir, "Gallery"))
     MapperCatalog.register(name, mappers.CdpsMapper)
@@ -253,6 +255,16 @@ def register_cococh_all(datadir):
     name = "COCO-CH"
     DatasetCatalog.register(
         name, lambda: load_coco_ch(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCO-CH-50"
+    DatasetCatalog.register(
+        name, lambda: load_coco_ch_50(datadir, "train", allow_crowd=False)
+    )
+    MapperCatalog.register(name, mappers.COCOCHMapper)
+    name = "COCO-CH-75"
+    DatasetCatalog.register(
+        name, lambda: load_coco_ch_75(datadir, "train", allow_crowd=False)
     )
     MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCOFKP-CH"
@@ -309,6 +321,7 @@ _root = os.getenv("PS_DATASETS", "Data/ReID")
 register_movie_net_all(os.path.join(_root, "movienet"))
 register_cuhk_sysu_all(os.path.join(_root, "cuhk_sysu"))
 register_prw_all(os.path.join(_root, "PRW"))
+register_cdps_all(os.path.join(_root, "CDPS"))
 register_cpm(
     [
         os.path.join(_root, "cuhk_sysu"),

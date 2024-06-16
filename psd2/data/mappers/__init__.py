@@ -5,5 +5,6 @@ from .coco_ch_mapper import COCOCHDINOMapper, COCOCHDINOPreDetMapper, COCOCHMapp
 from .movie_net_mapper import MovieNetMapper
 from .cuhk_sysu_tbps_mapper import CuhksysuTBPSMapper
 from .prw_tbps_mapper import PrwTBPSMapper
+from .cdps_mapper import CdpsMapper
 
 __all__ = [k for k in globals().keys() if "builtin" not in k and not k.startswith("_")]
