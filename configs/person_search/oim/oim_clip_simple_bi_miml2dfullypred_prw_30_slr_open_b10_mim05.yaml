@@ -34,5 +34,5 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullypred_prw_30_slr_open_b10_05mr_seed"
-SEED: 58216138
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullypred_prw_30_slr_open_b10_05mr" #_seed"
+# SEED: 58216138

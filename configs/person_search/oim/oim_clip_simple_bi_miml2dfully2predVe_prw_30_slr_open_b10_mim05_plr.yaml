@@ -1,6 +1,6 @@
 _BASE_: "base_tbps.yaml"
 MODEL:
-  META_ARCHITECTURE: "OimClipSimpleBiMHML2DFullyPred"
+  META_ARCHITECTURE: "OimClipSimpleBiMIML2DFully2PredVe"
   # WEIGHTS: "outputs/oim_clip/oim_simple_bi_cuhk_30_slr_open/model_0013075.pth"
   #ROI_HEADS:
   #  IOU_THRESHOLDS: [0.5]
@@ -27,12 +27,12 @@ SOLVER:
   CHECKPOINT_PERIOD: 570
   WARMUP_ITERS: 1140
   IMS_PER_BATCH: 10
-  LR_FACTORS: [5.0,5.0,5.0,5.0]
-  LR_GROUP_REGEX: ["coss_.+","mlm_head.+","mim_head.+","mim_norm.+"]
+  LR_FACTORS: [5.0,5.0,5.0,5.0,5.0]
+  LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+","coss_.+","mlm_head.+","mim_head.+"]
 DATASETS:
   TRAIN: ("PRW_TBPS_Train",) 
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mhml2dfullypred_prw_30_slr_open_b10_05mr" #_seed"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfully2predve_prw_30_slr_open_b10_05mr_plr" #_seed"
 # SEED: 58216138

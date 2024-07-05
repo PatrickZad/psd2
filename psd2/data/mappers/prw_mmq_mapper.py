@@ -1,6 +1,5 @@
-from .mapper import SearchMapper
+from .mapper import SearchMapperMmq
 
-
-class CdpsMapper(SearchMapper):
+class PrwMmqMapper(SearchMapperMmq):
     def __init__(self, cfg, is_train) -> None:
         super().__init__(cfg, is_train)

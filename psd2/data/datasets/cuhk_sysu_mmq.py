@@ -38,7 +38,7 @@ def _set_box_pid_text(boxes, box, pids, pid,texts=None,text=None):
     logging.warning("Person: %s, box: %s cannot find in images." % (pid, box))
 
 
-def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
+def load_cuhk_sysu_mmq(dataset_dir, subset="Train"):
     """
     Returns:
         train/test set meta dict
@@ -83,7 +83,8 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                                     [
                                         {
                                             "bbox": person xyxy_abs boxes,
-                                            "bbox_mode": format of bbox,                                                "person_id":  person id
+                                            "bbox_mode": format of bbox,                                                
+                                            "person_id":  person id
                                         }
                                     ],
                             },
@@ -147,6 +148,16 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
         )["pool"].squeeze()
         test_img_names = [img_name_arr[0] for img_name_arr in test_img_names.tolist()]
         train_img_names = list(set(all_img_names) - set(test_img_names))
+        img_dir=opj(dataset_dir,"reid","train")
+        fns=os.listdir(img_dir)
+
+        id2imgs={-1:[]}
+        for fn in fns:
+            pid=int(fn[:4])
+            if pid not in id2imgs:
+                id2imgs[pid]=[]
+            id2imgs.append(opj(img_dir,fn)) 
+        
         train_set_dicts = []
         for img_name in train_img_names:
             boxes = img_boxes_dict[img_name].copy().astype(np.float32)
@@ -163,6 +174,7 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                             "bbox_mode": BoxMode.XYXY_ABS,
                             "person_id": ids[i],
                             "descriptions":texts[i],
+                            "queries": id2imgs[ids[i]]
                         }
                         for i in range(boxes.shape[0])
                     ],
@@ -250,6 +262,10 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                 # to return
                 box = qbox.copy().astype(np.float32)
                 box[2:] = box[:2] + box[2:]
+                pid=index + max_train_id + 1
+                pid_str = "0" * (4 - len(str(pid))) + str(pid)
+                cn = "c2"
+                post = qimg_name
                 test_query_gallery.extend(
                     [{
                         "query": {
@@ -259,8 +275,9 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                                 {
                                     "bbox": box,
                                     "bbox_mode": BoxMode.XYXY_ABS,
-                                    "person_id": index + max_train_id + 1,
-                                    "descriptions": [ des]
+                                    "person_id": pid_str,
+                                    "descriptions": [ des],
+                                    "queries": [  opj(dataset_dir,"reid","query","_".join([pid_str, cn, post]))]
                                 }
                             ],
                         },

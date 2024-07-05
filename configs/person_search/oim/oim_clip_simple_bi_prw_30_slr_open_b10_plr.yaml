@@ -1,6 +1,6 @@
 _BASE_: "base_tbps.yaml"
 MODEL:
-  META_ARCHITECTURE: "OimClipSimpleBiMLM"
+  META_ARCHITECTURE: "OimClipSimpleBi"
 PERSON_SEARCH:
   DET:
     CLIP:
@@ -20,12 +20,12 @@ SOLVER:
   CHECKPOINT_PERIOD: 1140
   WARMUP_ITERS: 1140
   IMS_PER_BATCH: 10
-  LR_FACTORS: [5.0,5.0,5.0,5.0,5.0]
-  LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+","coss_.+","mlm_head.+","mim_head.+"]
+  LR_FACTORS: [5.0,5.0,]
+  LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+",]
 DATASETS:
   TRAIN: ("PRW_TBPS_Train",) 
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
+  IMS_PER_PROC: 8
   EVAL_PERIOD: 1140
-# SEED: 58216138
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mlm_prw_30_slr_open_b10_0.1w_plr"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_prw_30_slr_open_b10_plr_re"

@@ -14,6 +14,7 @@ PERSON_SEARCH:
       FROZEN_BN: False
   REID:
     MIM_RATIO: 0.5
+    MIM_LOSS_W: 10
     LOSS:
       OIM:
         NUM_LB: 483
@@ -21,7 +22,7 @@ PERSON_SEARCH:
         LB_FACTOR: 30
         ULB_FACTOR: 30
 SOLVER:
-  BASE_LR: 0.00001
+  BASE_LR: 0.0001
   MAX_ITER: 20520 # 570 * 36
   STEPS: (9120,) # 570 * 16
   CHECKPOINT_PERIOD: 570
@@ -34,5 +35,5 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mhml2dfullypred_prw_30_slr_open_b10_05mr" #_seed"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mhml2dfullypred_prw_30_slr_open_b10_05mr_10lr_10mim" #_seed"
 # SEED: 58216138

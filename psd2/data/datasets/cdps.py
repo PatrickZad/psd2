@@ -102,7 +102,7 @@ def load_cdps(dataset_dir, subset="Train"):
                         "annotations": [
                             {
                                 "bbox": q_box,
-                                "bbox_mode": BoxMode.XYXY,
+                                "bbox_mode": BoxMode.XYXY_REL,
                                 "person_id": pid,
                             }
                         ],
@@ -121,7 +121,7 @@ def load_cdps(dataset_dir, subset="Train"):
                                 "annotations": [
                                     {
                                         "bbox": gbox,
-                                        "bbox_mode": BoxMode.XYXY,
+                                        "bbox_mode": BoxMode.XYXY_REL,
                                         "person_id": gpid,
                                     }
                                 ],
@@ -207,7 +207,7 @@ def _anno_format(dataset_dir, js_path, as_dicts=False):
         bboxes[:, 2:] = bboxes[:, :2] + bboxes[:, 2:]  # xyxy_rel"""
         img_dict["file_name"] = fn
         img_dict["annotations"] = [
-            {"bbox": bboxes[i], "bbox_mode": BoxMode.XYXY, "person_id": ids[i]}
+            {"bbox": bboxes[i], "bbox_mode": BoxMode.XYXY_REL, "person_id": ids[i]}
             for i in range(bboxes.shape[0])
         ]
         if as_dicts:

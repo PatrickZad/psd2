@@ -366,3 +366,68 @@ class SearchMapperTextBased(SearchMapper):
                 descriptions=texts
             ),
         }
+
+class SearchMapperMmq(SearchMapperTextBased):
+    def __init__(self, cfg, is_train) -> None:
+        super().__init__(cfg,is_train)
+        if self.is_train:
+            self.augs_q = dT.AugmentationList(
+                [
+                    dT.Resize( cfg.INPUT.QUERY_SIZE),
+                    dT.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+                ]
+            )
+        else:
+            self.augs = dT.Resize( cfg.INPUT.QUERY_SIZE),
+    def _transform_annotations(self, img_dict):
+        img_path = img_dict["file_name"]
+        img_arr = read_image(img_path, self.in_fmt)
+        boxes = []
+        ids = []
+        texts=[]
+        qimgs=[]
+        for ann in img_dict["annotations"]:
+            box_mode = ann["bbox_mode"]
+            boxes.append(
+                Boxes(ann["bbox"], box_mode)
+                .convert_mode(BoxMode.XYXY_ABS, img_arr.shape[:2])
+                .tensor[0]
+                .tolist()
+            )
+            ids.append(ann["person_id"])
+            if "descriptions" in ann:
+                valid_ts=[]
+                for t in ann["descriptions"]:
+                    if len(t)>1:
+                        valid_ts.append(self.tokenize(t))
+                texts.append(valid_ts)
+            if "queries" in ann:
+                for qn in ann["queries"]:
+                    qimg=read_image(qn, self.in_fmt)
+                    aug_input = dT.AugInput(image=qimg.copy())
+                    transforms = self.augs_q(aug_input)
+                    aug_qimg = aug_input.image
+                    qimgs.append(aug_qimg)
+        org_boxes = np.array(boxes, dtype=np.float32)
+        aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
+        transforms = self.augs(aug_input)
+        aug_img = aug_input.image
+        h, w = aug_img.shape[:2]
+        aug_boxes = aug_input.boxes
+        img_t = self.totensor(aug_img.copy())
+        self.rea(img_t, aug_boxes)
+        return {
+            "image": img_t,
+            "instances": Instances(
+                (h, w),
+                file_name=img_path,
+                image_id=img_dict["image_id"],
+                gt_boxes=Boxes(aug_boxes, BoxMode.XYXY_ABS),
+                gt_pids=torch.tensor(ids, dtype=torch.int64),
+                gt_classes=torch.zeros(len(ids), dtype=torch.int64),
+                org_img_size=(img_arr.shape[0], img_arr.shape[1]),
+                org_gt_boxes=Boxes(org_boxes, BoxMode.XYXY_ABS),
+                descriptions=texts,
+                queries=qimgs
+            ),
+        }

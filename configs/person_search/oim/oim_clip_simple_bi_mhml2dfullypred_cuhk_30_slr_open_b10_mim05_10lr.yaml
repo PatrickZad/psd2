@@ -16,23 +16,23 @@ PERSON_SEARCH:
     MIM_RATIO: 0.5
     LOSS:
       OIM:
-        NUM_LB: 483
-        LEN_ULB: 500
+        NUM_LB: 5532
+        LEN_ULB: 5000
         LB_FACTOR: 30
         ULB_FACTOR: 30
 SOLVER:
-  BASE_LR: 0.00001
-  MAX_ITER: 20520 # 570 * 36
-  STEPS: (9120,) # 570 * 16
-  CHECKPOINT_PERIOD: 570
-  WARMUP_ITERS: 1140
+  BASE_LR: 0.0001
+  MAX_ITER: 26904 # 1121 * 24
+  STEPS: (11210,)
+  CHECKPOINT_PERIOD: 1121 #2242
+  WARMUP_ITERS: 2242
   IMS_PER_BATCH: 10
   LR_FACTORS: [5.0,5.0,5.0,5.0]
   LR_GROUP_REGEX: ["coss_.+","mlm_head.+","mim_head.+","mim_norm.+"]
 DATASETS:
-  TRAIN: ("PRW_TBPS_Train",) 
-  TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
+  TRAIN: ("CUHK-SYSU_TBPS_Train",) 
+  TEST: ( "CUHK-SYSU_TBPS_TestG100",) # "CUHK-SYSU_TBPS_Gallery",
 TEST:
-  EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mhml2dfullypred_prw_30_slr_open_b10_05mr" #_seed"
-# SEED: 58216138
+  EVAL_PERIOD: 1121
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mhml2dfullypred_cuhk_30_slr_open_b10_05mr_10lr" # seed_05mr"
+# SEED: 24847203

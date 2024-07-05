@@ -99,6 +99,24 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
+        elif "G2APS" in dataset_name:
+            evaluator_list.append(
+                CuhkQueryEvaluatorP(
+                    dataset_name,
+                    distributed=False,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                )
+                if single_gpu
+                else CuhkQueryEvaluator(
+                    dataset_name,
+                    distributed=True,
+                    output_dir=output_folder,
+                    s_threds=cfg.TEST.DETECTION_SCORE_TS,
+                    vis=vis_eval,
+                    hist_only=cfg.TEST.VIS_SIM_ONLY,
+                )
+            )
         elif "PRW" in dataset_name:
             evaluator_list.append(
                 PrwQueryEvaluatorP(
