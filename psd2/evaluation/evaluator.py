@@ -158,17 +158,25 @@ def inference_on_dataset(
                 total_eval_time = 0
 
             start_compute_time = time.perf_counter()
-            if "GT" in evaluator.dataset_name:
-                outputs=model(inputs,infgt=True)
+            if "Grounding" in evaluator.dataset_name:
+                compute_time_stamp=evaluator.process(inputs, model) #NOTE inference and eval
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                total_compute_time += compute_time_stamp - start_compute_time
+                start_eval_time = compute_time_stamp
+                total_eval_time += time.perf_counter() - start_eval_time
             else:
-                outputs = model(inputs)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            total_compute_time += time.perf_counter() - start_compute_time
+                if "GT" in evaluator.dataset_name:
+                    outputs=model(inputs,infgt=True)
+                else:
+                    outputs = model(inputs)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                total_compute_time += time.perf_counter() - start_compute_time
 
-            start_eval_time = time.perf_counter()
-            evaluator.process(inputs, outputs)
-            total_eval_time += time.perf_counter() - start_eval_time
+                start_eval_time = time.perf_counter()
+                evaluator.process(inputs, outputs)
+                total_eval_time += time.perf_counter() - start_eval_time
 
             iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
             data_seconds_per_iter = total_data_time / iters_after_start

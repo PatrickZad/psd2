@@ -12,3 +12,4 @@ from .mvit_rcnn_ps import *
 from .oim_clip import *
 # from .query_grounding import *
 from .swin_org_rcnn_ps import *
+from .m_query_grounding import *

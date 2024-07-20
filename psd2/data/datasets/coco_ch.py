@@ -453,6 +453,15 @@ def load_coco_ch_75(common_dir, subset="train", allow_crowd=True):
     coco_dicts=[ch_dicts[i] for i in chidx[:int(len(ch_dicts)*0.75)]]
     return ch_dicts + coco_dicts
 
+def load_coco_ch_25(common_dir, subset="train", allow_crowd=True):
+    coco_dicts = _load_coco_person(opj(common_dir, "coco"), subset, allow_crowd)
+    ch_dicts = _load_crowd_human(opj(common_dir, "crowd_human"), subset, allow_crowd)
+    cocoidx=npr.permutation(len(coco_dicts)).tolist()
+    coco_dicts=[coco_dicts[i] for i in cocoidx[:int(len(coco_dicts)*0.25)]]
+    chidx=npr.permutation(len(ch_dicts)).tolist()
+    coco_dicts=[ch_dicts[i] for i in chidx[:int(len(ch_dicts)*0.25)]]
+    return ch_dicts + coco_dicts
+
 def load_cocofkp_ch(common_dir, subset="train", allow_crowd=True):
     coco_dicts = _load_coco_person_fkp(opj(common_dir, "coco"), subset, allow_crowd)
     ch_dicts = _load_crowd_human(opj(common_dir, "crowd_human"), subset, allow_crowd)

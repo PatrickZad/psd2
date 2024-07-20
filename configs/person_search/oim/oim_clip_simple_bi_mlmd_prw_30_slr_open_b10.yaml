@@ -26,12 +26,12 @@ SOLVER:
   CHECKPOINT_PERIOD: 570
   WARMUP_ITERS: 1140
   IMS_PER_BATCH: 10
-  LR_FACTORS: [5.0,5.0]
-  LR_GROUP_REGEX: ["coss_.+","mlm_head.+"]
+  LR_FACTORS: [5.0,5.0,5.0,5.0,5.0]
+  LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+","coss_.+","mlm_head.+","mim_head.+"]
 DATASETS:
   TRAIN: ("PRW_TBPS_Train",) 
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mlmd_prw_30_slr_open_b10_1.0w_seed"
-SEED: 58216138
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_mlmd_prw_30_slr_open_b10_1.0w_plr"
+# SEED: 58216138

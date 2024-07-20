@@ -247,8 +247,11 @@ class ResidualAttentionBlock(nn.Module):
         self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
         return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
 
-    def forward(self, x: torch.Tensor):
-        x = x + self.attention(self.ln_1(x))
+    def forward(self, x: torch.Tensor,mask=None):
+        if mask is not None:
+            x=x+self.attn(x, x, x, need_weights=False, attn_mask=mask)[0]
+        else:
+            x = x + self.attention(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -260,13 +263,15 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor,ckpt=False):
+    def forward(self, x: torch.Tensor,ckpt=False,mask=None):
         if ckpt:
             for blk in self.resblocks:
-                x=checkpoint(blk,x)
+                x=checkpoint(blk,x,mask)
             return x
         else:
-            return self.resblocks(x)
+            for blk in self.resblocks:
+                x=blk(x,mask)
+            return x
 
 
 class VisionTransformer(nn.Module):

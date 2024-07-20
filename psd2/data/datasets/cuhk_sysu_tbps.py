@@ -265,7 +265,7 @@ def load_cuhk_sysu_tbps(dataset_dir, subset="Train"):
                             ],
                         },
                         "gallery": gallery_dicts,
-                    } for des in imgorgid_to_text[qimg_name+"_"+str(org_pid)]]
+                    } for des in imgorgid_to_text[qimg_name+"_"+str(org_pid)] if len(des)>0]
                 )
                 pbar.update(1)
         # build anno dict

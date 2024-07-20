@@ -3197,6 +3197,53 @@ class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
         return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug, self).task_query(
             backbone_features
         )
+from psd2.modeling.extend.solider import SidePrefixPromptedSwinTransformer
+@META_ARCH_REGISTRY.register()
+class PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAug):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super(PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug, cls).from_config(cfg)
+        patch_embed = ret["backbone"]
+        tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
+        prompt_cfg = cfg.PERSON_SEARCH.PROMPT
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        num_prompts = prompt_cfg.NUM_PROMPTS
+        if isinstance(num_prompts, int):
+            num_prompts = [num_prompts] * 4
+        in_num_prompts = (
+            [n * prompt_cfg.TOP_K for n in num_prompts]
+            if "L2P" in prompt_cfg.PROMPT_TYPE and "Attn" not in prompt_cfg.PROMPT_TYPE
+            else num_prompts
+        )
+        # NOTE downsample module of stage3 is trainable
+        swin = SidePromptedSwinTransformer(
+            side_start_stage=3,
+            prompt_start_stage=1,
+            num_prompts=in_num_prompts,
+            semantic_weight=tr_cfg.SEMANTIC_WEIGHT,
+            pretrain_img_size=patch_embed.pretrain_img_size,
+            patch_size=patch_embed.patch_size
+            if isinstance(patch_embed.patch_size, int)
+            else patch_embed.patch_size[0],
+            embed_dims=patch_embed.embed_dim,
+            depths=tr_cfg.DEPTH,
+            num_heads=tr_cfg.NHEAD,
+            window_size=tr_cfg.WIN_SIZE,
+            mlp_ratio=tr_cfg.MLP_RATIO,
+            qkv_bias=tr_cfg.QKV_BIAS,
+            qk_scale=None,
+            drop_rate=tr_cfg.DROPOUT,
+            attn_drop_rate=tr_cfg.ATTN_DROPOUT,
+            drop_path_rate=tr_cfg.DROP_PATH,
+            with_cp=tr_cfg.WITH_CP,
+            strides=(4, 2, 2, 1),  # NOTE remove last stride    
+        )
+        ret.update(
+            {
+                "swin": swin,
+            }
+        )
+        return ret
 
 @META_ARCH_REGISTRY.register()
 class PromptedSwinSimFPNLiteRCNNPSBoxAugUnq(PromptedSwinSimFPNLiteRCNNPSBoxAug):
