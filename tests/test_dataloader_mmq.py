@@ -15,6 +15,7 @@ import os
 import torch
 import torchvision.transforms.functional as tvF
 from psd2.structures.boxes import BoxMode, Boxes
+import shutil
 
 
 def setup_cfg(config_file):
@@ -42,6 +43,7 @@ def test_dataset(cfg_file):
 
 
 def test_mapper(cfg_file):
+    raise NotImplementedError
     cfg = setup_cfg(config_file=cfg_file)
     base_out = os.path.join(cfg.OUTPUT_DIR, "test", "data_mapping")
     tr_dataset = cfg.DATASETS.TRAIN[0]
@@ -72,8 +74,8 @@ def vis_data_dict(data_dicts, cfg):
         boxes = [ann["bbox"] for ann in ddict["annotations"]]
         box_modes = [ann["bbox_mode"] for ann in ddict["annotations"]]
         ids = [ann["person_id"] for ann in ddict["annotations"]]
-        qis=[ann["queries"] for ann in ddict["annotations"]]
-        qts=[ann["queries"] for ann in ddict["annotations"]]
+        qis=[ann["queries"] for ann in ddict["annotations"] if "queries" in ann]
+        qts=[ann["descriptions"] for ann in ddict["annotations"] if "descriptions" in ann]
         for box, box_mode, pid in zip(boxes, box_modes, ids):
             imgw, imgh = img.size
             box = (
@@ -85,8 +87,14 @@ def vis_data_dict(data_dicts, cfg):
             img_vis.draw_box(box)
             id_pos = box[:2]
             img_vis.draw_text(str(pid), id_pos, horizontal_alignment="left", color="w")
-            for pid,pqi,pqt in zip(ids,qis,qts):
-                if pid>-1:
+            if len(qis) >0 and len(qts)>0:
+                for pid,pqis,pqts in zip(ids,qis,qts):
+                    if pid>-1:
+                        for pqi,pqt in zip(pqis,pqts):
+                            fn=os.path.basename(pqi)
+                            shutil.copy(pqi,os.path.join(save_dir, fn))
+                            with open(os.path.join(save_dir, fn[:-3]+"txt"),"w") as pf:
+                                pf.writelines(pqt)
                     
         img_vis.get_output().save(os.path.join(save_dir, img_name))
 

@@ -48,12 +48,14 @@ from psd2.evaluation import (
     Ptk21QueryEvaluator,
     MovieNetQueryEvaluator,
     MovieNetQueryEvaluatorP,
+    QueryInferencer,
+    PrwGroundingEvaluator,
+    CuhkGroundingEvaluator
 )
 import re
 from psd2.modeling import GeneralizedRCNNWithTTA
 
 
-# TODO evaluator catalog
 def build_evaluator(cfg, dataset_name, output_folder=None):
     """
     Create evaluator(s) for a given dataset.
@@ -173,6 +175,31 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
                     vis=vis_eval,
                     hist_only=cfg.TEST.VIS_SIM_ONLY,
+                )
+            )
+    elif evaluator_type is "qinfer":
+        evaluator_list.append(
+                QueryInferencer(
+                    dataset_name,
+                    distributed=not single_gpu,
+                    output_dir=output_folder,
+                )
+            )
+    elif evaluator_type is "grounding":
+        if "CUHK-SYSU" in dataset_name:
+                evaluator_list.append(
+                    CuhkGroundingEvaluator(
+                        dataset_name,
+                        distributed=False,
+                        output_dir=output_folder,
+                    )
+                )
+        elif "PRW" in dataset_name:
+            evaluator_list.append(
+                PrwGroundingEvaluator(
+                    dataset_name,
+                    distributed=False,
+                    output_dir=output_folder,
                 )
             )
         else:

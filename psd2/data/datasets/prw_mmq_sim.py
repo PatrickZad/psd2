@@ -26,7 +26,7 @@ id_remap_dict[933] = 932
 id_remap_dict[-2] = -1
 
 
-def load_prw_mmq(dataset_dir, subset=subsets[0]):
+def load_prw_mmq_sim(dataset_dir, subset=subsets[0]):
     """
     Returns:
         train/test set meta dict
@@ -152,9 +152,9 @@ def _load_subset_full_anno(dataset_dir, subset_name):
     if subset_name==subsets[0].lower():
         with open(opj(dataset_dir,"PRW-TBPS_train"),"r") as tf:
             train_text=json.load(tf)
-        imgrid_to_text={}
+        imgorgid_to_text={}
         for item in train_text:
-            imgrid_to_text[item["pic_path"]+"_"+str(get_resort_id(item["id"]))]=item["desrciption"]
+            imgorgid_to_text[item["pic_path"]+"_"+str(item["id"])]=item["desrciption"]
 
     with tqdm(total=len(sub_img_fns)) as pbar:
         for img_fn in sub_img_fns:
@@ -167,6 +167,15 @@ def _load_subset_full_anno(dataset_dir, subset_name):
             boxes[:, 2:] = boxes[:, :2] + boxes[:, 2:]
             ids = img_anno[:, 0].astype(np.int32).copy()
             if subset_name==subsets[0].lower():
+                texts=[imgorgid_to_text[img_name+"_"+str(orgid)] if orgid>-1 else ["A person with unknown identity."] for orgid in ids] # more like description padding for unlabeled person
+                qimgns=[]
+                for  orgid in ids :
+                    if orgid >0:
+                        ntext=len(imgorgid_to_text[img_name+"_"+str(orgid)])
+                        qn=opj(dataset_dir,"reid","train",reformat_qimg_name(orgid,img_name))
+                        qimgns.append([qn]*ntext)
+                    else:
+                        qimgns.append([])
                 subset_dicts.append(
                     {
                         "file_name": opj(dataset_dir, "frames", img_name),
@@ -176,11 +185,8 @@ def _load_subset_full_anno(dataset_dir, subset_name):
                                 "bbox": boxes[i],
                                 "bbox_mode": BoxMode.XYXY_ABS,
                                 "person_id": get_resort_id(ids[i]),
-                                "queries": id2imgs[get_resort_id(ids[i])],
-                                "descriptions": [ imgrid_to_text[reformat_key_name(os.path.basename(qn))] 
-                                                 for qn in id2imgs[get_resort_id(ids[i])]] 
-                                                 if get_resort_id(ids[i])>-1 
-                                                 else [],
+                                "queries": qimgns[i],
+                                "descriptions": [texts[i]],
                             }
                             for i in range(boxes.shape[0])
                         ],
@@ -204,7 +210,9 @@ def _load_subset_full_anno(dataset_dir, subset_name):
             pbar.update(1)
     return subset_dicts
 
-def reformat_key_name(qimg_key_name):
-    pic_path=qimg_key_name[5:7]+qimg_key_name[8:]
-    pid=int(qimg_key_name[:4])
-    return pic_path+"_"+str(pid)
+def reformat_qimg_name(orgid,img_fn):
+    pid=get_resort_id(orgid)
+    pid_str = "0" * (4 - len(str(pid))) + str(pid)
+    cn = img_fn[:2] 
+    post = img_fn[2:]
+    return "_".join([pid_str, cn, post])

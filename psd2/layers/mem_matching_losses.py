@@ -568,7 +568,7 @@ class OIMLoss(nn.Module):
             ret["use_focal"] = False
         return ret
 
-    def forward(self, pfeats, pids, lb_mms=None):
+    def forward(self, pfeats, pids, lb_mms=None,return_scores=False):
             pos_mask = pids > -2
             pfeats = pfeats[pos_mask]
             pids = pids[pos_mask]
@@ -605,7 +605,10 @@ class OIMLoss(nn.Module):
             num_lb = sum([num.to("cpu") for num in all_num_lb])
             num_lb = torch.clamp(num_lb / comm.get_world_size(), min=1).item()
             loss_val = loss_oim.sum() / num_lb
-            return {"loss_oim": loss_val * self.loss_weight}
+            ret={"loss_oim": loss_val * self.loss_weight}
+            if return_scores:
+                ret["match_scores"]=matching_scores
+            return ret
 
 
 

@@ -14,6 +14,7 @@ from psd2.structures import Instances, Boxes, BoxMode
 import torch
 from psd2.utils.simple_tokenizer import SimpleTokenizer
 
+
 class SearchMapper(object):
     def __init__(self, cfg, is_train) -> None:
         self.is_train = is_train
@@ -378,7 +379,8 @@ class SearchMapperMmq(SearchMapperTextBased):
                 ]
             )
         else:
-            self.augs = dT.Resize( cfg.INPUT.QUERY_SIZE),
+            self.augs_q = dT.Resize( cfg.INPUT.QUERY_SIZE)
+        self.num_query=cfg.INPUT.MAX_QUERY_NUM
     def _transform_annotations(self, img_dict):
         img_path = img_dict["file_name"]
         img_arr = read_image(img_path, self.in_fmt)
@@ -387,6 +389,8 @@ class SearchMapperMmq(SearchMapperTextBased):
         texts=[]
         qimgs=[]
         for ann in img_dict["annotations"]:
+            if ann["person_id"]==-1:
+                continue # TODO use unlabeled
             box_mode = ann["bbox_mode"]
             boxes.append(
                 Boxes(ann["bbox"], box_mode)
@@ -397,17 +401,26 @@ class SearchMapperMmq(SearchMapperTextBased):
             ids.append(ann["person_id"])
             if "descriptions" in ann:
                 valid_ts=[]
-                for t in ann["descriptions"]:
-                    if len(t)>1:
-                        valid_ts.append(self.tokenize(t))
+                for ts in ann["descriptions"]:
+                    text_tokens=[self.tokenize(ti) for ti in ts if len(ti)>1]
+                    valid_ts.append(text_tokens)
+                if len(valid_ts)>self.num_query:
+                    select_idxs=torch.randperm(len(valid_ts))[:self.num_query].numpy().tolist()
+                else:
+                    select_idxs=list(range(len(valid_ts)))
+                valid_ts=[valid_ts[i] for i in select_idxs]
                 texts.append(valid_ts)
             if "queries" in ann:
-                for qn in ann["queries"]:
+                selected=[ann["queries"][i] for i in select_idxs]
+                qimgs_i=[]
+                for qn in selected:
                     qimg=read_image(qn, self.in_fmt)
                     aug_input = dT.AugInput(image=qimg.copy())
                     transforms = self.augs_q(aug_input)
                     aug_qimg = aug_input.image
-                    qimgs.append(aug_qimg)
+                    qimgs_i.append(self.totensor(aug_qimg.copy()))
+                qimgs.append(qimgs_i)
+            
         org_boxes = np.array(boxes, dtype=np.float32)
         aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
         transforms = self.augs(aug_input)
@@ -416,6 +429,7 @@ class SearchMapperMmq(SearchMapperTextBased):
         aug_boxes = aug_input.boxes
         img_t = self.totensor(aug_img.copy())
         self.rea(img_t, aug_boxes)
+        #TODO multiple text
         return {
             "image": img_t,
             "instances": Instances(

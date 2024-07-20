@@ -2383,21 +2383,22 @@ class OimClipSimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPred):
         storage = get_event_storage()
         if storage.iter % self.vis_period == 0:
             h,w=8,4
-            th,tw= 32,16
+            th,tw= 16,8
             B=i_features.shape[0]
             with torch.no_grad():
                 org_feats=i_features.reshape(B,h,w,-1).permute(0,3,1,2)
                 masked_feats=masked_org_features.reshape(B,h,w,-1).permute(0,3,1,2)
                 rec_feats=rec_i_features.reshape(B,h,w,-1).permute(0,3,1,2)
                 pca_feats=mlvl_pca_feat([org_feats,masked_feats,rec_feats])
-                vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                # vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                vis_pca_feats=[feats/255 for feats in pca_feats]
                 for i in range(B):
                     storage.put_image("mim/feat_{}_org".format(i), vis_pca_feats[0][i])
                     storage.put_image("mim/feat_{}_mask".format(i), vis_pca_feats[1][i])
                     storage.put_image("mim/feat_{}_rec".format(i), vis_pca_feats[2][i])
 
 
-        return {"loss_mim":l2_dist*1.5}
+        return {"loss_mim":l2_dist}
     
     def forward_gallery(self, image_list, gt_instances):
         if self.training:
@@ -2491,6 +2492,126 @@ class OimClipSimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPred):
                 box_embs=F.normalize(box_embs,dim=-1)
                 align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
                 losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBikdMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,_ = self.img_embes(box_features)
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids,return_scores=True)
+            oim_matching_scores_i=reid_loss.pop("match_scores")
+            img_pids=assign_ids
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                if (gt_ids>-1).nonzero().shape[0]==0:
+                    continue
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    # there can be multiple text seq for one id
+                    id_feats=img_rois[roi_ids==pid]
+                    num_desc=len(p_tokens)
+                    if id_feats.shape[0]<num_desc:
+                        id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                    sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                    img_features.append(id_feats[sampled_idxs])
+                    text_tokens.extend(p_tokens)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            text_tokens,text_pids=[],[]
+            for inst in gt_instances:
+                for texts,pid in zip(inst.descriptions,inst.gt_pids):
+                    if pid >-1:
+                        num_text=len(texts)
+                        text_tokens.extend(texts)
+                        text_pids.extend([pid]*num_text)
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_oimkd_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_oimkd_i"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids,return_scores=True )
+                oim_matching_scores_t=reid_loss_text.pop("match_scores")
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                
+                #kd
+                perm_img_idx=torch.randperm(img_pids.shape[0],device=img_pids.device)
+                img_pids=img_pids[perm_img_idx]
+                oim_matching_scores_i=oim_matching_scores_i[:,:self.oim_loss.lb_layer.lookup_table.shape[0]][perm_img_idx]
+                t2i_pid_match=text_pids.unsqueeze(1)==img_pids[None]
+                select_img_idx=torch.argmax(t2i_pid_match.long(),dim=-1)
+                
+                oim_matching_scores_i=oim_matching_scores_i[select_img_idx]
+                n_oim_matching_scores_i=F.log_softmax(oim_matching_scores_i,dim=-1)
+                n_oim_matching_scores_t=F.log_softmax(oim_matching_scores_t,dim=-1)
+                oim_matching_scores_i=F.softmax(oim_matching_scores_i,dim=-1)
+                oim_matching_scores_t=F.softmax(oim_matching_scores_i,dim=-1)
+                losses["loss_oimkd_t"]=F.kl_div(n_oim_matching_scores_t,oim_matching_scores_i,reduction="batchmean")*0.5
+                losses["loss_oimkd_i"]=F.kl_div(n_oim_matching_scores_i,oim_matching_scores_t,reduction="batchmean")*0.5
+
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             return super().forward_gallery(image_list, gt_instances)
