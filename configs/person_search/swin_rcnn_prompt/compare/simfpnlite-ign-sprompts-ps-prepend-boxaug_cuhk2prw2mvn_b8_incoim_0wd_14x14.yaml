@@ -47,7 +47,9 @@ PERSON_SEARCH:
     CURRENT_TASK: 2
     NUM_TASKS: 3
     NUM_KEYS: 4
-    KEYS_PATH: "outputs/swin_ps_reid/swin-small-ign_imgfeats/MovieNet_GalleryTestG2000_img_feats_4centroids.pth"
+    KEYS_PATH: ["outputs/swin_ps_reid/swin-small-ign_imgfeats/CUHK-SYSU_Train_img_feats_4centroids.pth",
+                "outputs/swin_ps_reid/swin-small-ign_imgfeats/PRW_Train_img_feats.pth",
+                "outputs/swin_ps_reid/swin-small-ign_imgfeats/MovieNet_Train_app10_img_feats_4centroids.pth"]
   DET:
     MODEL:
       TRANSFORMER:

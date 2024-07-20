@@ -1693,7 +1693,7 @@ class SPrompts(nn.Module):
             k = torch.zeros(self.n_tasks, n_keys, self.key_d)
             setattr(self, f"e_p_{e}", p)
             self.register_buffer(f"e_k_{e}", k)
-        self.task_keys_temp=torch.load(keys_path,map_location=self.e_k_0.device)
+        self.all_task_keys_temp=[torch.load(fp,map_location=self.e_k_0.device) for fp in keys_path]
         self.load_key=False
 
     def process_task_count(self, task_id):
@@ -1703,7 +1703,8 @@ class SPrompts(nn.Module):
         if not self.load_key:
             for e in range(self.n_layers):
                 k = getattr(self,f"e_k_{e}")
-                k[self.task_count]=self.task_keys_temp.to(k.device)
+                for i,c in enumerate(self.all_task_keys_temp):
+                    k[i]=c.to(k.device)
             self.load_key=True
         B, nL, C = x_query.shape
         p_loss = 0.0
