@@ -584,6 +584,10 @@ class OimClipSimple(OimClip):
         else:
             return super().forward_gallery(image_list, gt_instances)
 
+
+    
+    
+
 @META_ARCH_REGISTRY.register()
 class OimClipDetOnly(OimClipSimple):
     def forward_gallery(self, image_list, gt_instances):
@@ -842,6 +846,312 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
         return ret
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleOimshare(OimClipSimpleBi):
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            assign_ids = torch.cat(assign_ids)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            # text oim
+            text_tokens,text_pids=[],[]
+            for inst in gt_instances:
+                for texts,pid in zip(inst.descriptions,inst.gt_pids):
+                    if pid >-1:
+                        num_text=len(texts)
+                        text_tokens.extend(texts)
+                        text_pids.extend([pid]*num_text)
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleOimshareObi(OimClipSimpleBi):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        self.alignment_loss=SupConLoss()
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            assign_ids = torch.cat(assign_ids)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            # text oim
+            text_tokens,text_pids=[],[]
+            for inst in gt_instances:
+                for texts,pid in zip(inst.descriptions,inst.gt_pids):
+                    if pid >-1:
+                        num_text=len(texts)
+                        text_tokens.extend(texts)
+                        text_pids.extend([pid]*num_text)
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                v_embs=F.normalize(box_embs,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids,assign_ids)
+                losses["loss_align_t"]=align_loss_t*0.5
+
+                pos_mask=assign_ids>-1
+                assign_ids=assign_ids[pos_mask]
+                v_embs = v_embs[pos_mask]
+                align_loss_i=self.alignment_loss(v_embs,text_embs,assign_ids,text_pids)
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleIdshare(OimClipSimpleBi):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        id_num,feat_dim =self.oim_loss.lb_layer.lookup_table.shape
+        self.classifier = nn.Linear(feat_dim, id_num)
+        nn.init.normal_(self.classifier.weight.data, std=0.001)
+        nn.init.constant_(self.classifier.bias.data, val=0.0)
+    def id_loss(self,pfeats,pids):
+        logits=self.classifier(pfeats)
+        id_loss=F.cross_entropy(logits,pids,ignore_index=-1)
+        return id_loss
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids[i]
+            assign_ids = torch.cat(assign_ids)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.id_loss(box_embs, assign_ids)
+            losses["loss_id_i"]=reid_loss*0.5
+            # text oim
+            text_tokens,text_pids=[],[]
+            for inst in gt_instances:
+                for texts,pid in zip(inst.descriptions,inst.gt_pids):
+                    if pid >-1:
+                        num_text=len(texts)
+                        text_tokens.extend(texts)
+                        text_pids.extend([pid]*num_text)
+            if len(text_pids)==0:
+                losses["loss_id_t"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.id_loss(text_embs,text_pids )
+                losses["loss_id_t"]=reid_loss_text*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleOimshareSdm(OimClipSimpleIdshare):
+    def compute_sdm(self,features1, features2, pid1,pid2, logit_scale, epsilon=1e-8):
+        pid1_set=set(pid1.cpu().numpy().tolist())
+        pid2_set=set(pid2.cpu().numpy().tolist())
+        remove_id_1=pid1_set-pid2_set
+        remove_id_2=pid2_set-pid1_set
+        if len(remove_id_1)>0:
+            keep_mask1=torch.ones(features1.shape[0])
+            for rid in list(remove_id_1):
+                keep_mask1[pid1==rid]=0.
+            keep_mask1=keep_mask1==1
+            features1=features1[keep_mask1]
+            pid1=pid1[keep_mask1]
+        if len(remove_id_2)>0:
+            keep_mask2=torch.ones(features2.shape[0])
+            for rid in list(remove_id_2):
+                keep_mask2[pid2==rid]=0.
+            keep_mask2=keep_mask2==1
+            features2=features2[keep_mask2]
+            pid2=pid2[keep_mask2]
+        """
+        Similarity Distribution Matching
+        """
+        pid1 = pid1.reshape((features1.shape[0], 1)) # make sure pid size is [batch_size, 1]
+        pid2=pid2.reshape((features2.shape[0], 1)) # make sure pid size is [batch_size, 1]
+        pid_dist = pid1 - pid2.t() # n1 x n2
+        labels_1_2 = (pid_dist == 0).float()
+        labels_2_1 = labels_1_2.t()
+
+        f1_norm = features1 / features1.norm(dim=1, keepdim=True)
+        f2_norm = features2 / features2.norm(dim=1, keepdim=True)
+
+        f2f1_cosine_theta = f2_norm @ f1_norm.t()
+        f1f2_cosine_theta = f2f1_cosine_theta.t()
+
+        f2_proj_f1 = logit_scale * f2f1_cosine_theta
+        f1_proj_f2 = logit_scale * f1f2_cosine_theta
+
+        # normalize the true matching distribution
+        labels_1_2_distribute = labels_1_2 / labels_1_2.sum(dim=1,keepdim=True)
+        labels_2_1_distribute = labels_2_1 / labels_2_1.sum(dim=1,keepdim=True)
+
+        f1f2_pred = F.softmax(f1_proj_f2, dim=1)
+        f1f2_loss = f1f2_pred * (F.log_softmax(f1_proj_f2, dim=1) - torch.log(labels_1_2_distribute + epsilon))
+        f2f1_pred = F.softmax(f2_proj_f1, dim=1)
+        f2f1_loss = f2f1_pred * (F.log_softmax(f2_proj_f1, dim=1) - torch.log(labels_2_1_distribute + epsilon))
+        # if torch.isnan(f1f2_loss).sum()>0 or torch.isnan(f2f1_loss).sum()>0:
+        #    print("get")
+        loss = torch.mean(torch.sum(f1f2_loss, dim=1)) + torch.mean(torch.sum(f2f1_loss, dim=1))
+
+        return loss
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs = self.img_embes(box_features)
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            # text oim
+            img_embs=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_embs_per_img=torch.split(box_embs,num_ps_per_img)
+            for roi_embs,roi_ids,img_gt in zip(box_embs_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_embs=roi_embs[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_embs.shape[0]<num_desc:
+                            id_embs=id_embs.unsqueeze(0).repeat(math.ceil(num_desc/id_embs.shape[0]),1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_embs.shape[0])[:num_desc]
+                        img_embs.append(id_embs[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(text_pids)==0:
+                losses["loss_id_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_sdm"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                lb_box_embs=box_embs[assign_ids>-1]
+                lb_assign_ids=assign_ids[assign_ids>-1]
+                losses["loss_sdm"]=self.compute_sdm(lb_box_embs,text_embs,lb_assign_ids,text_pids,1/0.02)
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
 
 
 

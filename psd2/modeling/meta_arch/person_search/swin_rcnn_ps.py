@@ -3197,6 +3197,7 @@ class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
         return super(PromptedMsSwinSimFPNLiteRCNNPSBoxAug, self).task_query(
             backbone_features
         )
+
 from psd2.modeling.extend.solider import SidePrefixPromptedSwinTransformer
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAug):
@@ -3207,7 +3208,6 @@ class PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAu
         tr_cfg = cfg.PERSON_SEARCH.DET.MODEL.TRANSFORMER
         prompt_cfg = cfg.PERSON_SEARCH.PROMPT
         num_prompts = prompt_cfg.NUM_PROMPTS
-        num_prompts = prompt_cfg.NUM_PROMPTS
         if isinstance(num_prompts, int):
             num_prompts = [num_prompts] * 4
         in_num_prompts = (
@@ -3216,7 +3216,7 @@ class PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAu
             else num_prompts
         )
         # NOTE downsample module of stage3 is trainable
-        swin = SidePromptedSwinTransformer(
+        swin = SidePrefixPromptedSwinTransformer(
             side_start_stage=3,
             prompt_start_stage=1,
             num_prompts=in_num_prompts,
