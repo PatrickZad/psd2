@@ -21,7 +21,8 @@ PERSON_SEARCH:
         LB_FACTOR: 30
         ULB_FACTOR: 30
 SOLVER:
-  BASE_LR: 0.00001
+  OPTIM: AdamW
+  BASE_LR: 0.0001
   MAX_ITER: 20520 # 570 * 36
   STEPS: (9120,) # 570 * 16
   CHECKPOINT_PERIOD: 570
@@ -34,5 +35,5 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullypredve_prw_30_slr_open_b10_05mr_plr" #_seed"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullypredve_prw_30_slr_open_b10_05mr_plr_llradamw" #_seed"
 # SEED: 58216138

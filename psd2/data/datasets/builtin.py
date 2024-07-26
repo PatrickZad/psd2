@@ -251,6 +251,9 @@ def register_prw_tbps_all(datadir):
     name = "PRW_TBPS_Train"
     DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Train"))
     MapperCatalog.register(name, mappers.PrwTBPSMapper)
+    name = "PRW_TBPS_TrainXi"
+    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "TrainXi"))
+    MapperCatalog.register(name, mappers.PrwTBPSMapper)
     name = "PRW_TBPS_Query"
     DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Query"))
     MapperCatalog.register(name, mappers.PrwTBPSMapper)

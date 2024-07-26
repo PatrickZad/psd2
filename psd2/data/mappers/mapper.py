@@ -308,6 +308,7 @@ class SearchMapperTextBased(SearchMapper):
     def __init__(self, cfg, is_train) -> None:
         super().__init__(cfg,is_train)
         self.tokenizer=SimpleTokenizer()
+        self.max_num_text=cfg.INPUT.MAX_QUERY_NUM
     def tokenize(self,caption: str, text_length=77, truncate=True) -> torch.LongTensor:
         sot_token = self.tokenizer.encoder["<|startoftext|>"]
         eot_token = self.tokenizer.encoder["<|endoftext|>"]
@@ -330,6 +331,7 @@ class SearchMapperTextBased(SearchMapper):
         boxes = []
         ids = []
         texts=[]
+        texts_xi=[]
         for ann in img_dict["annotations"]:
             box_mode = ann["bbox_mode"]
             boxes.append(
@@ -345,6 +347,16 @@ class SearchMapperTextBased(SearchMapper):
                     if len(t)>1:
                         valid_ts.append(self.tokenize(t))
                 texts.append(valid_ts)
+                if "xi_descriptions" in ann and len(valid_ts)<self.max_num_text:
+                    valid_xi_ts=[]
+                    for t in ann["xi_descriptions"]:
+                        if len(t)>1:
+                            valid_xi_ts.append(self.tokenize(t))
+                    if len(valid_ts)+len(valid_xi_ts)>self.max_num_text:
+                        select_idxs=torch.randperm(len(valid_xi_ts))[:self.max_num_text-len(valid_ts)].numpy().tolist()
+                        valid_xi_ts=[valid_xi_ts[i] for i in select_idxs]
+                    texts_xi.append(valid_xi_ts)
+            
         org_boxes = np.array(boxes, dtype=np.float32)
         aug_input = dT.AugInput(image=img_arr.copy(), boxes=org_boxes.copy())
         transforms = self.augs(aug_input)
@@ -364,7 +376,8 @@ class SearchMapperTextBased(SearchMapper):
                 gt_classes=torch.zeros(len(ids), dtype=torch.int64),
                 org_img_size=(img_arr.shape[0], img_arr.shape[1]),
                 org_gt_boxes=Boxes(org_boxes, BoxMode.XYXY_ABS),
-                descriptions=texts
+                descriptions=texts,
+                xi_descriptions=texts_xi,
             ),
         }
 

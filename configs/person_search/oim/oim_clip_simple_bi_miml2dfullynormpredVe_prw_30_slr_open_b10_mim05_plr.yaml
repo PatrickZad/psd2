@@ -1,6 +1,6 @@
 _BASE_: "base_tbps.yaml"
 MODEL:
-  META_ARCHITECTURE: "OimClipSimpleBiMIML2DFullyPredVe"
+  META_ARCHITECTURE: "OimClipSimpleBiMIML2DFullyNormPredVe"
   # WEIGHTS: "outputs/oim_clip/oim_simple_bi_cuhk_30_slr_open/model_0013075.pth"
   #ROI_HEADS:
   #  IOU_THRESHOLDS: [0.5]
@@ -34,5 +34,5 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullypredve_prw_30_slr_open_b10_05mr_plr" #_seed"
+OUTPUT_DIR: "outputs/oim_clip/oim_simple_bi_miml2dfullynormpredve_prw_30_slr_open_b10_05mr_plr" #_seed"
 # SEED: 58216138
