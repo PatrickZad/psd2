@@ -1,8 +1,17 @@
 MODEL:
-  META_ARCHITECTURE: "OimClip"
-  WEIGHTS: ""
+  META_ARCHITECTURE: "OimBert"
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
   PIXEL_MEAN: [0.485, 0.456, 0.406]
   PIXEL_STD: [0.229, 0.224, 0.225]
+  BACKBONE:
+    NAME: "build_resnet_backbone"
+    FREEZE_AT: 2
+  RESNETS:
+    DEPTH: 50
+    NORM: "FrozenBN"
+    RES2_OUT_CHANNELS: 256
+    STRIDE_IN_1X1: False
+    OUT_FEATURES: ["res4"]
   PROPOSAL_GENERATOR:
     NAME: "RPN"
   ANCHOR_GENERATOR:
@@ -21,7 +30,7 @@ MODEL:
     POST_NMS_TOPK_TEST: 300
     NMS_THRESH: 0.7
   ROI_HEADS:
-    NAME: "ClipRes5ROIHeadsPsNoStride"
+    NAME: "Res5ROIHeadsPs"
     NUM_CLASSES: 1
     IN_FEATURES: ["res4"]
     IOU_THRESHOLDS: [0.1, 0.5]
@@ -36,24 +45,17 @@ MODEL:
       BBOX_REG_LOSS_TYPE: "smooth_l1"
       BBOX_REG_LOSS_WEIGHT: 10.0
       BBOX_REG_WEIGHTS: [10.0, 10.0, 5.0, 5.0]
-      SMOOTH_L1_BETA: 0.111111 # 0.0
+      SMOOTH_L1_BETA: 1.0
       POOLER_RESOLUTION: [16, 8]
-      POOLER_SAMPLING_RATIO: 2
+      POOLER_SAMPLING_RATIO: 0
       POOLER_TYPE: "ROIAlignV2"
 PERSON_SEARCH:
   DET:
     NUM_CLASSES: 1
-    CLIP:
-      NAME: "RN50"
-      IMG_SIZE: [224,224] # pretrain image size
-      STRIDE: 16
-      FREEZE_AT_STAGE2: True
-      FROZEN_BN: True
-      TEXT_DROPOUT: 0.0
   REID:
     MODEL:
-      EMB_DIM: 1024
-      BN_NECK: False
+      EMB_DIM: 2048
+      BN_NECK: True
     ID_ASSIGN:
       NAME: "det"
     LOSS:
@@ -64,7 +66,7 @@ PERSON_SEARCH:
         ULB_FACTOR: 10
         NUM_LB: 483
         LEN_ULB: 500
-        FEAT_DIM: 1024
+        FEAT_DIM: 2048
         NORM_FEAT: True
         SYNC_MEMORY: False
         USE_FOCAL: True
@@ -87,13 +89,13 @@ DATALOADER:
 SOLVER:
   OPTIM: "Adam"
   LR_SCHEDULER_NAME: "WarmupMultiStepLR"
-  BASE_LR: 0.00035
+  BASE_LR: 0.0001
   WEIGHT_DECAY: 1.0e-4
   GAMMA: 0.1
-  IMS_PER_BATCH: 6
+  IMS_PER_BATCH: 8
 
 TEST:
-  IMS_PER_PROC: 5
+  IMS_PER_PROC: 4
   DETECTIONS_PER_IMAGE: 100
 # SEED: 42
 VIS_PERIOD: 500

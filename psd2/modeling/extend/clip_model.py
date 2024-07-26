@@ -230,10 +230,10 @@ class QuickGELU(nn.Module):
 
 
 class ResidualAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
+    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None,dropout=0.):
         super().__init__()
 
-        self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.attn = nn.MultiheadAttention(d_model, n_head,dropout=dropout)
         self.ln_1 = LayerNorm(d_model)
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
@@ -257,11 +257,11 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None,dropout=0.):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
+        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask,dropout) for _ in range(layers)])
 
     def forward(self, x: torch.Tensor,ckpt=False,mask=None):
         if ckpt:
@@ -332,7 +332,8 @@ class CLIP(nn.Module):
                  vocab_size: int,
                  transformer_width: int,
                  transformer_heads: int,
-                 transformer_layers: int
+                 transformer_layers: int,
+                 text_dropout=0.,
                  ):
         super().__init__()
 
@@ -363,7 +364,8 @@ class CLIP(nn.Module):
             width=transformer_width,
             layers=transformer_layers,
             heads=transformer_heads,
-            attn_mask=self.build_attention_mask()
+            attn_mask=self.build_attention_mask(),
+            dropout=text_dropout,
         )
 
         self.vocab_size = vocab_size
@@ -517,7 +519,7 @@ def convert_weights(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None):
+def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None,text_dropout=0.):
     """Load a CLIP model
 
     Parameters
@@ -593,7 +595,8 @@ def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[in
         'vocab_size': vocab_size, 
         'transformer_width': transformer_width, 
         'transformer_heads': transformer_heads, 
-        'transformer_layers': transformer_layers
+        'transformer_layers': transformer_layers,
+        "text_dropout": text_dropout
     }
 
 
@@ -609,5 +612,8 @@ def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[in
     # resize modified pos embedding
     model.load_param(state_dict)
     return model, model_cfg
+
+
+
 
 

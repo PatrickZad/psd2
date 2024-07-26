@@ -76,6 +76,7 @@ _C.INPUT.CROP.TYPE = "relative_range"
 _C.INPUT.CROP.SIZE = [0.9, 0.9]
 _C.INPUT.QUERY_SIZE = [256,128]
 _C.INPUT.MAX_QUERY_NUM = 4
+_C.INPUT.BERT_TOKENIZER = False
 
 
 # Whether the model needs RGB, YUV, HSV etc.
