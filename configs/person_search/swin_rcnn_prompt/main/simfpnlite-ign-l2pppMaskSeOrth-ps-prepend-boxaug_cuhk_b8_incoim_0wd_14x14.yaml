@@ -110,4 +110,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14_re"

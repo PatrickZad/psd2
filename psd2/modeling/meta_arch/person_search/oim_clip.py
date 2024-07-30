@@ -73,7 +73,7 @@ class OimClip(SearchBaseTBPS):
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -129,7 +129,7 @@ class OimClip(SearchBaseTBPS):
             return x
         # x = ckpt.checkpoint(stem,x)
         x=stem(x)
-        x =ckpt.checkpoint(visual_encoder.layer1,x) if self.training else visual_encoder.layer1(x)
+        x =ckpt.checkpoint(visual_encoder.layer1,x) if (self.training and not visual_encoder.stem_frozen) else visual_encoder.layer1(x)
         # x =visual_encoder.layer1(x)
         x =ckpt.checkpoint(visual_encoder.layer2,x) if self.training else visual_encoder.layer2(x)
         x =ckpt.checkpoint(visual_encoder.layer3,x) if self.training else visual_encoder.layer3(x)
@@ -267,7 +267,7 @@ class OimClipSplit(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32} # for det
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -379,7 +379,7 @@ class OimClipStride(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -495,7 +495,7 @@ class OimClipSimple(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -535,6 +535,7 @@ class OimClipSimple(OimClip):
         ret["bn_neck"] = bn_neck
         ret["oim_loss"] = OIMLoss(cfg)
         ret["oim_loss_text"]=None
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
     def forward_gallery(self, image_list, gt_instances):
@@ -641,7 +642,7 @@ class OimClipSimpleDC2(OimClipSimple):
     @classmethod
     def from_config(cls, cfg):
         ret =SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -690,7 +691,7 @@ class OimClipSimpleDC2Bi(OimClipSimple):
     @classmethod
     def from_config(cls, cfg):
         ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -735,6 +736,7 @@ class OimClipSimpleDC2Bi(OimClipSimple):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
     def forward_gallery(self, image_list, gt_instances):
         if self.training:
@@ -808,7 +810,7 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
     @classmethod
     def from_config(cls, cfg):
         ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -851,6 +853,7 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
 @META_ARCH_REGISTRY.register()
@@ -3467,6 +3470,29 @@ class OimClipSimpleBoxaugAttmaskOimshareSdmMIML2DFullyPredVe(OimClipSimpleBoxaug
             return embs,feats
         else:
             return embs
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugAttmaskOimshareSdmMIML2DFullyPredVe(OimClipSimpleBoxaugAttmaskOimshareSdmMIML2DFullyPredVe):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        box_aug = build_box_augmentor(cfg.PERSON_SEARCH.REID.BOX_AUGMENTATION)
+        clip_model=ret["clip_model"]
+        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
+        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
+        res_output_shape={
+            name: ShapeSpec(
+                channels=out_feature_channels[name],
+                stride=out_feature_strides[name],
+            )
+            for name in ["res2","res3","res4","res5"]
+        }
+        prev_head=ret["roi_heads"]
+        res5=copy.deepcopy(prev_head.res5)
+        head = ClipRes5ROIHeadsPsBoxAug(cfg, res5,box_aug,res_output_shape)
+        head.attnpool=clip_model.visual.attnpool
+        ret["roi_heads"]=head
+        return ret
 from psd2.modeling.box_augmentation import build_box_augmentor
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe(OimClipSimpleOimshareSdmMIML2DFullyPredVe):

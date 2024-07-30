@@ -341,6 +341,10 @@ class Trainer(DefaultTrainer):
             {"params": [], "lr": cfg.SOLVER.BASE_LR * lf}
             for lf in cfg.SOLVER.LR_FACTORS
         ]
+        bias_param_groups = [{"params": [], "lr": cfg.SOLVER.BASE_LR,"weight_decay":cfg.SOLVER.WEIGHT_DECAY_BIAS}] + [
+            {"params": [], "lr": cfg.SOLVER.BASE_LR * lf,"weight_decay":cfg.SOLVER.WEIGHT_DECAY_BIAS}
+            for lf in cfg.SOLVER.LR_FACTORS
+        ]
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 
@@ -360,11 +364,19 @@ class Trainer(DefaultTrainer):
                 frozen_params.append(key)
                 continue
             match_learn = _find_match(key, lr_group_regex)
-            if match_learn > 0:
-                param_groups[match_learn]["params"].append(value)
+            if match_learn > -1:
+                if key.endswith(".bias" ):
+                    bias_param_groups[match_learn+1]["params"].append(value)
+                else:
+                    param_groups[match_learn+1]["params"].append(value)
             else:
-                param_groups[0]["params"].append(value)
+                if key.endswith(".bias" ):
+                    bias_param_groups[0]["params"].append(value)
+                else:
+                    param_groups[0]["params"].append(value)
             learn_param_keys.append(key)
+        bias_param_groups = [groups for groups in bias_param_groups if len(groups["params"])>0]
+        param_groups=param_groups+bias_param_groups
         logger.info("Frozen parameters:\n{}".format("\n".join(frozen_params)))
         logger.info("Training parameters:\n{}".format("\n".join(learn_param_keys)))
         optim = cfg.SOLVER.OPTIM

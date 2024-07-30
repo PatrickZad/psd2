@@ -50,6 +50,7 @@ PERSON_SEARCH:
       FREEZE_AT_STAGE2: True
       FROZEN_BN: True
       TEXT_DROPOUT: 0.0
+      FROZEN_STEM: False
   REID:
     MODEL:
       EMB_DIM: 1024
