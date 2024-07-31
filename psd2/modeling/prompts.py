@@ -1591,7 +1591,83 @@ class L2PppMaskAttn(nn.Module):
                 storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
         return p_return, p_loss
 
+# TODO
+class L2PppMaskAttnSeOrth(L2PppMaskAttn):
+    def __init__(
+        self,*args, **kws):
+        super().__init__(*args, **kws)
+        for e in self.e_layers:
+            da = tensor_prompt(self.e_pool_size, self.key_d)
+            setattr(self, f"e_da_{e}", da)
+    def forward(self, x_query, vis_mark, train=False, task_id=None):
+        """
+        select all layers in one pass
+        NOTE assume x_query to be batch_size * num_layer * c
+        """
+        B, nL, C = x_query.shape
+        assert nL == len(self.e_layers)
+        # e prompts
+        p_return = []
+        p_loss = 0
+        vis_attn = []
+        for l in range(nL):
+            K = getattr(self, f"e_k_{l}")
+            A = getattr(self, f"e_a_{l}")
+            p = getattr(self, f"e_p_{l}")
+            pt = self.top_k
+            s = int(self.task_count * pt)
+            f = int((self.task_count + 1) * pt)
 
+            # cosine similarity to match keys/querries
+            n_K = nn.functional.normalize(K, dim=1)
+            q = nn.functional.normalize(x_query[:, l, :], dim=1).detach()
+            cos_sim = torch.einsum("bj,kj->bk", q, n_K)
+            if train:
+                vis_attn.append(cos_sim.detach())
+                loss = (
+                            1.0
+                            - cos_sim[
+                                :,
+                                self.task_count
+                                * self.top_k : (self.task_count + 1)
+                                * self.top_k,
+                            ]
+                        ).sum()*self.cos_mu
+                K = K[s:f]
+                A = A[s:f]
+                p = p[s:f]
+                loss += ortho_penalty(K)*self.ortho_mu
+                loss += ortho_penalty(A)*self.ortho_mu
+                loss += ortho_penalty(p.flatten(start_dim=1, end_dim=2))*self.ortho_mu
+                p_loss+=loss
+                K=K.unsqueeze(0).expand(B, -1, -1)
+                A=A.unsqueeze(0).expand(B, -1, -1)
+                p=p.unsqueeze(0).expand(B, -1, -1,-1)
+            else:
+                top_k = torch.topk(cos_sim, self.top_k, dim=1)
+                k_idx = top_k.indices
+                K = K[k_idx]
+                A = A[k_idx]
+                p = p[k_idx]
+
+            # with attention and cosine sim
+            n_K=nn.functional.normalize(K, dim=-1)
+            n_A = nn.functional.normalize(A, dim=-1)
+            a_k = (n_K*n_A).sum(-1) # b x topk
+
+            P_ = torch.einsum("bk,bkld->bld", a_k, p)
+            p_return.append(P_)
+
+        p_return = torch.stack(p_return, dim=0)
+        if self.vis_period > 0 and train:
+            storage = get_event_storage()
+            if storage.iter % self.vis_period == 0:
+                vis_img = mat_heatmap(torch.cat(vis_attn, dim=-1), vmin=-1.0, vmax=1.0)
+                vis_img = (
+                    torch.tensor(vis_img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
+                storage.put_image(f"batch/prompt_{vis_mark}", vis_img)
+        return p_return, p_loss
 
 
 

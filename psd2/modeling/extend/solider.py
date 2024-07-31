@@ -2091,6 +2091,10 @@ class PrefixPromptedSwinTransformer(BaseModule):
         self.promt_start_stage = prompt_start_stage
         in_channels = embed_dims
         for i in range(num_layers):
+            if isinstance(num_prompts, int):
+                stage_num_prompts = num_prompts
+            else:
+                stage_num_prompts = num_prompts[i]
             if i < num_layers - 1:
                 downsample = PatchMerging(
                     in_channels=in_channels,
@@ -2120,9 +2124,9 @@ class PrefixPromptedSwinTransformer(BaseModule):
                     with_cp=with_cp,
                     init_cfg=None,
                 )
-                if i < prompt_start_stage - 1
+                if i < prompt_start_stage - 1 or stage_num_prompts == 0
                 else PrefixPromptedSwinBlockSequence(
-                    num_prompts=num_prompts,
+                    num_prompts=stage_num_prompts,
                     embed_dims=in_channels,
                     num_heads=num_heads[i],
                     feedforward_channels=mlp_ratio * in_channels,
@@ -2272,7 +2276,7 @@ class PrefixPromptedSwinBlockSequence(PromptedSwinBlockSequence):
         self.num_prompts = num_prompts
 
 
-class PrefixPromptedSwinBlock(BaseModule):
+class PrefixPromptedSwinBlock(SwinBlock):
     def __init__(
         self,
         num_prompts,
@@ -2291,11 +2295,10 @@ class PrefixPromptedSwinBlock(BaseModule):
         with_cp=False,
         init_cfg=None,
     ):
-        super(PrefixPromptedSwinBlock, self).__init__()
+        super(SwinBlock, self).__init__()
 
         self.init_cfg = init_cfg
         self.with_cp = with_cp
-        self.num_prompts = num_prompts
 
         self.norm1 = build_norm_layer(norm_cfg, embed_dims)[1]
         self.attn = PrefixPromptedShiftWindowMSA(
@@ -2323,28 +2326,7 @@ class PrefixPromptedSwinBlock(BaseModule):
             add_identity=True,
             init_cfg=None,
         )
-
-    def forward(self, x, hw_shape):
-        def _inner_forward(x):
-            prompts, x = x[:, : self.num_prompts, :], x[:, self.num_prompts :, :]
-            identity = x
-            x = self.norm1(x)
-            x = self.attn(torch.cat([prompts, x], dim=1), hw_shape)
-            x = x[:, self.num_prompts :, :]
-            x = x + identity
-
-            identity = x
-            x = self.norm2(x)
-            x = self.ffn(x, identity=identity)
-            # add them back for compatibility
-            return torch.cat([prompts, x], dim=1)
-
-        if self.with_cp and x.requires_grad:
-            x = cp.checkpoint(_inner_forward, x)
-        else:
-            x = _inner_forward(x)
-
-        return x
+    
 
 
 class PrefixPromptedShiftWindowMSA(PromptedShiftWindowMSA):

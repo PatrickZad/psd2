@@ -1,6 +1,6 @@
-_BASE_: "base_prompts.yaml"
+_BASE_: "../main/base_prompts.yaml"
 MODEL:
-  META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
+  META_ARCHITECTURE: "PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug"
   WEIGHTS: "outputs/swin_rcnn/pd-pre-simfpnlite_cococh_small-ign_new_14x14/model_0178019.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
@@ -45,11 +45,11 @@ PERSON_SEARCH:
     PROMPT_START_STAGE: 1
     NUM_PROMPTS: [4,4,4,4]
     POOL_SIZE: 12
-    PROMPT_TYPE: "L2PppMaskSeOrth"
+    PROMPT_TYPE: "DualPromptL2P"
     NUM_TASKS: 3
     CURRENT_TASK: 0
     LOSS_WEIGHT: 0.1
-    ORTH_MU: 100000
+    POOL_TYPE: ["g","g","e","e"]
     TOP_K: 4
   DET:
     MODEL:
@@ -110,4 +110,4 @@ TEST:
   IMS_PER_PROC: 2
   EVAL_PERIOD: 2802
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14_re"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-dualp-ps-prepend16-boxaug5_cuhk_adam_b8_incoim_0wd_correctln_14x14_prefix"

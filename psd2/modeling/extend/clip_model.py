@@ -149,7 +149,7 @@ class AttentionPool2d(nn.Module):
         return x[0]
 
 
-
+from psd2.layers import FrozenBatchNorm2d
 
 class ModifiedResNet(nn.Module):
     """
@@ -159,18 +159,25 @@ class ModifiedResNet(nn.Module):
     - The final pooling layer is a QKV attention instead of an average pool
     """
 
-    def __init__(self, layers, output_dim, heads, input_resolution=224, width=64):
+    def __init__(self, layers, output_dim, heads, input_resolution=224, width=64,stem_frozen=False):
         super().__init__()
         self.output_dim = output_dim
         self.input_resolution = input_resolution
 
+        self.stem_frozen=stem_frozen
+
         # the 3-layer stem
         self.conv1 = nn.Conv2d(3, width // 2, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(width // 2)
+        self.bn1 = nn.BatchNorm2d(width // 2) if not stem_frozen else FrozenBatchNorm2d(width // 2)
         self.conv2 = nn.Conv2d(width // 2, width // 2, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(width // 2)
+        self.bn2 = nn.BatchNorm2d(width // 2) if not stem_frozen else FrozenBatchNorm2d(width // 2)
         self.conv3 = nn.Conv2d(width // 2, width, kernel_size=3, padding=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(width)
+        self.bn3 = nn.BatchNorm2d(width) if not stem_frozen else FrozenBatchNorm2d(width)
+        if stem_frozen:
+            for mod in [self.conv1,self.conv2,self.conv3]:
+                for param in mod.parameters():
+                    param.requires_grad=False
+            
         self.avgpool = nn.AvgPool2d(2)
         self.relu = nn.ReLU(inplace=True)
 
@@ -334,6 +341,7 @@ class CLIP(nn.Module):
                  transformer_heads: int,
                  transformer_layers: int,
                  text_dropout=0.,
+                 stem_frozen=False,
                  ):
         super().__init__()
 
@@ -346,7 +354,8 @@ class CLIP(nn.Module):
                 output_dim=embed_dim,
                 heads=vision_heads,
                 input_resolution=image_resolution,
-                width=vision_width
+                width=vision_width,
+                stem_frozen=stem_frozen
             )
         else:
             vision_heads = vision_width // 64
@@ -519,7 +528,7 @@ def convert_weights(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None,text_dropout=0.):
+def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[int, int]], stride_size: int, jit: bool = False, download_root: str = None,text_dropout=0.,frozen_stem=False):
     """Load a CLIP model
 
     Parameters
@@ -596,7 +605,8 @@ def build_CLIP_from_openai_pretrained(name: str, image_size: Union[int, Tuple[in
         'transformer_width': transformer_width, 
         'transformer_heads': transformer_heads, 
         'transformer_layers': transformer_layers,
-        "text_dropout": text_dropout
+        "text_dropout": text_dropout,
+        "stem_frozen": frozen_stem
     }
 
 
