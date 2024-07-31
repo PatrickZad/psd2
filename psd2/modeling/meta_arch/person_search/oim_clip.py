@@ -679,6 +679,7 @@ class OimClipSimpleDC2(OimClipSimple):
         ret["bn_neck"] = bn_neck
         ret["oim_loss"] = OIMLoss(cfg)
         ret["oim_loss_text"]=None
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
 @META_ARCH_REGISTRY.register()
@@ -731,6 +732,7 @@ class OimClipSimpleDC2Bi(OimClipSimple):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
     def forward_gallery(self, image_list, gt_instances):
         if self.training:
@@ -847,6 +849,7 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
 
@@ -3180,7 +3183,55 @@ class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe(OimClipSimpleOimshareSd
         head.attnpool=clip_model.visual.attnpool
         ret["roi_heads"]=head
         return ret
-    
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyAttmaskPredVe(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe):
+    def cross_former(self, q, k, v,attn_mask=None):
+        # inputs are NLD
+        # NLD -> LND
+        q=q.permute(1, 0, 2)
+        k=k.permute(1, 0, 2)
+        v=v.permute(1, 0, 2)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=True,attn_mask=attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
+    def mlm_loss(self,i_features,tokens):
+        tokens=torch.stack(tokens).to(self.device)
+        masked_i_features,masked_org_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats =ckpt.checkpoint(self.clip_model.encode_text,tokens)
+        text_end_idx=tokens.argmax(dim=-1)
+        att_mask=torch.zeros((masked_i_features.shape[0],masked_i_features.shape[1],text_feats.shape[1]),dtype=masked_i_features.dtype,device=masked_i_features.device)
+        for i,ei in enumerate(text_end_idx):
+            att_mask[i][:,ei+1:]=-float("inf")
+        n_heads=self.clip_model.text_projection.shape[1]//64
+        att_mask=att_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,attn_mask=att_mask)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        storage = get_event_storage()
+        if storage.iter % self.vis_period == 0:
+            h,w=8,4
+            th,tw= 16,8
+            B=i_features.shape[0]
+            with torch.no_grad():
+                org_feats=i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                masked_feats=masked_org_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                rec_feats=rec_i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                pca_feats=mlvl_pca_feat([org_feats,masked_feats,rec_feats])
+                # vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                vis_pca_feats=[feats/255 for feats in pca_feats]
+                for i in range(B):
+                    storage.put_image("mim/feat_{}_org".format(i), vis_pca_feats[0][i])
+                    storage.put_image("mim/feat_{}_mask".format(i), vis_pca_feats[1][i])
+                    storage.put_image("mim/feat_{}_rec".format(i), vis_pca_feats[2][i])
+
+
+        return {"loss_mim":l2_dist}
+
+
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleBoxaugOimshareMIML2DFullyPredVe(OimClipSimpleOimshareMIML2DFullyPredVe):
     @configurable
@@ -6198,13 +6249,9 @@ class ResidualFullyCrossAttentionBlock(nn.Module):
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
 
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.self_attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,attn_amsk=None):
         # cross attn
-        q = q + self.attn(self.ln_1(q),k,v,need_weights=False, attn_mask=None)[0]
+        q = q + self.attn(self.ln_1(q),k,v,need_weights=False, attn_mask=attn_amsk)[0]
         q = q + self.mlp(self.ln_2(q))
         return q
 
@@ -6223,13 +6270,9 @@ class ResidualFullyCrossAttentionBlock2(nn.Module):
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
 
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.self_attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,attn_mask=None):
         # cross attn
-        q = q + self.attn(self.ln_q(q),self.ln_k(k),self.ln_v(v),need_weights=False, attn_mask=None)[0]
+        q = q + self.attn(self.ln_q(q),self.ln_k(k),self.ln_v(v),need_weights=False, attn_mask=attn_mask)[0]
         q = q + self.mlp(self.ln_2(q))
         return q
 
@@ -6291,35 +6334,57 @@ class CrossAttentionTransformer(nn.Module):
             q=inter_out
         return q
 
-class FullyCrossAttentionTransformer(CrossAttentionTransformer):
+class FullyCrossAttentionTransformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super().__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
         self.pos_q=None
         self.pos_k=None
-class FullyCrossAttentionTransformer2(CrossAttentionTransformer):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,with_ckpt=False,return_inter=False,attn_mask=None):
+        inter_out=[]
+        if self.pos_q is not None:
+            q=q+self.pos_q.unsqueeze(1)
+        if with_ckpt:
+            # def inner_forward()
+            for blk in self.resblocks:
+                if self.pos_k is not None:
+                    k=k+self.pos_k.unsqueeze(1)
+                q=ckpt.checkpoint(blk,q,k,v,attn_mask)
+                if return_inter:
+                    inter_out.append(q)
+        else:
+            for blk in self.resblocks:
+                if self.pos_k is not None:
+                    k=k+self.pos_k.unsqueeze(1)
+                q=blk(q,k,v,attn_mask)
+                if return_inter:
+                    inter_out.append(q)
+        if return_inter:
+            q=inter_out
+        return q
+class FullyCrossAttentionTransformer2(FullyCrossAttentionTransformer):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super(FullyCrossAttentionTransformer,self).__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock2(width, heads, attn_mask) for _ in range(layers)])
         self.pos_q=None
         self.pos_k=None
 
-class FullyCrossAttentionTransformer3(CrossAttentionTransformer):
+class FullyCrossAttentionTransformer3(FullyCrossAttentionTransformer):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super(FullyCrossAttentionTransformer,self).__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock3(width, heads, attn_mask) for _ in range(layers)])
         self.pos_q=None
         self.pos_k=None
 
-class FullyCrossAttentionTransformer4(CrossAttentionTransformer):
+class FullyCrossAttentionTransformer4(FullyCrossAttentionTransformer):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super(FullyCrossAttentionTransformer,self).__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock4(width, heads, attn_mask) for _ in range(layers)])
