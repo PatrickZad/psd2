@@ -1,7 +1,7 @@
-_BASE_: "./main/base_prompts.yaml"
+_BASE_: "base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
-  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-fix-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14/model_0027093.pth"
+  WEIGHTS: "outputs/swin_rcnn/simfpn-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14_re_40k/model_0019963.pth"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: [[32], [64], [128], [256], [512]] # One size for each in feature map
@@ -37,14 +37,20 @@ MODEL:
     BBOX_REG_WEIGHTS: [10.0, 10.0, 5.0, 5.0]
     SMOOTH_L1_BETA: 0.0
     POOLER_RESOLUTION: [14, 14]
-    POOLER_SAMPLING_RATIO: 0
+    POOLER_SAMPLING_RATIO: 2
     POOLER_TYPE: "ROIAlignV2"
 PERSON_SEARCH:
   QUERY_ENCODER_WEIGHTS: "Data/model_zoo/swin_small_patch4_window7_224_22k_d2.pkl"
   PROMPT:
-    NUM_PROMPTS: 16
-    PROMPT_TYPE: "Fixed"
-    CURRENT_TASK: 0
+    PROMPT_START_STAGE: 1
+    NUM_PROMPTS: [4,4,4,4]
+    POOL_SIZE: 12
+    PROMPT_TYPE: "L2PppMaskSeOrth"
+    NUM_TASKS: 3
+    CURRENT_TASK: 2
+    LOSS_WEIGHT: 0.1
+    ORTH_MU: 100000
+    TOP_K: 4
   DET:
     MODEL:
       TRANSFORMER:
@@ -74,8 +80,8 @@ PERSON_SEARCH:
         ULB_LAYER: "ulb_full"
         LB_FACTOR: 30
         ULB_FACTOR: 30
-        NUM_LB: [2807,]
-        LEN_ULB: [3000,]
+        NUM_LB: [5532,483,2807]
+        LEN_ULB: [5000,500,3000]
         FEAT_DIM: 768
         NORM_FEAT: True
         SYNC_MEMORY: True
@@ -102,6 +108,6 @@ DATASETS:
   TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
 TEST:
   IMS_PER_PROC: 3
-  EVAL_PERIOD: 5040
+  EVAL_PERIOD: 2520
   DETECTION_SCORE_TS: [0.5,]
-OUTPUT_DIR: "outputs/swin_rcnn/simfpn-ign-fix-ps-prepend16-boxaug5_cuhk2prw2mvn_adam_b8_incoim_0wd_correctln_14x14"
+OUTPUT_DIR: "outputs/swin_rcnn/simfpnlite-ign-l2pppMaskSeOrth-ps-prepend16-boxaug5_cuhk2prw2mvn_adam_b8_incoim_0wd_correctln_14x14_re_40k-20k"
