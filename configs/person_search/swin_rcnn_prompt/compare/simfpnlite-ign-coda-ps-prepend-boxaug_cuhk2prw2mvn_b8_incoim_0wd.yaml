@@ -1,4 +1,4 @@
-_BASE_: "base_prompts.yaml"
+_BASE_: "../main/base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
   WEIGHTS: "outputs/swin_rcnn/simfpnlite-ign-coda-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln/model_0025667.pth"

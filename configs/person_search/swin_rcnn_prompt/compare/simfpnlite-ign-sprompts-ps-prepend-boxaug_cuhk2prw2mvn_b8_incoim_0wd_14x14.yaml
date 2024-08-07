@@ -1,4 +1,4 @@
-_BASE_: "base_prompts.yaml"
+_BASE_: "../main/base_prompts.yaml"
 MODEL:
   META_ARCHITECTURE: "PromptedSwinSimFPNLiteRCNNPSBoxAug"
   WEIGHTS: "outputs/swin_rcnn/simfpn-ign-sprompts-ps-prepend16-boxaug5_cuhk2prw_adam_b8_incoim_0wd_correctln_14x14/model_0024241.pth"
@@ -48,7 +48,7 @@ PERSON_SEARCH:
     NUM_TASKS: 3
     NUM_KEYS: 4
     KEYS_PATH: ["outputs/swin_ps_reid/swin-small-ign_imgfeats/CUHK-SYSU_Train_img_feats_4centroids.pth",
-                "outputs/swin_ps_reid/swin-small-ign_imgfeats/PRW_Train_img_feats.pth",
+                "outputs/swin_ps_reid/swin-small-ign_imgfeats/PRW_Train_img_feats_4centroids.pth",
                 "outputs/swin_ps_reid/swin-small-ign_imgfeats/MovieNet_Train_app10_img_feats_4centroids.pth"]
   DET:
     MODEL:
@@ -104,7 +104,7 @@ INPUT:
   MAX_SIZE_TEST_INC: [1333,1333,1333,1333,720,720]
 DATASETS:
   TRAIN: ("MovieNet_Train_app10",) 
-  TEST: ("CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000","MovieNet_TestG2000",) #
+  TEST: ("MovieNet_TestG2000",) #"CUHK-SYSU_Gallery","CUHK-SYSU_TestG100","PRW_Gallery","PRW_Query","MovieNet_GalleryTestG2000",
 TEST:
   IMS_PER_PROC: 3
   EVAL_PERIOD: 2520
