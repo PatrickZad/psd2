@@ -24,13 +24,12 @@ from psd2.modeling.extend.clip_model import build_CLIP_from_openai_pretrained,Tr
 import copy
 from collections import OrderedDict
 import torch.utils.checkpoint as ckpt
-from psd2.modeling.backbone import FPN
 
 logger = logging.getLogger(__name__)
 
 # GeneralizedRCNN as reference
 @META_ARCH_REGISTRY.register()
-class OimBert(SearchBaseTBPS):
+class OimClip(SearchBaseTBPS):
     @configurable
     def __init__(
         self,
@@ -42,6 +41,7 @@ class OimBert(SearchBaseTBPS):
         bn_neck,
         oim_loss,
         oim_loss_text,
+        cws,
         *args,
         **kws,
     ) -> None:
@@ -55,6 +55,7 @@ class OimBert(SearchBaseTBPS):
         self.oim_loss = oim_loss
         self.oim_loss_text=oim_loss_text
         self.alignment_loss=SupConLoss()
+        self.cws=cws
 
         # res5 only in roi_head
         for p in self.clip_model.visual.layer4.parameters():
@@ -71,7 +72,7 @@ class OimBert(SearchBaseTBPS):
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -116,6 +117,7 @@ class OimBert(SearchBaseTBPS):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
     def backbone(self,x):
         visual_encoder=self.clip_model.visual
@@ -126,7 +128,7 @@ class OimBert(SearchBaseTBPS):
             return x
         # x = ckpt.checkpoint(stem,x)
         x=stem(x)
-        x =ckpt.checkpoint(visual_encoder.layer1,x) if self.training else visual_encoder.layer1(x)
+        x =ckpt.checkpoint(visual_encoder.layer1,x) if (self.training and not visual_encoder.stem_frozen) else visual_encoder.layer1(x)
         # x =visual_encoder.layer1(x)
         x =ckpt.checkpoint(visual_encoder.layer2,x) if self.training else visual_encoder.layer2(x)
         x =ckpt.checkpoint(visual_encoder.layer3,x) if self.training else visual_encoder.layer3(x)
@@ -139,6 +141,8 @@ class OimBert(SearchBaseTBPS):
         text_feats=text_feats[torch.arange(text_feats.shape[0]), text.argmax(dim=-1)]
         text_feats=self.bn_neck_text(text_feats)
         return text_feats
+    def img_emb_infer(self,roi_feats):
+        return self.clip_model.visual.attnpool(roi_feats)
     def forward_gallery(self, image_list, gt_instances):
         features = self.backbone(image_list.tensor)
         proposals, proposal_losses = self.proposal_generator(
@@ -198,7 +202,7 @@ class OimBert(SearchBaseTBPS):
                 losses["loss_align_t"]=align_loss_t*0.5
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
-            box_embs = self.img_embes(box_features)
+            box_embs = self.img_emb_infer(box_features)
             box_embs = self.bn_neck(box_embs)
             box_embs=F.normalize(box_embs,dim=-1)
             # nms
@@ -224,7 +228,10 @@ class OimBert(SearchBaseTBPS):
                 pred_scores = pred_scores[keep]
                 pred_i.pred_boxes = Boxes(pred_boxes_t, BoxMode.XYXY_ABS)
                 pred_i.pred_scores = pred_scores
-                pred_i.reid_feats = reid_feats_i[filter_mask][keep]
+                pred_feats=reid_feats_i[filter_mask][keep]
+                if self.cws:
+                    pred_feats=pred_feats*pred_scores.view(-1,1)
+                pred_i.reid_feats = pred_feats
                 pred_i.pred_classes = pred_i.pred_classes[filter_mask][keep]
                 # back to org scale
                 org_h, org_w = gt_i.org_img_size
@@ -261,7 +268,7 @@ class OimClipSplit(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32} # for det
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -373,7 +380,7 @@ class OimClipStride(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -489,7 +496,7 @@ class OimClipSimple(OimClip):
     @classmethod
     def from_config(cls, cfg):
         ret = super(OimClip,cls).from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -529,6 +536,7 @@ class OimClipSimple(OimClip):
         ret["bn_neck"] = bn_neck
         ret["oim_loss"] = OIMLoss(cfg)
         ret["oim_loss_text"]=None
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
     def forward_gallery(self, image_list, gt_instances):
@@ -584,6 +592,10 @@ class OimClipSimple(OimClip):
         else:
             return super().forward_gallery(image_list, gt_instances)
 
+
+    
+    
+
 @META_ARCH_REGISTRY.register()
 class OimClipDetOnly(OimClipSimple):
     def forward_gallery(self, image_list, gt_instances):
@@ -631,7 +643,7 @@ class OimClipSimpleDC2(OimClipSimple):
     @classmethod
     def from_config(cls, cfg):
         ret =SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -673,6 +685,7 @@ class OimClipSimpleDC2(OimClipSimple):
         ret["bn_neck"] = bn_neck
         ret["oim_loss"] = OIMLoss(cfg)
         ret["oim_loss_text"]=None
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
 
 @META_ARCH_REGISTRY.register()
@@ -680,7 +693,7 @@ class OimClipSimpleDC2Bi(OimClipSimple):
     @classmethod
     def from_config(cls, cfg):
         ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -725,6 +738,7 @@ class OimClipSimpleDC2Bi(OimClipSimple):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
     def forward_gallery(self, image_list, gt_instances):
         if self.training:
@@ -798,7 +812,7 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
     @classmethod
     def from_config(cls, cfg):
         ret = SearchBaseTBPS.from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT,frozen_stem=cfg.PERSON_SEARCH.DET.CLIP.FROZEN_STEM)
         out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":32}
         out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
         res_output_shape={
@@ -841,9 +855,8 @@ class OimClipSimpleBi(OimClipSimpleDC2Bi):
         del oim_text.ulb_layer
         oim_text.ulb_layer=None
         ret["oim_loss_text"]=oim_text
+        ret["cws"]=cfg.PERSON_SEARCH.REID.CWS
         return ret
-
-
 
 from psd2.utils.simple_tokenizer import SimpleTokenizer
 import random
@@ -2315,8 +2328,10 @@ class OimClipSimpleBiMIML2DFullyPred(OimClipSimpleBiMIMDFully):
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
         return {"loss_mim":l2_dist}
 
+
+
 @META_ARCH_REGISTRY.register()
-class OimClipSimpleBiMIML1DFullyPred(OimClipSimpleBiMIML2DFullyPred):
+class OimClipSimpleBiMIML1DFullyPred(OimClipSimpleBiMIML2DFullyPred): 
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
         text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
@@ -2435,17 +2450,433 @@ class OimClipSimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPred):
             # NOTE randomly sample one roi feature for one text tokens
             img_features=[]
             text_tokens=[]
+            text_pids=[]
             num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
             roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
             box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
             for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
                 gt_ids=img_gt.gt_pids
                 gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleLBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+        
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,_ = self.img_embes(box_features)
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleFocalBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+        
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,_ = self.img_embes(box_features)
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                lb_v_embs=F.normalize(lb_features,dim=-1)
+                ulb_v_embs=F.normalize(ulb_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                t2v_matching_scores=torch.cat([text_embs.mm(lb_v_embs.t())*self.oim_loss.lb_factor,text_embs.mm(ulb_v_embs.t())*self.oim_loss.ulb_factor],dim=1)
+                if self.oim_loss.use_focal:
+                    p_i = F.softmax(t2v_matching_scores, dim=1)
+                    focal_p_i = (
+                        self.oim_loss.focal_alpha * (1 - p_i) ** self.oim_loss.focal_gamma * p_i.log()
+                    )
+                    align_loss_t = F.nll_loss(
+                        focal_p_i, text_pids, ignore_index=-1
+                    )
+                else:
+                    align_loss_t=F.cross_entropy(
+                        t2v_matching_scores, text_pids, ignore_index=-1
+                    )
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                v2t_matching_scores=box_embs.mm(t_embs.t())*self.oim_loss_text.lb_factor
+                if self.oim_loss_text.use_focal:
+                    p_i = F.softmax(v2t_matching_scores, dim=1)
+                    focal_p_i = (
+                        self.oim_loss_text.focal_alpha * (1 - p_i) ** self.oim_loss_text.focal_gamma * p_i.log()
+                    )
+                    align_loss_i = F.nll_loss(
+                        focal_p_i, assign_ids, ignore_index=-1
+                    )
+                else:
+                    align_loss_i=F.cross_entropy(
+                        t2v_matching_scores, assign_ids, ignore_index=-1
+                    )
+                losses["loss_align_i"]=align_loss_i*0.5
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleRfirstBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    @classmethod
+    def from_config(cls, cfg):
+        ret = super().from_config(cfg)
+        clip_model=ret["clip_model"]
+        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
+        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
+        res_output_shape={
+            name: ShapeSpec(
+                channels=out_feature_channels[name],
+                stride=out_feature_strides[name],
+            )
+            for name in ["res2","res3","res4","res5"]
+        }
+        prev_head=ret["roi_heads"]
+        res5=copy.deepcopy(prev_head.res5)
+        head = ClipRes5AttnROIHeadsPs(cfg, res5,res_output_shape)
+        head.attnpool=clip_model.visual.attnpool
+        ret["roi_heads"]=head
+        return ret
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFullyLnPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIML2DFullyLnPredVe,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_modal_transformer = FullyCrossAttentionTransformer2(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFullyNlnPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIML2DFullyNlnPredVe,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_modal_transformer = FullyCrossAttentionTransformer3(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFullyNormPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIML2DFullyNormPredVe,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_modal_transformer = FullyCrossAttentionTransformer4(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleBiMIML2DFullyCosPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleBiMIML2DFullyCosPredVe,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_modal_transformer = FullyCrossAttentionTransformer4(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features,masked_org_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
+        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        tgt_i_features=i_features.detach()
+        tgt_i_features=F.normalize(tgt_i_features,dim=-1)
+        rec_i_features=F.normalize(rec_i_features,dim=-1)
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        storage = get_event_storage()
+        if storage.iter % self.vis_period == 0:
+            h,w=8,4
+            th,tw= 16,8
+            B=i_features.shape[0]
+            with torch.no_grad():
+                org_feats=i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                masked_feats=masked_org_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                rec_feats=rec_i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                pca_feats=mlvl_pca_feat([org_feats,masked_feats,rec_feats])
+                # vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                vis_pca_feats=[feats/255 for feats in pca_feats]
+                for i in range(B):
+                    storage.put_image("mim/feat_{}_org".format(i), vis_pca_feats[0][i])
+                    storage.put_image("mim/feat_{}_mask".format(i), vis_pca_feats[1][i])
+                    storage.put_image("mim/feat_{}_rec".format(i), vis_pca_feats[2][i])
+
+
+        return {"loss_mim":l2_dist}
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleXiBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,_ = self.img_embes(box_features)
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                gt_tokens_xi=img_gt.xi_descriptions
                 if (gt_ids>-1).nonzero().shape[0]==0:
                     continue
-                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                for pid,p_tokens,p_tokens_xi in zip(gt_ids,gt_tokens,gt_tokens_xi):
                     # there can be multiple text seq for one id
                     id_feats=img_rois[roi_ids==pid]
+                    p_tokens+=p_tokens_xi
                     num_desc=len(p_tokens)
                     if id_feats.shape[0]<num_desc:
                         id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
@@ -2495,6 +2926,114 @@ class OimClipSimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPred):
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             return super().forward_gallery(image_list, gt_instances)
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleCyBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            for i, instances_i in enumerate(pred_instances):
+                instances_i.assign_ids = assign_ids_per_img[i]
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs,_ = self.img_embes(box_features)
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            img_embs=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            box_embs_per_img=torch.split(box_embs,num_ps_per_img)
+            for img_rois,roi_embs,roi_ids,img_gt in zip(box_features_per_img,box_embs_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_feats=img_rois[roi_ids==pid]
+                        id_embs=roi_embs[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                            id_embs=id_embs.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        sampled_idxs=torch.randperm(id_embs.shape[0])[:num_desc]
+                        img_embs.append(id_embs[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                roi_embs=torch.cat(img_embs)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_align_t"]=torch.tensor(0.,device=self.device)
+                losses["loss_cycle_i"]=torch.tensor(0.,device=self.device)
+                losses["loss_cycle_c"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                # alignment, text-to-image matching
+                lb_features=self.oim_loss.lb_layer.lookup_table
+                ulb_features=self.oim_loss.ulb_layer.queue
+                v_features=torch.cat([lb_features,ulb_features],dim=0)
+                v_embs=F.normalize(v_features,dim=-1)
+                text_embs=F.normalize(text_embs,dim=-1)
+                align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
+                losses["loss_align_t"]=align_loss_t*0.5
+                lb_features=self.oim_loss_text.lb_layer.lookup_table
+                t_embs=F.normalize(lb_features,dim=-1)
+                pos_mask=assign_ids>-1
+                box_embs=box_embs[pos_mask]
+                assign_ids=assign_ids[pos_mask]
+                box_embs=F.normalize(box_embs,dim=-1)
+                align_loss_i=self.alignment_loss(box_embs,t_embs,assign_ids)
+                losses["loss_align_i"]=align_loss_i*0.5
+                # cycle consistency
+                roi_embs=F.normalize(roi_embs,dim=-1)
+                lb_v_embs=F.normalize(lb_features,dim=-1)
+                losses["loss_cycle_c"]=F.mse_loss(roi_embs.mm(t_embs.t()),text_embs.mm(lb_v_embs.t()))
+                losses["loss_cycle_i"]=F.mse_loss(roi_embs.mm(lb_v_embs.t()),text_embs.mm(t_embs.t()))
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleBikdMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
@@ -3039,25 +3578,6 @@ class OimClipSimpleBiMIML2DFullyPredVee(OimClipSimpleBiMIML2DFullyPredVe):
         mim_tokens=self.mim_token.expand(all_tokens.shape[0],all_tokens.shape[1],-1)
         masked_tokens=img_feats_with_mask*(1-merge_weight)+mim_tokens*merge_weight
         return masked_tokens
-
-@META_ARCH_REGISTRY.register()
-class OimClipNAESimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPredVe):
-    @classmethod
-    def from_config(cls, cfg):
-        ret = super().from_config(cfg)
-        out_feature_strides = {"res2":4,"res3":8,"res4":16,"res5":16}
-        out_feature_channels = {"res2":256,"res3":512,"res4":1024,"res5":2048}
-        res_output_shape={
-            name: ShapeSpec(
-                channels=out_feature_channels[name],
-                stride=out_feature_strides[name],
-            )
-            for name in ["res2","res3","res4","res5"]
-        }
-        roi_prev=ret["roi_heads"]
-        res5=copy.deepcopy(roi_prev.res5)
-        ret["roi_heads"] = ClipRes5ROIHeadsNAE(cfg, res5,res_output_shape)
-        return ret
      
 
 
@@ -4627,7 +5147,8 @@ class ClipRes5ROIHeadsPs(Res5ROIHeads):
         storage.put_scalar("roi_head/num_bg_samples", np.mean(num_bg_samples))
 
         return proposals_with_gt, pos_match_indices
-
+    def box_embedding(self,box_features):
+        return box_features.mean(dim=[2, 3])
     def forward(
         self,
         images: ImageList,
@@ -4651,7 +5172,8 @@ class ClipRes5ROIHeadsPs(Res5ROIHeads):
         box_features = self._shared_roi_transform(
             [features[f] for f in self.in_features], proposal_boxes
         )
-        box_embs = box_features.mean(dim=[2, 3])
+        
+        box_embs = self.box_embedding(box_features)
         predictions = self.box_predictor(box_embs)
 
         if self.training:
@@ -4673,6 +5195,47 @@ class ClipRes5ROIHeadsPs(Res5ROIHeads):
             pred_instances = self.box_predictor.inference_unms(predictions, proposals)
             return pred_instances, box_features, {}, None
 
+class ClipRes5AttnROIHeadsPs(ClipRes5ROIHeadsPs):
+    @classmethod
+    def from_config(cls, cfg,res5, input_shape):
+        ret = super().from_config(cfg, res5,input_shape)
+        ret["box_predictor"] = (
+            FastRCNNOutputLayersPsDmlp(
+                cfg, ShapeSpec(channels=1024, height=1, width=1)
+            )
+        )
+        return ret
+    def box_embedding(self,box_features):
+        if hasattr(self,"attnpool"):
+            def inner_forward(x):
+                x = x.reshape(x.shape[0], x.shape[1], x.shape[2] * x.shape[3]).permute(2, 0, 1)  # NCHW -> (HW)NC
+                x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+                x = x + self.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+                x, _ = F.multi_head_attention_forward(
+                    query=x, key=x, value=x,
+                    embed_dim_to_check=x.shape[-1],
+                    num_heads=self.attnpool.num_heads,
+                    q_proj_weight=self.attnpool.q_proj.weight,
+                    k_proj_weight=self.attnpool.k_proj.weight,
+                    v_proj_weight=self.attnpool.v_proj.weight,
+                    in_proj_weight=None,
+                    in_proj_bias=torch.cat([self.attnpool.q_proj.bias, self.attnpool.k_proj.bias, self.attnpool.v_proj.bias]),
+                    bias_k=None,
+                    bias_v=None,
+                    add_zero_attn=False,
+                    dropout_p=0,
+                    out_proj_weight=self.attnpool.c_proj.weight,
+                    out_proj_bias=self.attnpool.c_proj.bias,
+                    use_separate_proj_weight=True,
+                    training=self.attnpool.training,
+                    need_weights=False
+                )
+                return x
+            img_feats=inner_forward(box_features)
+            box_embs=img_feats[0]
+        else:
+            box_embs = box_features.mean(dim=[2, 3])
+        return box_embs
 
 class ClipRes5ROIHeadsPsDetOnly(ClipRes5ROIHeadsPs):
     def _shared_roi_transform(self, features: List[torch.Tensor], boxes: List[Boxes]):
@@ -4917,7 +5480,21 @@ class FastRCNNOutputLayersPs(FastRCNNOutputLayers):
         return results
 
 
+class FastRCNNOutputLayersPsDmlp(FastRCNNOutputLayersPs):
+    @configurable
+    def __init__(self,*args,**kws):
+        super().__init__(*args,**kws)
+        cls_score = nn.Linear(256, self.cls_score.out_features)
+        bbox_pred = nn.Linear(256, self.bbox_pred.out_features)
 
+        nn.init.normal_(cls_score.weight, std=0.01)
+        nn.init.normal_(bbox_pred.weight, std=0.001)
+        for l in [cls_score, bbox_pred]:
+            nn.init.constant_(l.bias, 0)
+        cls_in_dim=self.cls_score.in_features
+        box_in_dim=self.bbox_pred.in_features
+        self.cls_score=nn.Sequential(nn.Linear(cls_in_dim,256),nn.ReLU(),cls_score)
+        self.bbox_pred=nn.Sequential(nn.Linear(box_in_dim,256),nn.ReLU(),bbox_pred)
 
 class LayerNorm(nn.LayerNorm):
     """Subclass torch's LayerNorm to handle fp16."""
@@ -4966,13 +5543,9 @@ class ResidualFullyCrossAttentionBlock(nn.Module):
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
 
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.self_attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,attn_amsk=None):
         # cross attn
-        q = q + self.attn(self.ln_1(q),k,v,need_weights=False, attn_mask=None)[0]
+        q = q + self.attn(self.ln_1(q),k,v,need_weights=False, attn_mask=attn_amsk)[0]
         q = q + self.mlp(self.ln_2(q))
         return q
 
@@ -4991,15 +5564,25 @@ class ResidualFullyCrossAttentionBlock2(nn.Module):
         self.ln_2 = LayerNorm(d_model)
         self.attn_mask = attn_mask
 
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.self_attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,attn_mask=None):
         # cross attn
-        q = q + self.attn(self.ln_q(q),self.ln_k(k),self.ln_v(v),need_weights=False, attn_mask=None)[0]
+        q = q + self.attn(self.ln_q(q),self.ln_k(k),self.ln_v(v),need_weights=False, attn_mask=attn_mask)[0]
         q = q + self.mlp(self.ln_2(q))
         return q
+
+class ResidualFullyCrossAttentionBlock3(ResidualFullyCrossAttentionBlock2):
+    def __init__(self, *args,**kws):
+        super().__init__(*args,**kws)
+        self.ln_q = nn.Identity()
+        self.ln_k = nn.Identity()
+        self.ln_v = nn.Identity()
+
+class ResidualFullyCrossAttentionBlock4(ResidualFullyCrossAttentionBlock):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
+        q=F.normalize(q,dim=-1)
+        k=F.normalize(k,dim=-1)
+        v=F.normalize(v,dim=-1)
+        return super().forward(q,k,v)
 
 class ResidualCrossAttentionBlockPostNorm(ResidualCrossAttentionBlock):
     def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor):
@@ -5045,20 +5628,60 @@ class CrossAttentionTransformer(nn.Module):
             q=inter_out
         return q
 
-class FullyCrossAttentionTransformer(CrossAttentionTransformer):
+class FullyCrossAttentionTransformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super().__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
         self.pos_q=None
         self.pos_k=None
-class FullyCrossAttentionTransformer2(CrossAttentionTransformer):
+    def forward(self, q: torch.Tensor,k: torch.Tensor,v: torch.Tensor,with_ckpt=False,return_inter=False,attn_mask=None):
+        inter_out=[]
+        if self.pos_q is not None:
+            q=q+self.pos_q.unsqueeze(1)
+        if with_ckpt:
+            # def inner_forward()
+            for blk in self.resblocks:
+                if self.pos_k is not None:
+                    k=k+self.pos_k.unsqueeze(1)
+                q=ckpt.checkpoint(blk,q,k,v,attn_mask)
+                if return_inter:
+                    inter_out.append(q)
+        else:
+            for blk in self.resblocks:
+                if self.pos_k is not None:
+                    k=k+self.pos_k.unsqueeze(1)
+                q=blk(q,k,v,attn_mask)
+                if return_inter:
+                    inter_out.append(q)
+        if return_inter:
+            q=inter_out
+        return q
+class FullyCrossAttentionTransformer2(FullyCrossAttentionTransformer):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
-        super(CrossAttentionTransformer,self).__init__()
+        super(FullyCrossAttentionTransformer,self).__init__()
         self.width = width
         self.layers = layers
         self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock2(width, heads, attn_mask) for _ in range(layers)])
+        self.pos_q=None
+        self.pos_k=None
+
+class FullyCrossAttentionTransformer3(FullyCrossAttentionTransformer):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
+        super(FullyCrossAttentionTransformer,self).__init__()
+        self.width = width
+        self.layers = layers
+        self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock3(width, heads, attn_mask) for _ in range(layers)])
+        self.pos_q=None
+        self.pos_k=None
+
+class FullyCrossAttentionTransformer4(FullyCrossAttentionTransformer):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
+        super(FullyCrossAttentionTransformer,self).__init__()
+        self.width = width
+        self.layers = layers
+        self.resblocks = nn.ModuleList([ResidualFullyCrossAttentionBlock4(width, heads, attn_mask) for _ in range(layers)])
         self.pos_q=None
         self.pos_k=None
 
