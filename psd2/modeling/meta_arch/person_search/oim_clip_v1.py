@@ -956,7 +956,7 @@ class OimClipSimpleBiMLM(OimClipSimpleBi):
             all_labels.append(torch.tensor(labels))
 
         return torch.stack(all_masked_tokens).to(self.device),torch.stack(all_labels).to(self.device)
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
@@ -967,15 +967,15 @@ class OimClipSimpleBiMLM(OimClipSimpleBi):
                 self.ln_pre_i(k),
                 self.ln_pre_i(v),
                 need_weights=False)[0]
-        x = self.cross_modal_transformer(x)
+        x = self.cross_modal_transformer(x,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
         return x
     def mlm_loss(self,i_features,tokens):
         masked_tokens,token_labels=self.random_masked_tokens_and_labels(tokens)
-        mlm_feats =ckpt.checkpoint(self.clip_model.encode_text,masked_tokens)
-        x =ckpt.checkpoint(self.cross_former,mlm_feats, i_features, i_features)
+        mlm_feats =self.clip_model.encode_text(masked_tokens,ckpt=True)
+        x =self.cross_former(mlm_feats, i_features, i_features,with_ckpt=True)
 
         x =ckpt.checkpoint(self.mlm_head,x)  # [batch_size, text_len, num_colors]
 
@@ -1266,12 +1266,12 @@ class OimClipSimpleBiMLM2(OimClipSimpleBiMLM):
         else:
             return embs
     def text_embeds(self,text):
-        text_feats=ckpt.checkpoint(self.clip_model.encode_text,text)
+        text_feats=self.clip_model.encode_text(text,ckpt=True)
         # text_feats=self.clip_model.encode_text(text,ckpt=True)
         text_feats=text_feats[torch.arange(text_feats.shape[0]), text.argmax(dim=-1)]
         text_feats=self.bn_neck_text(text_feats)
         return text_feats
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         def inner_forward(q,k,v):
@@ -1285,7 +1285,7 @@ class OimClipSimpleBiMLM2(OimClipSimpleBiMLM):
                         need_weights=False)[0]
             return x
         x=ckpt.checkpoint(inner_forward,q,k,v)
-        x = self.cross_modal_transformer(x,ckpt=True)
+        x = self.cross_modal_transformer(x,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -1449,12 +1449,12 @@ class OimClipSimpleBiMLM3(OimClipSimpleBiMLM):
         else:
             return embs
     def text_embeds(self,text):
-        text_feats=ckpt.checkpoint(self.clip_model.encode_text,text)
+        text_feats=self.clip_model.encode_text(text,ckpt=True)
         # text_feats=self.clip_model.encode_text(text,ckpt=True)
         text_feats=text_feats[torch.arange(text_feats.shape[0]), text.argmax(dim=-1)]
         text_feats=self.bn_neck_text(text_feats)
         return text_feats
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         def inner_forward(q,k,v):
@@ -1468,7 +1468,7 @@ class OimClipSimpleBiMLM3(OimClipSimpleBiMLM):
                         need_weights=False)[0]
             return x
         x=ckpt.checkpoint(inner_forward,q,k,v)
-        x = self.cross_modal_transformer(x,ckpt=True)
+        x = self.cross_modal_transformer(x,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -1614,13 +1614,13 @@ class OimClipSimpleBiMLMD(OimClipSimpleBiMLM):
         # init mlm head
         nn.init.normal_(self.mlm_head.dense.weight, std=fc_std)
         nn.init.normal_(self.mlm_head.fc.weight, std=proj_std)
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -1667,13 +1667,13 @@ class OimClipSimpleBiMLMDFully(OimClipSimpleBiMLM):
         for p in self.cross_modal_transformer.parameters():
             num_transp+=p.view(-1).shape[0]
         print("num_parameters_transformer:"+str(num_transp))
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -1690,8 +1690,8 @@ class OimClipSimpleBiMLMDFullyAlign(OimClipSimpleBiMLMDFully):
         self.bn_neck_text_mlm=copy.deepcopy(self.bn_neck_text)
     def mlm_loss(self,i_features,tokens):
         masked_tokens,token_labels=self.random_masked_tokens_and_labels(tokens)
-        mlm_feats =ckpt.checkpoint(self.clip_model.encode_text,masked_tokens)
-        x =ckpt.checkpoint(self.cross_former,mlm_feats, i_features, i_features)
+        mlm_feats =self.clip_model.encode_text(masked_tokens,ckpt=True)
+        x =self.cross_former(mlm_feats, i_features, i_features,with_ckpt=True)
 
         x =ckpt.checkpoint(self.mlm_head,x)  # [batch_size, text_len, num_colors]
 
@@ -1846,8 +1846,8 @@ class OimClipSimpleBiMIMDFully(OimClipSimpleBiMLMDFully):
         return masked_tokens
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
         cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
@@ -1873,7 +1873,7 @@ class OimClipSimpleBiMHMDFully(OimClipSimpleBiMIMDFully):
         return torch.stack(all_masked_tokens)
     def mim_loss(self,i_features,t_features):
         masked_i_features=self.random_masked_patches(i_features)
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features,t_features)
+        rec_i_features =self.cross_former(masked_i_features, t_features,t_features,with_ckpt=True)
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
         cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
@@ -2023,7 +2023,7 @@ class OimClipSimpleBiMHML2DFullyPredVe(OimClipSimpleBiMHMDFully):
         return feats.transpose(0,1)
     def mim_loss(self,i_features,t_features):
         masked_i_features=self.random_masked_patches(i_features)
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features, t_features)
+        rec_i_features =self.cross_former(masked_i_features, t_features, t_features,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
@@ -2137,20 +2137,20 @@ class OimClipSimpleBiMHM2DFully(OimClipSimpleBiMHMDFully):
     ) -> None:
         super(OimClipSimpleBiMHM2DFully,self).__init__(*args, **kws)
         self.cross_modal_transformer_mim=copy.deepcopy(self.cross_modal_transformer)
-    def cross_former_mim(self, q, k, v):
+    def cross_former_mim(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer_mim(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer_mim(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
         return x
     def mim_loss(self,i_features,t_features):
         masked_i_features=self.random_masked_patches(i_features)
-        rec_i_features =ckpt.checkpoint(self.cross_former_mim,masked_i_features, t_features,t_features)
+        rec_i_features =self.cross_former_mim(masked_i_features, t_features,t_features,with_ckpt=True)
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
         cos_dist=1-(F.normalize(rec_i_features,dim=-1)*F.normalize(tgt_i_features,dim=-1)).sum(-1)
@@ -2168,8 +2168,8 @@ class OimClipSimpleBiMHM2MutualDFully(OimClipSimpleBiMHM2DFully):
         self.mutual_loss=SupConLoss()
     def mlm_loss(self,i_features,tokens):
         masked_tokens,token_labels=self.random_masked_tokens_and_labels(tokens)
-        mlm_feats =ckpt.checkpoint(self.clip_model.encode_text,masked_tokens)
-        x =ckpt.checkpoint(self.cross_former,mlm_feats, i_features, i_features)
+        mlm_feats =self.clip_model.encode_text(masked_tokens,ckpt=True)
+        x =self.cross_former(mlm_feats, i_features, i_features,with_ckpt=True)
 
         x =ckpt.checkpoint(self.mlm_head,x)  # [batch_size, text_len, num_colors]
 
@@ -2182,7 +2182,7 @@ class OimClipSimpleBiMHM2MutualDFully(OimClipSimpleBiMHM2DFully):
         masked_i_features=self.random_masked_patches(i_features)
         i_features=torch.cat([i_embs.unsqueeze(1),i_features],dim=1)
         masked_i_features=torch.cat([i_embs.unsqueeze(1),masked_i_features],dim=1)
-        rec_i_features =ckpt.checkpoint(self.cross_former_mim,masked_i_features, t_features,t_features)
+        rec_i_features =self.cross_former_mim(masked_i_features, t_features,t_features,with_ckpt=True)
         rec_i_embs=rec_i_features[:,0]
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
@@ -2300,8 +2300,8 @@ class OimClipSimpleBiMIML2DFully(OimClipSimpleBiMIMDFully):
 
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="none")
@@ -2321,8 +2321,8 @@ class OimClipSimpleBiMIML2DFullyPred(OimClipSimpleBiMIMDFully):
         self.mim_head=nn.Linear(embed_dim,embed_dim)
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
@@ -2334,8 +2334,8 @@ class OimClipSimpleBiMIML2DFullyPred(OimClipSimpleBiMIMDFully):
 class OimClipSimpleBiMIML1DFullyPred(OimClipSimpleBiMIML2DFullyPred): 
     def mlm_loss(self,i_features,tokens):
         masked_i_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         l1_dist=F.l1_loss(rec_i_features,tgt_i_features,reduction="mean")
@@ -2390,8 +2390,8 @@ class OimClipSimpleBiMIML2DFullyPredVe(OimClipSimpleBiMIML2DFullyPred):
     
     def mlm_loss(self,i_features,tokens):
         masked_i_features,masked_org_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
@@ -2800,8 +2800,8 @@ class OimClipSimpleBiMIML2DFullyCosPredVe(OimClipSimpleBiMIML2DFullyPredVe):
                                                     64)
     def mlm_loss(self,i_features,tokens):
         masked_i_features,masked_org_features=self.random_masked_tokens_and_labels(i_features)
-        text_feats =ckpt.checkpoint(self.clip_model.encode_text,torch.stack(tokens).to(self.device))
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, text_feats, text_feats)
+        text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         tgt_i_features=F.normalize(tgt_i_features,dim=-1)
@@ -3589,7 +3589,7 @@ class OimClipSimpleBiMHML2DFullyPred(OimClipSimpleBiMIML2DFullyPred):
         return super(OimClipSimpleBiMIMDFully,self).mlm_loss(i_features,tokens)
     def mim_loss(self,i_features,t_features):        
         masked_i_features=super(OimClipSimpleBiMIML2DFullyPred,self).random_masked_tokens_and_labels(i_features)
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features, t_features)
+        rec_i_features =self.cross_former(masked_i_features, t_features, t_features,with_ckpt=True)
         rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
@@ -3698,7 +3698,7 @@ class OimClipSimpleBiMHML2DFullyPred(OimClipSimpleBiMIML2DFullyPred):
 class OimClipSimpleBiMHML2DFully(OimClipSimpleBiMHMDFully):
     def mim_loss(self,i_features,t_features):
         masked_i_features=self.random_masked_patches(i_features)
-        rec_i_features =ckpt.checkpoint(self.cross_former,masked_i_features, t_features,t_features)
+        rec_i_features =self.cross_former(masked_i_features, t_features,t_features,with_ckpt=True)
         num_i_tokens=i_features.shape[0]*i_features.shape[1]
         tgt_i_features=i_features.detach()
         l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="none")
@@ -4079,13 +4079,13 @@ class OimClipSimpleBiMLMDFully2(OimClipSimpleBiMLM):
         for p in self.cross_modal_transformer.parameters():
             num_transp+=p.view(-1).shape[0]
         print("num_parameters_transformer:"+str(num_transp))
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -4132,13 +4132,13 @@ class OimClipSimpleBiMLMDFully6(OimClipSimpleBiMLM):
         for p in self.cross_modal_transformer.parameters():
             num_transp+=p.view(-1).shape[0]
         print("num_parameters_transformer:"+str(num_transp))
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -4280,13 +4280,13 @@ class OimClipSimpleBiMLMDUni(OimClipSimpleBiMLM):
         # init mlm head
         nn.init.normal_(self.mlm_head.dense.weight, std=fc_std)
         nn.init.normal_(self.mlm_head.fc.weight, std=proj_std)
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         del v
         q=q.permute(1, 0, 2)
         kv=k.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,kv,with_ckpt=True)
+        x = self.cross_modal_transformer(q,kv,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -4362,13 +4362,13 @@ class OimClipSimpleBiMLMD6(OimClipSimpleBiMLM):
         # init mlm head
         nn.init.normal_(self.mlm_head.dense.weight, std=fc_std)
         nn.init.normal_(self.mlm_head.fc.weight, std=proj_std)
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
@@ -4479,13 +4479,13 @@ class OimClipSimpleBiMLMHD(OimClipSimpleBiMLMD):
         self.mlm_head_h=nn.ModuleList([copy.deepcopy(self.mlm_head) for _ in range(3)])
         self.ln_post_h=nn.ModuleList([copy.deepcopy(self.ln_post) for _ in range(3)])
 
-    def cross_former(self, q, k, v):
+    def cross_former(self, q, k, v,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         q=q.permute(1, 0, 2)
         k=k.permute(1, 0, 2)
         v=v.permute(1, 0, 2)
-        x = self.cross_modal_transformer(q,k,v,with_ckpt=True,return_inter=True)
+        x = self.cross_modal_transformer(q,k,v,with_ckpt=with_ckpt,return_inter=True)
         h_out=[]
         for i,inter in enumerate(x[:-1]):
             inter = inter.permute(1, 0, 2)  # LND -> NLD
@@ -4516,22 +4516,22 @@ class OimClipSimpleBiMLME(OimClipSimpleBiMLM):
     ) -> None:
         super().__init__(*args, **kws)
         del self.cross_attn
-    def cross_former(self, x):
+    def cross_former(self, x,with_ckpt=False):
         # inputs are NLD
         # NLD -> LND
         x=x.permute(1, 0, 2)
-        x = self.cross_modal_transformer(x)
+        x = self.cross_modal_transformer(x,with_ckpt=with_ckpt)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         x = self.ln_post(x)
         return x
     def mlm_loss(self,i_features,tokens):
         masked_tokens,token_labels=self.random_masked_tokens_and_labels(tokens)
-        mlm_feats =ckpt.checkpoint(self.clip_model.encode_text,masked_tokens)
+        mlm_feats =self.clip_model.encode_text(masked_tokens,ckpt=True)
         t_feats=self.ln_pre_t(mlm_feats)
         i_feats=self.ln_pre_i(i_features)
         x=torch.cat([t_feats,i_feats],dim=1)
-        x =ckpt.checkpoint(self.cross_former,x)
+        x =self.cross_former(x,with_ckpt=True)
         x=x[:,:t_feats.shape[1]]
         x =ckpt.checkpoint(self.mlm_head,x)  # [batch_size, text_len, num_colors]
 

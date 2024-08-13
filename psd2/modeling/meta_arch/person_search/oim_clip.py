@@ -18,7 +18,7 @@ import random
 import cv2
 from psd2.utils.visualizer import mlvl_pca_feat
 
-from .oim_clip_v1 import OimClipSimpleBi,ClipRes5ROIHeadsPs,OimClipSimpleBiMIML2DFullyPredVe,SupConLoss,_trunc_normal_
+from .oim_clip_v1 import OimClipSimpleBi,ClipRes5ROIHeadsPs,OimClipSimpleBiMIML2DFullyPredVe,SupConLoss,trunc_normal_
 
 logger = logging.getLogger(__name__)
 
@@ -1309,7 +1309,100 @@ class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe(OimClipSimpleOimshareSd
         head.attnpool=clip_model.visual.attnpool
         ret["roi_heads"]=head
         return ret
-    
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVuni(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVuni,self).__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]*2
+        self.mim_norm=nn.LayerNorm(embed_dim//2)
+        self.mim_head=nn.Linear(embed_dim//2,embed_dim//2)
+        self.mim_token=nn.Parameter(torch.zeros(1,1, embed_dim))
+        trunc_normal_(self.mim_token, mean=0., std=.02)
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features=self.random_masked_tokens_and_labels(i_features)
+        text_feats = self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features, text_feats, text_feats,with_ckpt=True)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        with torch.no_grad():
+            tgt_i_features=i_features.transpose(0,1)
+            tgt_i_features = torch.cat([tgt_i_features.mean(dim=0, keepdim=True), tgt_i_features], dim=0)  # (HW+1)NC
+            tgt_i_features = tgt_i_features + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(tgt_i_features.dtype)  # (HW+1)NC
+            tgt_i_features, _ = F.multi_head_attention_forward(
+                query=tgt_i_features, key=tgt_i_features, value=tgt_i_features,
+                embed_dim_to_check=tgt_i_features.shape[-1],
+                num_heads=self.clip_model.visual.attnpool.num_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False
+            )
+            tgt_i_features=tgt_i_features.transpose(0,1)
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        storage = get_event_storage()
+        if storage.iter % self.vis_period == 0:
+            h,w=8,4
+            B=i_features.shape[0]
+            with torch.no_grad():
+                org_feats=tgt_i_features[:,1:].permute(0,2,1).reshape(B,-1,h,w)
+                masked_feats=masked_i_features[:,1:].permute(0,2,1).reshape(B,-1,h,w)
+                rec_feats=rec_i_features[:,1:].permute(0,2,1).reshape(B,-1,h,w)
+                pca_feats=mlvl_pca_feat([org_feats,masked_feats,rec_feats])
+                # vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                vis_pca_feats=[feats/255 for feats in pca_feats]
+                for i in range(B):
+                    storage.put_image("mim/feat_{}_org".format(i), vis_pca_feats[0][i])
+                    storage.put_image("mim/feat_{}_mask".format(i), vis_pca_feats[1][i])
+                    storage.put_image("mim/feat_{}_rec".format(i), vis_pca_feats[2][i])
+        return {"loss_mim":l2_dist}
+    def random_masked_tokens_and_labels(self,all_tokens): # before attention pooling
+        prob = torch.rand(all_tokens.shape[:2],device=all_tokens.device).unsqueeze(2) # B x L x 1
+        masking_w=torch.zeros_like(prob)
+        masking_w[prob<self.mim_ratio]=1
+        mim_tokens=self.mim_token.expand(all_tokens.shape[0],all_tokens.shape[1],-1)
+        masked_tokens=all_tokens*(1-masking_w)+mim_tokens*masking_w
+        def inner_forward(x):
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=self.clip_model.visual.attnpool.num_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False
+            )
+            return x
+        masked_feats=ckpt.checkpoint(inner_forward,masked_tokens.transpose(0,1))
+        return masked_feats.transpose(0,1)
+
+
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe):
