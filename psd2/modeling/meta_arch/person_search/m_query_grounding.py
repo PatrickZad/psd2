@@ -63,7 +63,7 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
-        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE)
+        clip_model,_=build_CLIP_from_openai_pretrained(cfg.PERSON_SEARCH.DET.CLIP.NAME,cfg.PERSON_SEARCH.DET.CLIP.IMG_SIZE,cfg.PERSON_SEARCH.DET.CLIP.STRIDE,text_dropout=cfg.PERSON_SEARCH.DET.CLIP.TEXT_DROPOUT)
         # resize clip pos embedding
         with torch.no_grad():
             pos=clip_model.visual.attnpool.positional_embedding
@@ -840,6 +840,19 @@ class MQueryGrounding8Deform(MQueryGroundingDeform):
         constant_(ref_pts.bias.data, 0.)
         ret["ref_points"]=ref_pts
         return ret
+
+
+@META_ARCH_REGISTRY.register()
+class MQueryGrounding8DeformShareoim(MQueryGrounding8Deform):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        self.oim_loss_qimg=self.oim_loss_text
+        self.oim_loss_fuse=self.oim_loss_text
 
 
 @META_ARCH_REGISTRY.register()
