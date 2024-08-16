@@ -18,9 +18,9 @@ PERSON_SEARCH:
       NAME: "dn_detr"
       H_CENTER: 0.4
       H_SCALE: 0.2
-      NUM_LABELED: 3
-      APPEND_GT: True
-      NUM_UNLABLED: 3
+      NUM_LABELED: 4
+      APPEND_GT: False
+      NUM_UNLABLED: 4
     LOSS:
       OIM:
         NUM_LB: 483
@@ -43,5 +43,5 @@ DATASETS:
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
   EVAL_PERIOD: 570
-OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_detboxaug_attmask_oimshare_sdm_prw_30_slr_open_b10_plr_tdrop_w2" #_seed"
+OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_detboxaug_attmask_oimshare_sdm_prw_30_slr_open_b10_plr_tdrop_w2_re" #_seed"
 # SEED: 58216138

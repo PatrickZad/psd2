@@ -754,7 +754,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighOimshareSdm(OimClipSimpleDetboxaugOimsh
             x_attn=x_attn[:,0,1:]
         sort_attn_idxs=torch.argsort(x_attn,dim=-1)
         num_tokens=all_tokens.shape[1]
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
         t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
         attn_mask[...,1:][(x_attn>=t_attn_value.unsqueeze(1)).unsqueeze(1).expand(-1,attn_mask.shape[1],-1)]=float("-inf")
         for i,mp in enumerate(do_mask_prob):
@@ -936,7 +936,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighCoAttmixOimshareSdm(OimClipSimpleDetbox
         sort_attn_idxs=torch.argsort(x_attn,dim=-1)
         num_tokens=all_tokens.shape[1]
         # mask
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
         t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
         for idx in do_mask_idxs:
             attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
@@ -1337,7 +1337,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe(OimClipSimple
             x_attn=x_attn[:,0,1:]
         sort_attn_idxs=torch.argsort(x_attn,dim=-1)
         num_tokens=all_tokens.shape[1]
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
         t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
         attn_mask[...,1:][(x_attn>=t_attn_value.unsqueeze(1)).unsqueeze(1).expand(-1,attn_mask.shape[1],-1)]=float("-inf")
         for i,mp in enumerate(do_mask_prob):
@@ -1528,7 +1528,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighCoattmixOimshareMIML2DFullyPredVe(OimCl
         sort_attn_idxs=torch.argsort(x_attn,dim=-1)
         num_tokens=all_tokens.shape[1]
         # mask
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
         t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
         for idx in do_mask_idxs:
             attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
