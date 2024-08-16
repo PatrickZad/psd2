@@ -673,7 +673,7 @@ class OimClipSimpleDetboxaugCoAttoptmixOimshareSdm(OimClipSimpleDetboxaugCoAttmi
         perm_tokens=roi_tokens[match_col]
         sort_attn_idxs=torch.argsort(attn,dim=-1)
         num_tokens=roi_tokens.shape[1]
-        num_mix_tokens=torch.randint(1,int(num_tokens*0.4),(roi_tokens.shape[0],))
+        num_mix_tokens=torch.randint(1,int(num_tokens*0.3),(roi_tokens.shape[0],))
         keep_mask=torch.ones_like(attn)
         t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
         keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
@@ -689,7 +689,7 @@ class OimClipSimpleDetboxaugCoAttoptxidmixOimshareSdm(OimClipSimpleDetboxaugCoAt
         perm_tokens=roi_tokens[match_col]
         sort_attn_idxs=torch.argsort(attn,dim=-1)
         num_tokens=roi_tokens.shape[1]
-        num_mix_tokens=torch.randint(1,int(num_tokens*0.4),(roi_tokens.shape[0],))
+        num_mix_tokens=torch.randint(1,int(num_tokens*0.3),(roi_tokens.shape[0],))
         keep_mask=torch.ones_like(attn)
         t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
         keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
@@ -771,6 +771,101 @@ class OimClipSimpleDetboxaugCoAttoptxidmixOimshareSdm(OimClipSimpleDetboxaugCoAt
         img_feats=inner_forward(all_tokens)
         embs=img_feats[0]
         return embs
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareSdm(OimClipSimpleDetboxaugCoAttoptxidmixOimshareSdm):
+    def img_embes(self,roi_feats,roi_ids_uni_ulb):
+        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
+        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
+        do_mask_idxs=[]
+        do_mix_idxs=[]
+        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
+
+        for roi_id in roi_ids_uni:
+            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
+            n_roi=roi_idxs.shape[0]
+            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
+            num_anchor=max(n_roi//3,1)
+            num_mix=(n_roi-num_anchor)//2
+            num_mask=n_roi-num_anchor-num_mix
+            mask_idxs=roi_idxs_perm[-num_mask:]
+            mix_idxs=roi_idxs_perm[:num_mix]
+            do_mask_idxs.append(mask_idxs)
+            do_mix_idxs.append(mix_idxs)
+        do_mask_idxs=torch.cat(do_mask_idxs)
+        do_mix_idxs=torch.cat(do_mix_idxs)
+        with torch.no_grad():
+            x=all_tokens
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            _, x_attn = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=True,
+            )
+            x_attn=x_attn[:,0,1:]
+        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
+        num_tokens=all_tokens.shape[1]
+        # mask
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
+        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        for idx in do_mask_idxs:
+            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
+        # mix
+        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs],roi_ids_uni_ulb[do_mix_idxs])
+        all_tokens[do_mix_idxs]=mixed_tokens
+
+        def inner_forward(x):
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False,
+                attn_mask=attn_mask_head,
+            )
+            return x
+
+        
+        img_feats=inner_forward(all_tokens)
+        embs=img_feats[0]
+        return embs
+
+
+
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleDetboxaugCoAttoptfixmixOimshareSdm(OimClipSimpleDetboxaugCoAttmixOimshareSdm):
     def _contextmix(self,roi_tokens,attn):
@@ -1025,7 +1120,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighCoAttmixOimshareSdm(OimClipSimpleDetbox
         sort_attn_idxs=torch.argsort(x_attn,dim=-1)
         num_tokens=all_tokens.shape[1]
         # mask
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
         t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
         for idx in do_mask_idxs:
             attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
@@ -1076,7 +1171,7 @@ class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptmixOimshareSdm(OimClipSimpleDet
         perm_tokens=roi_tokens[match_col]
         sort_attn_idxs=torch.argsort(attn,dim=-1)
         num_tokens=roi_tokens.shape[1]
-        num_mix_tokens=torch.randint(1,int(num_tokens*0.4),(roi_tokens.shape[0],))
+        num_mix_tokens=torch.randint(1,int(num_tokens*0.3),(roi_tokens.shape[0],))
         keep_mask=torch.ones_like(attn)
         t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
         keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
@@ -1572,6 +1667,165 @@ class OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe(OimClipSimple
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe):
+    def _contextmix(self,roi_tokens,attn,roi_ids_uni_ulb):
+        attn_cost=((attn.unsqueeze(1)-attn.unsqueeze(0))**2).sum(-1)
+        attn_cost[roi_ids_uni_ulb.unsqueeze(1)==roi_ids_uni_ulb.unsqueeze(0)]=1e10
+        match_row,match_col=linear_sum_assignment(attn_cost.cpu().numpy())
+        perm_tokens=roi_tokens[match_col]
+        sort_attn_idxs=torch.argsort(attn,dim=-1)
+        num_tokens=roi_tokens.shape[1]
+        num_mix_tokens=torch.randint(1,int(num_tokens*0.3),(roi_tokens.shape[0],))
+        keep_mask=torch.ones_like(attn)
+        t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
+        keep_mask=keep_mask.unsqueeze(2)
+        roi_tokens=keep_mask*roi_tokens+(1-keep_mask)*perm_tokens
+        return roi_tokens
+    def img_embes(self,roi_feats,roi_ids_uni_ulb):
+        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
+        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
+        do_mask_idxs=[]
+        do_mix_idxs=[]
+        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
+
+        for roi_id in roi_ids_uni:
+            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
+            n_roi=roi_idxs.shape[0]
+            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
+            num_anchor=max(n_roi//3,1)
+            num_mix=(n_roi-num_anchor)//2
+            num_mask=n_roi-num_anchor-num_mix
+            mask_idxs=roi_idxs_perm[-num_mask:]
+            mix_idxs=roi_idxs_perm[:num_mix]
+            do_mask_idxs.append(mask_idxs)
+            do_mix_idxs.append(mix_idxs)
+        do_mask_idxs=torch.cat(do_mask_idxs)
+        do_mix_idxs=torch.cat(do_mix_idxs)
+        with torch.no_grad():
+            x=all_tokens
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            _, x_attn = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=True,
+            )
+            x_attn=x_attn[:,0,1:]
+        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
+        num_tokens=all_tokens.shape[1]
+        # mask
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
+        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        for idx in do_mask_idxs:
+            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
+        # mix
+        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs],roi_ids_uni_ulb[do_mix_idxs])
+        all_tokens[do_mix_idxs]=mixed_tokens
+
+        def inner_forward(x):
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False,
+                attn_mask=attn_mask_head,
+            )
+            return x
+
+        
+        img_feats=inner_forward(all_tokens)
+        embs=img_feats[0]
+        return embs
+
+from .oim_clip_v1 import Transformer
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DEncoderPredVe(OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_attn = nn.MultiheadAttention(embed_dim,
+                                                embed_dim // 64)
+        self.cross_modal_transformer = Transformer(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+        scale = self.cross_modal_transformer.width**-0.5
+        
+        self.ln_pre_t = nn.LayerNorm(embed_dim)
+        self.ln_pre_i = nn.LayerNorm(embed_dim)
+        self.ln_post = nn.LayerNorm(embed_dim)
+
+        proj_std = scale * ((2 * self.cross_modal_transformer.layers)**-0.5)
+        attn_std = scale
+        fc_std = (2 * self.cross_modal_transformer.width)**-0.5
+        for block in self.cross_modal_transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+        # init cross attn
+        nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
+        nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
+    def cross_former(self, q, k, v,with_ckpt=False):
+        # inputs are NLD
+        # NLD -> LND
+        q=q.permute(1, 0, 2)
+        k=k.permute(1, 0, 2)
+        v=v.permute(1, 0, 2)
+        x = self.cross_attn(
+                self.ln_pre_t(q),
+                self.ln_pre_i(k),
+                self.ln_pre_i(v),
+                need_weights=False)[0]
+        x = self.cross_modal_transformer(x,ckpt=with_ckpt)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
+
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleDetboxaugCoAttmaskhighCoattmixOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe):
