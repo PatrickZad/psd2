@@ -1,20 +1,23 @@
 _BASE_: "clip_detr_baseline.yaml"
 MODEL:
-  META_ARCHITECTURE: "MQueryGrounding8Deform"
+  META_ARCHITECTURE: "MQueryGrounding8DeformShareoim"
+PERSON_SEARCH:
+  REID:
+    MODEL:
+      NUM_INFER_QUERY: 2560
 SOLVER:
   BASE_LR: 0.0001
-  MAX_ITER: 114000 # 570 * 200
-  STEPS: (57000,) # 570 * 100
-  CHECKPOINT_PERIOD: 5700
-  WARMUP_ITERS: 1140
-  IMS_PER_BATCH: 8
+  MAX_ITER: 35600 # 356 * 100
+  STEPS: (21360,) # 356 * 60
+  CHECKPOINT_PERIOD: 7130
+  WARMUP_ITERS: 1780
+  IMS_PER_BATCH: 16
   FREEZE_PARAM_REGEX: ["clip.+",]
   LR_FACTORS: [5.0,5.0,5.0,5.0,5.0,5.0,5.0]
   LR_GROUP_REGEX: ["grounding_trans.+","ref_points.+","bbox_embed.+","conf_embed.+","query_embed.+","qimg.+","query_cls.+"]
 DATASETS:
   TRAIN: ("PRW_Mmq_Sim_Train",) 
-  # TEST: ("PRW_Mmq_Query","PRW_Mmq_Gallery",)
+  TEST: ("PRW_Mmq_Sim_Query","PRW_Mmq_Sim_Grounding",)
 TEST:
-  EVAL_PERIOD: 600000
-OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_prwsim_llr"
-# SEED: 58216138
+  EVAL_PERIOD: 3560
+OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_prwsim_llr_1st"

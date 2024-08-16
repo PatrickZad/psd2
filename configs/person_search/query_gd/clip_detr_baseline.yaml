@@ -11,6 +11,7 @@ PERSON_SEARCH:
       STRIDE: 16
       FREEZE_AT_STAGE2: True
       FROZEN_BN: True
+      TEXT_DROPOUT: 0.0
   REID:
     MODEL:
       EMB_DIM: 1024

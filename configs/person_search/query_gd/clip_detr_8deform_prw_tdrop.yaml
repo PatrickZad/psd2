@@ -1,6 +1,10 @@
 _BASE_: "clip_detr_baseline.yaml"
 MODEL:
   META_ARCHITECTURE: "ClipQueryGrounding8Deform"
+PERSON_SEARCH:
+  DET:
+    CLIP:
+      TEXT_DROPOUT: 0.1
 SOLVER:
   MAX_ITER: 57000 # 570 * 100
   STEPS: (34200,) # 570 * 60
@@ -14,5 +18,4 @@ DATASETS:
   # TEST: ("PRW_TBPS_Query_QG","PRW_TBPS_Gallery_QG",)
 TEST:
   EVAL_PERIOD: 60000
-OUTPUT_DIR: "outputs/query_gd/clip_8deform_seed"
-SEED: 58216138
+OUTPUT_DIR: "outputs/query_gd/clip_8deform_tdrop"
