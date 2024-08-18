@@ -442,7 +442,7 @@ class OimClipSimpleDetboxaugOimshareSdm(OimClipSimpleOimshareSdm):
         prev_head=ret["roi_heads"]
         res5=copy.deepcopy(prev_head.res5)
         head = ClipRes5ROIHeadsPsBoxAug(cfg, res5,box_aug,res_output_shape)
-        head.attnpool=clip_model.visual.attnpool
+        # head.attnpool=clip_model.visual.attnpool
         ret["roi_heads"]=head
         return ret
 
@@ -1401,7 +1401,7 @@ class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe(OimClipSimpleOimshareSd
         prev_head=ret["roi_heads"]
         res5=copy.deepcopy(prev_head.res5)
         head = ClipRes5ROIHeadsPsBoxAug(cfg, res5,box_aug,res_output_shape)
-        head.attnpool=clip_model.visual.attnpool
+        # head.attnpool=clip_model.visual.attnpool
         ret["roi_heads"]=head
         return ret
 
@@ -1496,439 +1496,6 @@ class OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVuni(OimClipSimpleDetboxau
             return x
         masked_feats=ckpt.checkpoint(inner_forward,masked_tokens.transpose(0,1))
         return masked_feats.transpose(0,1)
-
-
-
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe):
-    def img_embes(self,roi_feats,roi_ids_uni_ulb):
-        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
-        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
-        do_mask_prob=torch.zeros(all_tokens.shape[0])
-        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
-        for roi_id in roi_ids_uni:
-            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
-            mask_idxs=roi_idxs[torch.randperm(roi_idxs.shape[0])[:roi_idxs.shape[0]//2]]
-            do_mask_prob[mask_idxs]=1.
-
-        with torch.no_grad():
-            x=all_tokens
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            _, x_attn = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=True,
-            )
-            x_attn=x_attn[:,0,1:]
-        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
-        num_tokens=all_tokens.shape[1]
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
-        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
-        attn_mask[...,1:][(x_attn>=t_attn_value.unsqueeze(1)).unsqueeze(1).expand(-1,attn_mask.shape[1],-1)]=float("-inf")
-        for i,mp in enumerate(do_mask_prob):
-            if mp==0.:
-                attn_mask[i]=0.
-
-        def inner_forward(x):
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
-            x, _ = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=False,
-                attn_mask=attn_mask_head,
-            )
-            return x
-
-        
-        img_feats=inner_forward(all_tokens)
-        embs=img_feats[0]
-        return embs
-    def forward_gallery(self, image_list, gt_instances):
-        if self.training:
-            features = self.backbone(image_list.tensor)
-            proposals, proposal_losses = self.proposal_generator(
-                image_list, features, gt_instances
-            )
-            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
-                image_list, features, proposals, gt_instances
-            )
-            losses.update(proposal_losses)
-
-            next_pse_ulbs=1e5
-            pse_gt_pids=[]
-            for inst in gt_instances:
-                pse_gt_pids_i=copy.deepcopy(inst.gt_pids)
-                for i,pid in enumerate(inst.gt_pids):
-                    if pid==-1:
-                        pse_gt_pids_i[i]=next_pse_ulbs
-                        next_pse_ulbs+=1
-                pse_gt_pids.append(pse_gt_pids_i)
-
-            assign_ids_per_img = self.id_assigner(
-                [inst.pred_boxes.tensor for inst in pred_instances],
-                [inst.pred_scores for inst in pred_instances],
-                [inst.gt_boxes.tensor for inst in gt_instances],
-                pse_gt_pids, # [inst.gt_pids for inst in gt_instances],
-                match_indices=pos_match_indices,
-            )
-
-            assign_ids = torch.cat(assign_ids_per_img)
-            pos_mask=assign_ids>-2
-            box_features=box_features[pos_mask]
-            assign_ids=assign_ids[pos_mask]
-            box_embs = self.img_embes(box_features,assign_ids)
-            assign_ids[assign_ids>=1e5]=-1
-            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
-            box_embs = self.bn_neck(box_embs)
-            reid_loss = self.oim_loss(box_embs, assign_ids)
-            for k,v in reid_loss.items():
-                losses[k]=v*0.5
-            
-            
-            # NOTE randomly sample one roi feature for one text tokens
-            img_features=[]
-            text_tokens=[]
-            text_pids=[]
-            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
-            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
-            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
-            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
-                gt_ids=img_gt.gt_pids
-                gt_tokens=img_gt.descriptions
-                for pid,p_tokens in zip(gt_ids,gt_tokens):
-                    if pid>-1:
-                        # there can be multiple text seq for one id
-                        id_feats=img_rois[roi_ids==pid]
-                        num_desc=len(p_tokens)
-                        if id_feats.shape[0]<num_desc:
-                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
-                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
-                        img_features.append(id_feats[sampled_idxs])
-                        text_tokens.extend(p_tokens)
-                        text_pids.extend([pid]*num_desc)
-            if len(img_features)==0:
-                losses["loss_mim"]=torch.tensor(0.,device=self.device)
-            else:
-                roi_feats=torch.cat(img_features)
-                losses.update(self.mlm_loss(roi_feats,text_tokens))
-
-            # text oim
-            if len(text_pids)==0:
-                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
-                losses["loss_sdm"]=torch.tensor(0.,device=self.device)
-            else:
-                text_pids=torch.stack(text_pids).to(self.device)
-                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
-                reid_loss_text = self.oim_loss(text_embs,text_pids )
-                for k,v in reid_loss_text.items():
-                    losses[k+"_text"]=v*0.5
-                lb_box_embs=box_embs[assign_ids>-1]
-                lb_assign_ids=assign_ids[assign_ids>-1]
-                losses["loss_sdm"]=self.compute_sdm(lb_box_embs,text_embs,lb_assign_ids,text_pids,1/0.02)
-            for i, instances_i in enumerate(pred_instances):
-                ids_i=assign_ids_per_img[i]
-                ids_i[ids_i>=1e5]=-1
-                instances_i.assign_ids = ids_i
-            return pred_instances, [feat.detach() for feat in features.values()], losses
-        else:
-            return super().forward_gallery(image_list, gt_instances)
-
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe):
-    def _contextmix(self,roi_tokens,attn,roi_ids_uni_ulb):
-        attn_cost=((attn.unsqueeze(1)-attn.unsqueeze(0))**2).sum(-1)
-        attn_cost[roi_ids_uni_ulb.unsqueeze(1)==roi_ids_uni_ulb.unsqueeze(0)]=1e10
-        match_row,match_col=linear_sum_assignment(attn_cost.cpu().numpy())
-        perm_tokens=roi_tokens[match_col]
-        sort_attn_idxs=torch.argsort(attn,dim=-1)
-        num_tokens=roi_tokens.shape[1]
-        num_mix_tokens=torch.randint(1,int(num_tokens*0.3),(roi_tokens.shape[0],))
-        keep_mask=torch.ones_like(attn)
-        t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
-        keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
-        keep_mask=keep_mask.unsqueeze(2)
-        roi_tokens=keep_mask*roi_tokens+(1-keep_mask)*perm_tokens
-        return roi_tokens
-    def img_embes(self,roi_feats,roi_ids_uni_ulb):
-        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
-        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
-        do_mask_idxs=[]
-        do_mix_idxs=[]
-        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
-
-        for roi_id in roi_ids_uni:
-            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
-            n_roi=roi_idxs.shape[0]
-            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
-            num_anchor=max(n_roi//3,1)
-            num_mix=(n_roi-num_anchor)//2
-            num_mask=n_roi-num_anchor-num_mix
-            mask_idxs=roi_idxs_perm[-num_mask:]
-            mix_idxs=roi_idxs_perm[:num_mix]
-            do_mask_idxs.append(mask_idxs)
-            do_mix_idxs.append(mix_idxs)
-        do_mask_idxs=torch.cat(do_mask_idxs)
-        do_mix_idxs=torch.cat(do_mix_idxs)
-        with torch.no_grad():
-            x=all_tokens
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            _, x_attn = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=True,
-            )
-            x_attn=x_attn[:,0,1:]
-        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
-        num_tokens=all_tokens.shape[1]
-        # mask
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.3),(all_tokens.shape[0],))
-        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
-        for idx in do_mask_idxs:
-            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
-        # mix
-        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs],roi_ids_uni_ulb[do_mix_idxs])
-        all_tokens[do_mix_idxs]=mixed_tokens
-
-        def inner_forward(x):
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
-            x, _ = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=False,
-                attn_mask=attn_mask_head,
-            )
-            return x
-
-        
-        img_feats=inner_forward(all_tokens)
-        embs=img_feats[0]
-        return embs
-
-from .oim_clip_v1 import Transformer
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DEncoderPredVe(OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DFullyPredVe):
-    @configurable
-    def __init__(
-        self,
-        *args,
-        **kws,
-    ) -> None:
-        super().__init__(*args, **kws)
-        embed_dim=self.clip_model.text_projection.shape[1]
-        self.cross_attn = nn.MultiheadAttention(embed_dim,
-                                                embed_dim // 64)
-        self.cross_modal_transformer = Transformer(width=embed_dim,
-                                                    layers=4,
-                                                    heads=embed_dim //
-                                                    64)
-        scale = self.cross_modal_transformer.width**-0.5
-        
-        self.ln_pre_t = nn.LayerNorm(embed_dim)
-        self.ln_pre_i = nn.LayerNorm(embed_dim)
-        self.ln_post = nn.LayerNorm(embed_dim)
-
-        proj_std = scale * ((2 * self.cross_modal_transformer.layers)**-0.5)
-        attn_std = scale
-        fc_std = (2 * self.cross_modal_transformer.width)**-0.5
-        for block in self.cross_modal_transformer.resblocks:
-            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
-            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
-            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
-            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
-
-        # init cross attn
-        nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
-        nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
-    def cross_former(self, q, k, v,with_ckpt=False):
-        # inputs are NLD
-        # NLD -> LND
-        q=q.permute(1, 0, 2)
-        k=k.permute(1, 0, 2)
-        v=v.permute(1, 0, 2)
-        x = self.cross_attn(
-                self.ln_pre_t(q),
-                self.ln_pre_i(k),
-                self.ln_pre_i(v),
-                need_weights=False)[0]
-        x = self.cross_modal_transformer(x,ckpt=with_ckpt)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-
-        x = self.ln_post(x)
-        return x
-
-
-@META_ARCH_REGISTRY.register()
-class OimClipSimpleDetboxaugCoAttmaskhighCoattmixOimshareMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareMIML2DFullyPredVe):
-    def _contextmix(self,roi_tokens,attn):
-        perm_tokens=roi_tokens[torch.randperm(roi_tokens.shape[0])]
-        sort_attn_idxs=torch.argsort(attn,dim=-1)
-        num_tokens=roi_tokens.shape[1]
-        num_mix_tokens=torch.randint(1,int(num_tokens*0.4),(roi_tokens.shape[0],))
-        keep_mask=torch.ones_like(attn)
-        t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
-        keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
-        keep_mask=keep_mask.unsqueeze(2)
-        roi_tokens=keep_mask*roi_tokens+(1-keep_mask)*perm_tokens
-        return roi_tokens
-    def img_embes(self,roi_feats,roi_ids_uni_ulb):
-        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
-        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
-        do_mask_idxs=[]
-        do_mix_idxs=[]
-        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
-
-        for roi_id in roi_ids_uni:
-            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
-            n_roi=roi_idxs.shape[0]
-            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
-            num_anchor=max(n_roi//3,1)
-            num_mix=(n_roi-num_anchor)//2
-            num_mask=n_roi-num_anchor-num_mix
-            mask_idxs=roi_idxs_perm[-num_mask:]
-            mix_idxs=roi_idxs_perm[:num_mix]
-            do_mask_idxs.append(mask_idxs)
-            do_mix_idxs.append(mix_idxs)
-        do_mask_idxs=torch.cat(do_mask_idxs)
-        do_mix_idxs=torch.cat(do_mix_idxs)
-        with torch.no_grad():
-            x=all_tokens
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            _, x_attn = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=True,
-            )
-            x_attn=x_attn[:,0,1:]
-        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
-        num_tokens=all_tokens.shape[1]
-        # mask
-        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
-        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
-        for idx in do_mask_idxs:
-            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
-        # mix
-        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs])
-        all_tokens[do_mix_idxs]=mixed_tokens
-
-        def inner_forward(x):
-            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
-            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
-            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
-            n_heads=self.clip_model.visual.attnpool.num_heads
-            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
-            x, _ = F.multi_head_attention_forward(
-                query=x, key=x, value=x,
-                embed_dim_to_check=x.shape[-1],
-                num_heads=n_heads,
-                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
-                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
-                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
-                in_proj_weight=None,
-                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
-                bias_k=None,
-                bias_v=None,
-                add_zero_attn=False,
-                dropout_p=0,
-                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
-                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
-                use_separate_proj_weight=True,
-                training=self.clip_model.visual.attnpool.training,
-                need_weights=False,
-                attn_mask=attn_mask_head,
-            )
-            return x
-
-        
-        img_feats=inner_forward(all_tokens)
-        embs=img_feats[0]
-        return embs
 
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleMaskOimshareSdmMIML2DFullyPredVe(OimClipSimpleOimshareSdmMIML2DFullyPredVe):
@@ -2198,7 +1765,7 @@ class OimClipSimpleDetboxaugAttmaskOimshareSdmMIML2DFullyPredVe(OimClipSimpleBox
         prev_head=ret["roi_heads"]
         res5=copy.deepcopy(prev_head.res5)
         head = ClipRes5ROIHeadsPsBoxAug(cfg, res5,box_aug,res_output_shape)
-        head.attnpool=clip_model.visual.attnpool
+        # head.attnpool=clip_model.visual.attnpool
         ret["roi_heads"]=head
         return ret
     def img_embes(self,roi_feats):
@@ -2454,6 +2021,492 @@ class OimClipSimpleDetboxaugAttmaskAttmixOimshareSdmMIML2DFullyPredVe(OimClipSim
             return embs,feats,attn_cls.reshape(-1,roi_feats.shape[-2],roi_feats.shape[-1])
         else:
             return embs
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighOimshareSdmMIML2DFullyPredVe(OimClipSimpleDetboxaugOimshareSdmMIML2DFullyPredVe):
+    def img_embes(self,roi_feats,roi_ids_uni_ulb):
+        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
+        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
+        do_mask_prob=torch.zeros(all_tokens.shape[0])
+        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
+        for roi_id in roi_ids_uni:
+            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
+            mask_idxs=roi_idxs[torch.randperm(roi_idxs.shape[0])[:roi_idxs.shape[0]//2]]
+            do_mask_prob[mask_idxs]=1.
+
+        with torch.no_grad():
+            x=all_tokens
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            _, x_attn = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=True,
+            )
+            x_attn=x_attn[:,0,1:]
+        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
+        num_tokens=all_tokens.shape[1]
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
+        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        attn_mask[...,1:][(x_attn>=t_attn_value.unsqueeze(1)).unsqueeze(1).expand(-1,attn_mask.shape[1],-1)]=float("-inf")
+        for i,mp in enumerate(do_mask_prob):
+            if mp==0.:
+                attn_mask[i]=0.
+
+        def inner_forward(x):
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False,
+                attn_mask=attn_mask_head,
+            )
+            return x
+
+        
+        img_feats=inner_forward(all_tokens)
+        embs=img_feats[0]
+        return embs
+    def forward_gallery(self, image_list, gt_instances):
+        if self.training:
+            features = self.backbone(image_list.tensor)
+            proposals, proposal_losses = self.proposal_generator(
+                image_list, features, gt_instances
+            )
+            pred_instances, box_features, losses, pos_match_indices = self.roi_heads(
+                image_list, features, proposals, gt_instances
+            )
+            losses.update(proposal_losses)
+
+            next_pse_ulbs=1e5
+            pse_gt_pids=[]
+            for inst in gt_instances:
+                pse_gt_pids_i=copy.deepcopy(inst.gt_pids)
+                for i,pid in enumerate(inst.gt_pids):
+                    if pid==-1:
+                        pse_gt_pids_i[i]=next_pse_ulbs
+                        next_pse_ulbs+=1
+                pse_gt_pids.append(pse_gt_pids_i)
+
+            assign_ids_per_img = self.id_assigner(
+                [inst.pred_boxes.tensor for inst in pred_instances],
+                [inst.pred_scores for inst in pred_instances],
+                [inst.gt_boxes.tensor for inst in gt_instances],
+                pse_gt_pids, # [inst.gt_pids for inst in gt_instances],
+                match_indices=pos_match_indices,
+            )
+
+            assign_ids = torch.cat(assign_ids_per_img)
+            pos_mask=assign_ids>-2
+            box_features=box_features[pos_mask]
+            assign_ids=assign_ids[pos_mask]
+            box_embs = self.img_embes(box_features,assign_ids)
+            assign_ids[assign_ids>=1e5]=-1
+            box_feats=box_features.flatten(2,3).permute(2,0,1).contiguous()
+            box_embs = self.bn_neck(box_embs)
+            reid_loss = self.oim_loss(box_embs, assign_ids)
+            for k,v in reid_loss.items():
+                losses[k]=v*0.5
+            
+            
+            # NOTE randomly sample one roi feature for one text tokens
+            img_features=[]
+            text_tokens=[]
+            text_pids=[]
+            num_ps_per_img=[(ids>-2).nonzero().shape[0] for ids in assign_ids_per_img]
+            roi_p_ids_per_img=[ids[ids>-2] for ids in assign_ids_per_img]
+            box_features_per_img=torch.split(box_feats.permute(1,0,2).contiguous(),num_ps_per_img) # LBC -> BLC
+            for img_rois,roi_ids,img_gt in zip(box_features_per_img,roi_p_ids_per_img,gt_instances):
+                gt_ids=img_gt.gt_pids
+                gt_tokens=img_gt.descriptions
+                for pid,p_tokens in zip(gt_ids,gt_tokens):
+                    if pid>-1:
+                        # there can be multiple text seq for one id
+                        id_feats=img_rois[roi_ids==pid]
+                        num_desc=len(p_tokens)
+                        if id_feats.shape[0]<num_desc:
+                            id_feats=id_feats.unsqueeze(0).repeat(math.ceil(num_desc/id_feats.shape[0]),1,1,1).flatten(0,1)
+                        sampled_idxs=torch.randperm(id_feats.shape[0])[:num_desc]
+                        img_features.append(id_feats[sampled_idxs])
+                        text_tokens.extend(p_tokens)
+                        text_pids.extend([pid]*num_desc)
+            if len(img_features)==0:
+                losses["loss_mim"]=torch.tensor(0.,device=self.device)
+            else:
+                roi_feats=torch.cat(img_features)
+                losses.update(self.mlm_loss(roi_feats,text_tokens))
+
+            # text oim
+            if len(text_pids)==0:
+                losses["loss_oim_text"]=torch.tensor(0.,device=self.device)
+                losses["loss_sdm"]=torch.tensor(0.,device=self.device)
+            else:
+                text_pids=torch.stack(text_pids).to(self.device)
+                text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+                reid_loss_text = self.oim_loss(text_embs,text_pids )
+                for k,v in reid_loss_text.items():
+                    losses[k+"_text"]=v*0.5
+                lb_box_embs=box_embs[assign_ids>-1]
+                lb_assign_ids=assign_ids[assign_ids>-1]
+                losses["loss_sdm"]=self.compute_sdm(lb_box_embs,text_embs,lb_assign_ids,text_pids,1/0.02)
+            for i, instances_i in enumerate(pred_instances):
+                ids_i=assign_ids_per_img[i]
+                ids_i[ids_i>=1e5]=-1
+                instances_i.assign_ids = ids_i
+            return pred_instances, [feat.detach() for feat in features.values()], losses
+        else:
+            return super().forward_gallery(image_list, gt_instances)
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareSdmMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareSdmMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        maskr,
+        mixr,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        self.maskr=maskr
+        self.mixr=mixr
+    @classmethod
+    def from_config(cls, cfg):
+        ret = OimClipSimpleDetboxaugCoAttmaskhighOimshareSdmMIML2DFullyPredVe.from_config(cfg)
+        ret["maskr"]=cfg.PERSON_SEARCH.REID.MASK_RATIO
+        ret["mixr"]=cfg.PERSON_SEARCH.REID.MIX_RATIO
+        return ret
+    def _contextmix(self,roi_tokens,attn,roi_ids_uni_ulb):
+        attn_cost=((attn.unsqueeze(1)-attn.unsqueeze(0))**2).sum(-1)
+        attn_cost[roi_ids_uni_ulb.unsqueeze(1)==roi_ids_uni_ulb.unsqueeze(0)]=1e10
+        match_row,match_col=linear_sum_assignment(attn_cost.cpu().numpy())
+        perm_tokens=roi_tokens[match_col]
+        sort_attn_idxs=torch.argsort(attn,dim=-1)
+        num_tokens=roi_tokens.shape[1]
+        num_mix_tokens=torch.randint(1,int(num_tokens*self.mixr),(roi_tokens.shape[0],))
+        keep_mask=torch.ones_like(attn)
+        t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
+        keep_mask=keep_mask.unsqueeze(2)
+        roi_tokens=keep_mask*roi_tokens+(1-keep_mask)*perm_tokens
+        return roi_tokens
+    def img_embes(self,roi_feats,roi_ids_uni_ulb):
+        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
+        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
+        do_mask_idxs=[]
+        do_mix_idxs=[]
+        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
+
+        for roi_id in roi_ids_uni:
+            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
+            n_roi=roi_idxs.shape[0]
+            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
+            num_anchor=max(n_roi//3,1)
+            num_mix=(n_roi-num_anchor)//2
+            num_mask=n_roi-num_anchor-num_mix
+            mask_idxs=roi_idxs_perm[-num_mask:]
+            mix_idxs=roi_idxs_perm[:num_mix]
+            do_mask_idxs.append(mask_idxs)
+            do_mix_idxs.append(mix_idxs)
+        do_mask_idxs=torch.cat(do_mask_idxs)
+        do_mix_idxs=torch.cat(do_mix_idxs)
+        with torch.no_grad():
+            x=all_tokens
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            _, x_attn = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=True,
+            )
+            x_attn=x_attn[:,0,1:]
+        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
+        num_tokens=all_tokens.shape[1]
+        # mask
+        num_mask_tokens=torch.randint(1,int(num_tokens*self.maskr),(all_tokens.shape[0],))
+        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        for idx in do_mask_idxs:
+            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
+        # mix
+        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs],roi_ids_uni_ulb[do_mix_idxs])
+        all_tokens[do_mix_idxs]=mixed_tokens
+
+        def inner_forward(x):
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False,
+                attn_mask=attn_mask_head,
+            )
+            return x
+
+        
+        img_feats=inner_forward(all_tokens)
+        embs=img_feats[0]
+        return embs
+
+from .oim_clip_v1 import Transformer
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareMIML2DEncoderPredVe(OimClipSimpleDetboxaugCoAttmaskhighCoAttoptxidmixOimshareSdmMIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_attn = nn.MultiheadAttention(embed_dim,
+                                                embed_dim // 64)
+        self.cross_modal_transformer = Transformer(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+        scale = self.cross_modal_transformer.width**-0.5
+        
+        self.ln_pre_t = nn.LayerNorm(embed_dim)
+        self.ln_pre_i = nn.LayerNorm(embed_dim)
+        self.ln_post = nn.LayerNorm(embed_dim)
+
+        proj_std = scale * ((2 * self.cross_modal_transformer.layers)**-0.5)
+        attn_std = scale
+        fc_std = (2 * self.cross_modal_transformer.width)**-0.5
+        for block in self.cross_modal_transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+        # init cross attn
+        nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
+        nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
+    def cross_former(self, q, k, v,with_ckpt=False):
+        # inputs are NLD
+        # NLD -> LND
+        q=q.permute(1, 0, 2)
+        k=k.permute(1, 0, 2)
+        v=v.permute(1, 0, 2)
+        x = self.cross_attn(
+                self.ln_pre_t(q),
+                self.ln_pre_i(k),
+                self.ln_pre_i(v),
+                need_weights=False)[0]
+        x = self.cross_modal_transformer(x,ckpt=with_ckpt)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
+
+
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttmaskhighCoattmixOimshareSdmMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttmaskhighOimshareSdmMIML2DFullyPredVe):
+    def _contextmix(self,roi_tokens,attn):
+        perm_tokens=roi_tokens[torch.randperm(roi_tokens.shape[0])]
+        sort_attn_idxs=torch.argsort(attn,dim=-1)
+        num_tokens=roi_tokens.shape[1]
+        num_mix_tokens=torch.randint(1,int(num_tokens*0.4),(roi_tokens.shape[0],))
+        keep_mask=torch.ones_like(attn)
+        t_attn_value=attn[list(range(roi_tokens.shape[0])),sort_attn_idxs[list(range(roi_tokens.shape[0])),(num_mix_tokens-1).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        keep_mask[attn<=t_attn_value.unsqueeze(1)]=0.
+        keep_mask=keep_mask.unsqueeze(2)
+        roi_tokens=keep_mask*roi_tokens+(1-keep_mask)*perm_tokens
+        return roi_tokens
+    def img_embes(self,roi_feats,roi_ids_uni_ulb):
+        all_tokens=roi_feats.flatten(2,3).permute(0,2,1).contiguous() # B x L x C
+        attn_mask=torch.zeros((all_tokens.shape[0],all_tokens.shape[1]+1,all_tokens.shape[1]+1),dtype=all_tokens.dtype,device=all_tokens.device)
+        do_mask_idxs=[]
+        do_mix_idxs=[]
+        roi_ids_uni=torch.unique(roi_ids_uni_ulb)
+
+        for roi_id in roi_ids_uni:
+            roi_idxs= torch.nonzero(roi_ids_uni_ulb==roi_id).squeeze(1)
+            n_roi=roi_idxs.shape[0]
+            roi_idxs_perm=roi_idxs[torch.randperm(n_roi)]
+            num_anchor=max(n_roi//3,1)
+            num_mix=(n_roi-num_anchor)//2
+            num_mask=n_roi-num_anchor-num_mix
+            mask_idxs=roi_idxs_perm[-num_mask:]
+            mix_idxs=roi_idxs_perm[:num_mix]
+            do_mask_idxs.append(mask_idxs)
+            do_mix_idxs.append(mix_idxs)
+        do_mask_idxs=torch.cat(do_mask_idxs)
+        do_mix_idxs=torch.cat(do_mix_idxs)
+        with torch.no_grad():
+            x=all_tokens
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            _, x_attn = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=True,
+            )
+            x_attn=x_attn[:,0,1:]
+        sort_attn_idxs=torch.argsort(x_attn,dim=-1)
+        num_tokens=all_tokens.shape[1]
+        # mask
+        num_mask_tokens=torch.randint(1,int(num_tokens*0.2),(all_tokens.shape[0],))
+        t_attn_value=x_attn[list(range(all_tokens.shape[0])),sort_attn_idxs[list(range(all_tokens.shape[0])),(-num_mask_tokens).cpu().numpy().tolist()].cpu().numpy().tolist()]
+        for idx in do_mask_idxs:
+            attn_mask[idx,:,1:][(x_attn[idx]>=t_attn_value[idx]).unsqueeze(0).expand(attn_mask.shape[1],-1)]=float("-inf")
+        # mix
+        mixed_tokens=self._contextmix(all_tokens[do_mix_idxs],x_attn[do_mix_idxs])
+        all_tokens[do_mix_idxs]=mixed_tokens
+
+        def inner_forward(x):
+            x = x.transpose(0,1)  # N(HW)C -> (HW)NC
+            x = torch.cat([x.mean(dim=0, keepdim=True), x], dim=0)  # (HW+1)NC
+            x = x + self.clip_model.visual.attnpool.positional_embedding[:, None, :].to(x.dtype)  # (HW+1)NC
+            n_heads=self.clip_model.visual.attnpool.num_heads
+            attn_mask_head=attn_mask.unsqueeze(1).repeat(1,n_heads,1,1).flatten(0,1)
+            x, _ = F.multi_head_attention_forward(
+                query=x, key=x, value=x,
+                embed_dim_to_check=x.shape[-1],
+                num_heads=n_heads,
+                q_proj_weight=self.clip_model.visual.attnpool.q_proj.weight,
+                k_proj_weight=self.clip_model.visual.attnpool.k_proj.weight,
+                v_proj_weight=self.clip_model.visual.attnpool.v_proj.weight,
+                in_proj_weight=None,
+                in_proj_bias=torch.cat([self.clip_model.visual.attnpool.q_proj.bias, self.clip_model.visual.attnpool.k_proj.bias, self.clip_model.visual.attnpool.v_proj.bias]),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=0,
+                out_proj_weight=self.clip_model.visual.attnpool.c_proj.weight,
+                out_proj_bias=self.clip_model.visual.attnpool.c_proj.bias,
+                use_separate_proj_weight=True,
+                training=self.clip_model.visual.attnpool.training,
+                need_weights=False,
+                attn_mask=attn_mask_head,
+            )
+            return x
+
+        
+        img_feats=inner_forward(all_tokens)
+        embs=img_feats[0]
+        return embs
+
+
+
+from psd2.structures import BoxMode
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleGTInfer(OimClipSimpleBi):
+    def forward_gallery(self, image_list, gt_instances):
+            if self.training:
+                raise NotImplementedError
+            features = self.backbone(image_list.tensor)
+            roi_boxes = [inst.gt_boxes.tensor for inst in gt_instances]
+            roi_boxes = [
+                Boxes(roi_boxes_i, box_mode=BoxMode.XYXY_ABS)
+                for roi_boxes_i in roi_boxes
+            ]
+            box_features = self.roi_heads._shared_roi_transform(
+                [features[f] for f in self.roi_heads.in_features], roi_boxes
+            )
+
+            box_embs = self.img_emb_infer(box_features)
+            box_embs = self.bn_neck(box_embs)
+            box_embs=F.normalize(box_embs,dim=-1)
+            reid_feats = torch.split(
+                box_embs, [len(instances_i) for instances_i in gt_instances]
+            )
+            text_tokens,text_pids,paired_reid_efats=[],[],[]
+            for i,inst in enumerate(gt_instances):
+                for texts,pid,vfeat in zip(inst.descriptions,inst.gt_pids,reid_feats[i]):
+                    if pid >-1:
+                        num_text=len(texts)
+                        text_tokens.extend(texts)
+                        paired_reid_efats.extend([vfeat]*num_text)
+                        text_pids.extend([pid]*num_text)
+            text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
+            text_embs = F.normalize(text_embs, dim=-1)
+            
+            return torch.cat(text_pids),text_embs,torch.stack(paired_reid_efats)
 
 class ClipRes5ROIHeadsPsBoxAug(ClipRes5ROIHeadsPs):
     @configurable

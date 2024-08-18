@@ -252,6 +252,8 @@ class OimClip(SearchBaseTBPS):
             for i in range(len(text_embs))
         ]
 
+
+
 @META_ARCH_REGISTRY.register()
 class OimClipSplit(OimClip):
     @configurable

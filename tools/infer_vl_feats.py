@@ -58,7 +58,7 @@ def setup(config_file):
     device = torch.device("cuda")
     model = build_model(cfg)
     model.to(device)
-    data_loader = build_test_loader(cfg=cfg, dataset_name=cfg.DATASETS.TRAIN[0])
+    data_loader = build_test_loader(cfg=cfg, dataset_name=cfg.DATASETS.TEST[0])
 
     return cfg, model, data_loader,cfg.DATASETS.TEST[0]
 @torch.no_grad()
