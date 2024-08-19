@@ -45,6 +45,6 @@ DATASETS:
   TRAIN: ("PRW_TBPS_Train",) 
   TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
 TEST:
-  EVAL_PERIOD: 1140
+  EVAL_PERIOD: 570
 OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_detboxaug_coattmaskhigh_coattoptxidmix_oimshare_sdm_miml2dfullypredve_prw_30_slr_open_b10_05mr_plr_tdrop_cws" #_seed"
 # SEED: 58216138
