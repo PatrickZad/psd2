@@ -1,0 +1,52 @@
+_BASE_: "base_tbps.yaml"
+MODEL:
+  META_ARCHITECTURE: "OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2MIML2DFullyPredVe"
+  # WEIGHTS: "outputs/oim_clip/oim_simple_bi_cuhk_30_slr_open/model_0013075.pth"
+  #ROI_HEADS:
+  #  IOU_THRESHOLDS: [0.5]
+  #  IOU_LABELS: [0, 1]
+  #ROI_BOX_HEAD:
+  #  SMOOTH_L1_BETA: 1.0
+PERSON_SEARCH:
+  DET:
+    CLIP:
+      FREEZE_AT_STAGE2: False
+      FROZEN_BN: False
+      TEXT_DROPOUT: 0.05
+  REID:
+    MASK_RATIO: 0.0 # unused
+    MIX_RATIO: 0.0 # unused
+    MIM_RATIO: 0.5
+    MIN_MIX_NUM: 4
+    MAX_MIX_NUM: 8
+    BOX_AUGMENTATION:
+      NAME: "dn_detr"
+      H_CENTER: 0.4
+      H_SCALE: 0.2
+      NUM_LABELED: 8
+      APPEND_GT: False
+      NUM_UNLABLED: 8
+    LOSS:
+      OIM:
+        NUM_LB: 5532
+        LEN_ULB: 5000
+        LB_FACTOR: 30
+        ULB_FACTOR: 30
+    CWS: False
+SOLVER:
+  BASE_LR: 0.00001
+  MAX_ITER: 71744 # 2242 * 32
+  STEPS: (22420,)
+  CHECKPOINT_PERIOD: 4484
+  WARMUP_ITERS: 2242
+  IMS_PER_BATCH: 5
+  LR_FACTORS: [5.0,5.0]
+  LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+"]
+  WEIGHT_DECAY_BIAS: 0.0
+DATASETS:
+  TRAIN: ("CUHK-SYSU_TBPS_Train",) 
+  TEST: ("CUHK-SYSU_TBPS_Gallery", "CUHK-SYSU_TBPS_TestG100",)
+TEST:
+  EVAL_PERIOD: 2242
+OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_detboxaug_coattoptxidmixdetach4-8_dense2mim_oimshare_sdm_cuhk_30_slr_open_b5_5det_tdrop_8box" #_seed"
+# SEED: 58216138

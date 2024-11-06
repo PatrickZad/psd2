@@ -248,11 +248,11 @@ def build_lr_scheduler(
             milestones=steps,
             num_updates=cfg.SOLVER.MAX_ITER,
         )
-    elif name == "WarmupCosineLR":
+    elif name == "CosineLR":
         sched = CosineParamScheduler(
             cfg.SOLVER.COS_LR_MAX_FACTOR, cfg.SOLVER.COS_LR_MIN_FACTOR
         )
-    elif name == "WarmupCosineAfterWarmupLR":
+    elif name == "WarmupCosineLR":
         sched = CosineAfterWarmupParamScheduler(
             cfg.SOLVER.COS_LR_MAX_FACTOR,
             cfg.SOLVER.COS_LR_MIN_FACTOR,

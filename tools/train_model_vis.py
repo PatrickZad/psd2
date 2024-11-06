@@ -33,7 +33,7 @@ def setup(config_file):
     model.to(device)
     data_loader = build_train_loader(cfg=cfg)
 
-    return cfg, model, data_loader,cfg.DATASETS.TEST[0]
+    return cfg, model, data_loader,cfg.DATASETS.TRAIN[0]
 
 def train_run(cfg, model, data_loader, dataset_name,writer):
     storage = get_event_storage()
@@ -50,6 +50,7 @@ def main(cfg_file, resume=True):
     Checkpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
         cfg.MODEL.WEIGHTS, resume=resume
     )
+    cfg.OUTPUT_DIR=cfg.OUTPUT_DIR+"/visualize/"+dataset_name
     writer = TensorboardXWriter(log_dir=cfg.OUTPUT_DIR)
 
     with EventStorage(start_iter=0):
