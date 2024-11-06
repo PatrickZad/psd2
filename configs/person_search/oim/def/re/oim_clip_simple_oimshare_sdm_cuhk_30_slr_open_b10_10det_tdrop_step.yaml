@@ -16,25 +16,25 @@ PERSON_SEARCH:
   REID:
     LOSS:
       OIM:
-        NUM_LB: 483
-        LEN_ULB: 500
+        NUM_LB: 5532
+        LEN_ULB: 5000
         LB_FACTOR: 30
         ULB_FACTOR: 30
-    CWS: True
+    CWS: False
 SOLVER:
   BASE_LR: 0.00001
-  MAX_ITER: 20520 # 570 * 36
-  STEPS: (8550,) # 570 * 16
-  CHECKPOINT_PERIOD: 2280
-  WARMUP_ITERS: 570
+  MAX_ITER: 35872 # 1121 * 32
+  STEPS: (10089,)
+  CHECKPOINT_PERIOD: 2242
+  WARMUP_ITERS: 1121
   IMS_PER_BATCH: 10
-  LR_FACTORS: [5.0,5.0]
+  LR_FACTORS: [10.0,10.0]
   LR_GROUP_REGEX: ["proposal_generator.+","roi_heads.box_predictor.+"]
   WEIGHT_DECAY_BIAS: 0.0
 DATASETS:
-  TRAIN: ("PRW_TBPS_Train",) 
-  TEST: ("PRW_TBPS_Gallery", "PRW_TBPS_Query",)
+  TRAIN: ("CUHK-SYSU_TBPS_Train",) 
+  TEST: ("CUHK-SYSU_TBPS_Gallery", "CUHK-SYSU_TBPS_TestG100",)
 TEST:
-  EVAL_PERIOD: 1140
-OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_oimshare_sdm_prw_30_slr_open_b10_plr_tdrop_cws" #_seed"
+  EVAL_PERIOD: 1121
+OUTPUT_DIR: "outputs/oim_clip/def/oim_simple_oimshare_sdm_cuhk_30_slr_open_b10_10det_tdrop_step" #_seed"
 # SEED: 58216138

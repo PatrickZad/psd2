@@ -365,18 +365,18 @@ class Trainer(DefaultTrainer):
                 continue
             match_learn = _find_match(key, lr_group_regex)
             if match_learn > -1:
-                if key.endswith(".bias" ):
+                if key.endswith("bias" ):
                     bias_param_groups[match_learn+1]["params"].append(value)
                 else:
                     param_groups[match_learn+1]["params"].append(value)
             else:
-                if key.endswith(".bias" ):
+                if key.endswith("bias" ):
                     bias_param_groups[0]["params"].append(value)
                 else:
                     param_groups[0]["params"].append(value)
             learn_param_keys.append(key)
         bias_param_groups = [groups for groups in bias_param_groups if len(groups["params"])>0]
-        param_groups=param_groups+bias_param_groups
+        param_groups=[groups for groups in param_groups if len(groups["params"])>0]+bias_param_groups
         logger.info("Frozen parameters:\n{}".format("\n".join(frozen_params)))
         logger.info("Training parameters:\n{}".format("\n".join(learn_param_keys)))
         optim = cfg.SOLVER.OPTIM
