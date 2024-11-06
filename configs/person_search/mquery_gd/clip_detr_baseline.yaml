@@ -8,21 +8,23 @@ PERSON_SEARCH:
     CLIP:
       NAME: "RN50"
       IMG_SIZE: [224,224] # pretrain image size
-      STRIDE: 16
-      FREEZE_AT_STAGE2: True
-      FROZEN_BN: True
-      TEXT_DROPOUT: 0.0
+      STRIDE: 32
+      FREEZE_AT_STAGE2: False
+      FROZEN_BN: False
+      TEXT_DROPOUT: 0.1
   REID:
     MODEL:
       EMB_DIM: 1024
       BN_NECK: False
-      NUM_INFER_QUERY: 2048
+      NUM_INFER_QUERY: 512
+      NUM_QUERY: 16
+      RAND_MODAL: False
     LOSS:
       OIM:
         LB_LAYER: "lb_norm"
         ULB_LAYER: "ulb_full"
-        LB_FACTOR: 10
-        ULB_FACTOR: 10
+        LB_FACTOR: 30
+        ULB_FACTOR: 30
         NUM_LB: 483
         LEN_ULB: 500
         FEAT_DIM: 1024
@@ -40,6 +42,7 @@ INPUT:
   FORMAT: "RGB"
   SIZE_DIVISIBILITY: 32
   QUERY_SIZE: [256,128]
+  MAX_QUERY_NUM: 4
 
 DATALOADER:
   NUM_WORKERS: 8

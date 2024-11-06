@@ -1,6 +1,14 @@
 _BASE_: "clip_detr_baseline.yaml"
 MODEL:
   META_ARCHITECTURE: "MQueryGrounding8Deform"
+  WEIGHTS: "outputs/mquery_gd/clip_8deform_rmodal_prw_llr_1st_0oim/model_final.pth"
+PERSON_SEARCH:
+  REID:
+    MODEL:
+      RAND_MODAL: True
+    LOSS:
+      OIM:
+        LOSS_WEIGHT: 0.0
 SOLVER:
   BASE_LR: 0.0001
   MAX_ITER: 42780 # 713 * 60
@@ -8,7 +16,6 @@ SOLVER:
   CHECKPOINT_PERIOD: 7130
   WARMUP_ITERS: 1426
   IMS_PER_BATCH: 8
-  FREEZE_PARAM_REGEX: ["clip.+",]
   LR_FACTORS: [5.0,5.0,5.0,5.0,5.0,5.0,5.0]
   LR_GROUP_REGEX: ["grounding_trans.+","ref_points.+","bbox_embed.+","conf_embed.+","query_embed.+","qimg.+","query_cls.+"]
 DATASETS:
@@ -16,5 +23,5 @@ DATASETS:
   TEST: ("PRW_Mmq_Query","PRW_Mmq_Grounding",) # 
 TEST:
   EVAL_PERIOD: 2852
-OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_prw_llr_1st"
+OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_rmodal_prw_llr_2nd_0oim"
 # SEED: 58216138

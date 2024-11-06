@@ -13,6 +13,7 @@ import copy
 from collections import OrderedDict
 import torch.utils.checkpoint as ckpt
 import psd2.utils.comm as comm
+from scipy.optimize import linear_sum_assignment
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,11 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
         clip_model,
         visual_pos,
         grounding_transformer,
+        num_query,
+        rand_modal,
         bbox_embed,
         conf_embed,
-        oim_loss_text,
         bn_neck,
-        oim_loss_qimg,
         oim_loss_fuse,
         qimg_size,
         n_query_infer,
@@ -38,18 +39,17 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
     ) -> None:
         super().__init__(*args, **kws)
         self.clip_model=clip_model
-        self.oim_loss_text=oim_loss_text
-        self.oim_loss_qimg=oim_loss_qimg
         self.oim_loss_fuse=oim_loss_fuse
         self.bn_neck = bn_neck
         self.bn_neck_text=copy.deepcopy(bn_neck)
         self.grounding_trans=grounding_transformer
         self.bbox_embed=bbox_embed
         self.conf_embed=conf_embed
-        self.query_embed = nn.Embedding(1, clip_model.text_projection.shape[1])
+        self.query_embed = nn.Embedding(num_query, clip_model.text_projection.shape[1])
         self.visual_pos=visual_pos
 
         # query encoder
+        self.rand_modal=rand_modal
         self.qimg_tokenizer=nn.Conv2d(in_channels=3, out_channels=clip_model.token_embedding.weight.shape[1], kernel_size=16, stride=16, bias=False)
         qh,qw=qimg_size
         scale = clip_model.token_embedding.weight.shape[1] ** -0.5 
@@ -59,7 +59,10 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
 
         # grounding infer
         self.n_query_infer=n_query_infer
-        
+        # maych /loss weights
+        self.cls_weight=1.0
+        self.bbox_weight=5.0
+        self.giou_weight=2.0
     @classmethod
     def from_config(cls, cfg):
         ret = super().from_config(cfg)
@@ -79,12 +82,8 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
         else:
             bn_neck = nn.Identity()
         ret["bn_neck"] = bn_neck
-        oim_text=OIMLoss(cfg)
-        del oim_text.ulb_layer
-        oim_text.ulb_layer=None
-        ret["oim_loss_text"]=oim_text
-        ret["oim_loss_qimg"]=copy.deepcopy(oim_text)
-        ret["oim_loss_fuse"]=copy.deepcopy(oim_text)
+        oim_loss=OIMLoss(cfg)
+        ret["oim_loss_fuse"]=oim_loss
         embed_dim=clip_model.text_projection.shape[1]
         ret["visual_pos"]=PositionEmbeddingSine(embed_dim//2,normalize=True)
         ret["grounding_transformer"]=cls._build_grounding_transformer(embed_dim)
@@ -93,6 +92,8 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
         ret["bbox_embed"]=bbox_embed
         ret["qimg_size"]=cfg.INPUT.QUERY_SIZE
         ret["n_query_infer"]=cfg.PERSON_SEARCH.REID.MODEL.NUM_INFER_QUERY
+        ret["num_query"]=cfg.PERSON_SEARCH.REID.MODEL.NUM_QUERY
+        ret["rand_modal"]=cfg.PERSON_SEARCH.REID.MODEL.RAND_MODAL
         return ret
     @classmethod
     def _build_grounding_transformer(cls,embed_dim):
@@ -118,30 +119,44 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
         bbox_embed = MLP(embed_dim, embed_dim, 4, 3)
         return conf_embed,bbox_embed
     
-    def m_pred_loss(self,m_query_conf,m_query_bbox,gt_instances,match_indices):
+    def m_pred_loss(self,m_query_conf,m_query_bbox,m_query_pids,gt_instances):
+        match_indices=self.m_set_match(m_query_conf,m_query_bbox,m_query_pids,gt_instances)
         losses={}
-        num_pos=sum([(inst.gt_pids>-1).sum() for inst in gt_instances])
+        num_pos=sum([mbi[0].shape[0] for mbi in match_indices[-1]])
         
         if comm.get_world_size()>1:
             all_num_pos=comm.all_gather(num_pos)
-            num_pos = sum([num.to("cpu") for num in all_num_pos])
-            num_pos = torch.clamp(num_pos / comm.get_world_size(), min=1).item()
-        else:
-            num_pos=num_pos.item()
+            num_pos = sum( all_num_pos)
+            num_pos=max(num_pos / comm.get_world_size(),1)
+
         for i in range(len(self.grounding_trans.resblocks)):
-            ilosses=self.conf_loss(m_query_conf[i],gt_instances,match_indices,num_pos)
-            ilosses.update(self.bbox_loss(m_query_bbox[i],gt_instances,match_indices,num_pos))
+            ilosses=self.conf_loss(m_query_conf[i],gt_instances,match_indices[i],num_pos)
+            ilosses.update(self.bbox_loss(m_query_bbox[i],gt_instances,match_indices[i],num_pos))
             for k,v in ilosses.items():
                 losses[k+"_{}".format(i)]=v
         return losses
-    
+    def m_set_match(self,m_query_conf,m_query_bbox,m_query_pids,gt_instances):
+        raise NotImplementedError
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx,src_idx = torch.split(indices,[1,1],dim=1)
-        return batch_idx.squeeze(1).cpu().tolist(),src_idx.squeeze(1).cpu().tolist()
+        batch_idx = torch.cat(
+            [torch.full_like(src, i) for i, (src, _) in enumerate(indices)]
+        )
+        src_idx = torch.cat([src for (src, _) in indices])
+        return batch_idx, src_idx
+
+    def _get_tgt_permutation_idx(self, indices):
+        # permute targets following indices
+        batch_idx = torch.cat(
+            [torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)]
+        )
+        tgt_idx = torch.cat([tgt for (_, tgt) in indices])
+        return batch_idx, tgt_idx
 
     def conf_estimate(self,m_query_out,query_input):
         return self.conf_embed(m_query_out)
+    
+    
     def conf_loss(self,scores,gt_instances,match_indices,num_inst):
         bidx,gidx=self._get_src_permutation_idx(match_indices)
         gidx=[0]*len(gidx)
@@ -294,6 +309,7 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
         
 
     def forward_gallery(self, image_list, gt_instances):
+        raise NotImplementedError
         vfeatures = self.backbone(image_list.tensor)
         b,_,h,w=vfeatures.shape
         vmasks=image_list.mask
@@ -328,13 +344,13 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
                 # text query
                 text_pids=torch.stack(text_pids).to(self.device)
                 text_embs=self.query_embeds(torch.stack(text_tokens).to(self.device),None)
-                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+                reid_loss_text = self.oim_loss_fuse(text_embs,text_pids )
                 for k,v in reid_loss_text.items():
                     losses[k+"_text"]=v
                 # image query
                 qimg_pids=torch.stack(qimg_pids).to(self.device)
                 qimg_embs=self.query_embeds(None,torch.stack(query_imgs).to(self.device))
-                reid_loss_qimg = self.oim_loss_qimg(qimg_embs,qimg_pids )
+                reid_loss_qimg = self.oim_loss_fuse(qimg_embs,qimg_pids )
                 for k,v in reid_loss_qimg.items():
                     losses[k+"_qimg"]=v
                 # fused query
@@ -345,9 +361,10 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
                     losses[k+"_fuse"]=v
                 query_embs=torch.cat([text_embs,qimg_embs,fuse_embs],dim=0)
                 query_pids=torch.cat([text_pids,qimg_pids,fuse_pids],dim=0)
-                # TODO matching
+                """
                 gt_pids=[inst.gt_pids for inst in gt_instances]
                 num_gts=[inst.gt_pids.shape[0] for inst in gt_instances]
+                
                 match_indices=[]
                 for bi in range(b):
                     bidx_offset=bi*query_pids.shape[0]
@@ -356,15 +373,18 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
                     bi_match_indices=torch.nonzero(bi_match_mask)
                     bi_indices=bi_match_indices+torch.tensor([[bidx_offset,gidx_offset]],device=bi_match_indices.device)
                     match_indices.append(bi_indices)
-                match_indices=torch.cat(match_indices)
+                match_indices=torch.cat(match_indices)"""
                 # query grounding
-                tgt=query_embs.unsqueeze(1).repeat(1, b, 1)
-                query_pos=self.query_embed.weight.unsqueeze(1).repeat(1, b, 1)
+                n_query_pos=self.query_embed.weight.shape[0]
+                n_query=query_embs.shape[0]
+                tgt=query_embs.unsqueeze(1).unsqueeze(1).repeat(1,n_query_pos, b, 1).flatten(0,1)
+                query_pos=self.query_embed.weight.unsqueeze(1).unsqueeze(0).repeat(n_query,1,b, 1).flatten(0,1)
                 m_query_out=self.grounding_trans(tgt,vfeatures,vfeatures,vmasks.flatten(1,2),v_pos.flatten(2,3).permute(2,0,1),query_pos,with_ckpt=True,return_inter=True)
                 m_out_conf = self.conf_estimate(m_query_out,tgt)
                 m_out_bbox = self.bbox_embed(m_query_out).sigmoid()
-                grounding_losses=self.m_pred_loss(m_out_conf,m_out_bbox,gt_instances,match_indices)
+                grounding_losses=self.m_pred_loss(m_out_conf,m_out_bbox,gt_instances)
                 losses.update(grounding_losses)
+                pred_pids_per_img=query_pids.unsqueeze(1).repeat(1,n_query_pos).flatten(0,1)
                 with torch.no_grad():
                     pred_instances=[]
                     for bi in range(b):
@@ -373,8 +393,8 @@ class MQueryGroundingBaseline(SearchBaseTBPS):
                         pred_boxes=Boxes(ccwh_box,box_mode=BoxMode.CCWH_REL)
                         inst.pred_boxes=pred_boxes.convert_mode(BoxMode.XYXY_ABS,image_list.image_sizes[bi])
                         inst.pred_scores=F.softmax(m_out_conf[-1][:,bi].detach(),dim=-1)[:,0]
-                        inst.pred_classes=text_pids
-                        inst.assign_ids=text_pids
+                        inst.pred_classes=pred_pids_per_img
+                        inst.assign_ids=pred_pids_per_img
                         pred_instances.append(inst)
             return pred_instances, [vfeatures.detach().permute(1,2,0).reshape(b,-1,h,w)], losses
         else:
@@ -471,24 +491,66 @@ class MQueryGroundingBiAlign(MQueryGroundingBaseline): #TODO refactor
         
     def align_loss(self,box_embs,box_pids,text_embs,text_pids):
         losses={}
-        lb_features=self.oim_loss_img.lb_layer.lookup_table
-        ulb_features=self.oim_loss_img.ulb_layer.queue
-        v_features=torch.cat([lb_features,ulb_features],dim=0)
-        v_embs=F.normalize(v_features,dim=-1)
         text_embs=F.normalize(text_embs,dim=-1)
-        align_loss_t=self.alignment_loss(text_embs,v_embs,text_pids)
-        losses["loss_align_t"]=align_loss_t*0.5
-        lb_features=self.oim_loss_text.lb_layer.lookup_table
-        t_embs=F.normalize(lb_features,dim=-1)
         pos_mask=box_pids>-1
         box_embs=box_embs[pos_mask]
         box_pids=box_pids[pos_mask]
         box_embs=F.normalize(box_embs,dim=-1)
-        align_loss_i=self.alignment_loss(box_embs,t_embs,box_pids)
-        losses["loss_align_i"]=align_loss_i*0.5
+        losses["loss_align"]=self.compute_sdm(box_embs,text_embs,box_pids,text_pids,1/0.02)
         return losses
 
-    def forward_gallery(self, image_list, gt_instances):
+    def compute_sdm(self,features1, features2, pid1,pid2, logit_scale, epsilon=1e-8):
+        pid1_set=set(pid1.cpu().numpy().tolist())
+        pid2_set=set(pid2.cpu().numpy().tolist())
+        remove_id_1=pid1_set-pid2_set
+        remove_id_2=pid2_set-pid1_set
+        if len(remove_id_1)>0:
+            keep_mask1=torch.ones(features1.shape[0])
+            for rid in list(remove_id_1):
+                keep_mask1[pid1==rid]=0.
+            keep_mask1=keep_mask1==1
+            features1=features1[keep_mask1]
+            pid1=pid1[keep_mask1]
+        if len(remove_id_2)>0:
+            keep_mask2=torch.ones(features2.shape[0])
+            for rid in list(remove_id_2):
+                keep_mask2[pid2==rid]=0.
+            keep_mask2=keep_mask2==1
+            features2=features2[keep_mask2]
+            pid2=pid2[keep_mask2]
+        """
+        Similarity Distribution Matching
+        """
+        pid1 = pid1.reshape((features1.shape[0], 1)) # make sure pid size is [batch_size, 1]
+        pid2=pid2.reshape((features2.shape[0], 1)) # make sure pid size is [batch_size, 1]
+        pid_dist = pid1 - pid2.t() # n1 x n2
+        labels_1_2 = (pid_dist == 0).float()
+        labels_2_1 = labels_1_2.t()
+
+        f1_norm = features1 / features1.norm(dim=1, keepdim=True)
+        f2_norm = features2 / features2.norm(dim=1, keepdim=True)
+
+        f2f1_cosine_theta = f2_norm @ f1_norm.t()
+        f1f2_cosine_theta = f2f1_cosine_theta.t()
+
+        f2_proj_f1 = logit_scale * f2f1_cosine_theta
+        f1_proj_f2 = logit_scale * f1f2_cosine_theta
+
+        # normalize the true matching distribution
+        labels_1_2_distribute = labels_1_2 / labels_1_2.sum(dim=1,keepdim=True)
+        labels_2_1_distribute = labels_2_1 / labels_2_1.sum(dim=1,keepdim=True)
+
+        f1f2_pred = F.softmax(f1_proj_f2, dim=1)
+        f1f2_loss = f1f2_pred * (F.log_softmax(f1_proj_f2, dim=1) - torch.log(labels_1_2_distribute + epsilon))
+        f2f1_pred = F.softmax(f2_proj_f1, dim=1)
+        f2f1_loss = f2f1_pred * (F.log_softmax(f2_proj_f1, dim=1) - torch.log(labels_2_1_distribute + epsilon))
+        # if torch.isnan(f1f2_loss).sum()>0 or torch.isnan(f2f1_loss).sum()>0:
+        #    print("get")
+        loss = torch.mean(torch.sum(f1f2_loss, dim=1)) + torch.mean(torch.sum(f2f1_loss, dim=1))
+
+        return loss
+
+    def forward_gallery(self, image_list, gt_instances): #TODO
         vfeatures = self.backbone(image_list.tensor)
         b,_,h,w=vfeatures.shape
         vmasks=image_list.mask
@@ -508,11 +570,11 @@ class MQueryGroundingBiAlign(MQueryGroundingBaseline): #TODO refactor
                         text_pids.extend([pid]*num_text)
             text_pids=torch.stack(text_pids).to(self.device)
             text_embs=self.text_embeds(torch.stack(text_tokens).to(self.device))
-            reid_loss_text = self.oim_loss_text(text_embs,text_pids )
+            reid_loss_text = self.oim_loss(text_embs,text_pids )
             for k,v in reid_loss_text.items():
                 losses[k+"_text"]=v*0.5
             img_embeds,img_pids=self.box_embeds_pids(vfeatures.permute(1,2,0).reshape(b,-1,h,w),gt_instances)
-            reid_loss_img = self.oim_loss_img(img_embeds,img_pids)
+            reid_loss_img = self.oim_loss(img_embeds,img_pids)
             for k,v in reid_loss_img.items():
                 losses[k+"_img"]=v*0.5
             if len(text_pids)==0:
@@ -521,8 +583,7 @@ class MQueryGroundingBiAlign(MQueryGroundingBaseline): #TODO refactor
                     losses["loss_conf_{}".format(i)]=torch.tensor(0.,device=self.device)
                     losses["loss_bbox_{}".format(i)]=torch.tensor(0.,device=self.device)
                     losses["loss_giou_{}".format(i)]=torch.tensor(0.,device=self.device)
-                    losses["loss_align_t"]=torch.tensor(0.,device=self.device)
-                    losses["loss_align_i"]=torch.tensor(0.,device=self.device)
+                    losses["loss_align"]=torch.tensor(0.,device=self.device)
                 pred_instances=[]
             else:
                 losses.update(self.align_loss(img_embeds,img_pids,text_embs,text_pids))
@@ -614,14 +675,12 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
             m_conf.append(self.conf_embed[i](out))
         return torch.stack(m_conf)
     def conf_loss(self,scores,gt_instances,match_indices,num_inst):
-        bidx,gidx=self._get_src_permutation_idx(match_indices)
-        gidx=[0]*len(gidx)
-        scores=scores.flatten(0,1)
+        bidx,pred_idx=self._get_src_permutation_idx(match_indices)
         targets=torch.zeros_like(scores,dtype=scores.dtype)
-        targets[bidx,gidx]=1
+        targets[bidx,pred_idx]=1
         loss=  sigmoid_focal_loss(
-                scores,
-                targets,
+                scores.flatten(0,1),
+                targets.flatten(0,1),
                 num_inst,
                 alpha=0.25,
                 gamma=2,
@@ -629,11 +688,11 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
         return {"loss_conf": loss * 1.0}
     def bbox_loss(self,pred_boxes,gt_instances,match_indices,num_inst):
         # NOTE predictions are cchw in (0,1)
-        pred_boxes=pred_boxes.flatten(0,1)
-        bidx,gidx=self._get_src_permutation_idx(match_indices)
-        src_boxes = pred_boxes[bidx]
-        cchw_gt_boxes=torch.cat([inst.gt_boxes.convert_mode(BoxMode.CCWH_REL,inst.image_size).tensor for inst in gt_instances])
-        target_boxes = cchw_gt_boxes[gidx]
+        bidx,pred_idx=self._get_src_permutation_idx(match_indices)
+        src_boxes = pred_boxes[bidx,pred_idx]
+        gt_ccwh_ref=[inst.gt_boxes.convert_mode(BoxMode.CCWH_REL,inst.image_size).tensor[inst.gt_pids>-1] for inst in gt_instances]
+        bidx,match_idx=self._get_tgt_permutation_idx(match_indices)
+        target_boxes = torch.stack([gt_ccwh_ref[bi][mi] for bi,mi in zip(bidx,match_idx)])
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
 
         losses = {}
@@ -644,6 +703,74 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
             box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_inst *2.0
         return losses
+    @torch.no_grad()
+    def m_set_match(self,m_query_conf,m_query_bbox,m_query_pids,gt_instances):
+        m_match_indices=[]
+        nq=m_query_pids.shape[2]
+        n_pos=self.query_embed.weight.shape[0]
+        bs=len(gt_instances)
+        n_gts = [(inst.gt_pids>-1).shape[0] for inst in gt_instances]
+        gt_pids=torch.cat([inst.gt_pids[inst.gt_pids>-1] for inst in gt_instances])
+        gt_ccwh_ref=torch.cat([inst.gt_boxes.convert_mode(BoxMode.CCWH_REL,inst.image_size).tensor[inst.gt_pids>-1] for inst in gt_instances])
+        gt_xyxy=torch.cat([ inst.gt_boxes.tensor[inst.gt_pids>-1] for inst in gt_instances])
+        for query_conf,query_bbox,query_pids in zip(m_query_conf,m_query_bbox,m_query_pids):
+            # mask
+            pid_not_match=query_pids.flatten(0,1).unsqueeze(1)!=gt_pids.unsqueeze(0)
+            # cls_cost
+            out_prob=query_conf.sigmoid().flatten(0,1)
+            alpha = 0.25
+            gamma = 2.0
+            neg_cost_class = (
+                (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+            )
+            pos_cost_class = (
+                alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+            )
+            cost_class = (pos_cost_class - neg_cost_class).repeat(1,sum(n_gts))
+            
+            
+            # bbox cost
+            cost_bbox=torch.cdist(query_bbox.flatten(0,1), gt_ccwh_ref, p=1)
+           
+            # giou cost
+            query_bbox_Boxes=[Boxes(boxes,box_mode=BoxMode.CCWH_REL) for boxes in query_bbox]
+            pred_xyxy=torch.cat([boxes.convert_mode(BoxMode.XYXY_ABS,inst.image_size).tensor for boxes,inst in zip(query_bbox_Boxes,gt_instances)])
+            cost_giou = -generalized_box_iou(pred_xyxy, gt_xyxy)
+            
+
+            cost_all=self.bbox_weight * cost_bbox + self.cls_weight * cost_class + self.giou_weight * cost_giou
+
+            cost_all[pid_not_match]=1e12
+
+            cost_all_bs_nuq=cost_all.view(bs,nq//n_pos,n_pos,-1)
+            cost_all_bs_nuq = [c[i] for i, c in enumerate(cost_all_bs_nuq.split(n_gts, -1))]
+
+            indices=[]
+            gt_pids_bs=[ pids.cpu().numpy().tolist() for pids in gt_pids.split(n_gts,0)]
+            src_idx=torch.arange(0,nq,dtype=torch.long).reshape(nq//n_pos,n_pos).numpy().tolist()
+            for cost_bi,pids_bi_g,pids_bi_q in zip(cost_all_bs_nuq,gt_pids_bs,query_pids): # nq//n_pos. n_pos, gi
+                pids_bi_q=pids_bi_q.view(-1,n_pos)
+                bi_match_srcs=[]
+                bi_match_tgts=[]
+                for qi in range(nq//n_pos):
+                    qpid=pids_bi_q[qi][0].item()
+                    if qpid in pids_bi_g:
+                        tgt_i=pids_bi_g.index(qpid)
+                        src_i=torch.argmin(cost_bi[qi][:,tgt_i]).item()
+                        bi_match_srcs.append(src_idx[qi][src_i])
+                        bi_match_tgts.append(tgt_i)
+                indices.append((bi_match_srcs,bi_match_tgts))
+
+            match_indices= [
+                (
+                    torch.as_tensor(i, dtype=torch.int64),
+                    torch.as_tensor(j, dtype=torch.int64),
+                )
+                for i, j in indices
+            ]
+            m_match_indices.append(match_indices)
+        return m_match_indices
+
     def infer_grounding(self,image_list,query_embeds):
         vfeatures = self.backbone(image_list.tensor)
         b,_,h,w=vfeatures.shape
@@ -655,15 +782,17 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
         infer_scores=[[] for _ in range(b)]
         # query grounding
         for query_embs in torch.split(query_embeds,self.n_query_infer,dim=1):
-            tgt=query_embs.transpose(0,1)
-            query_pos=self.query_embed.weight.unsqueeze(1).repeat(tgt.shape[0], b, 1)
-            reference_points=self.ref_points(query_pos).sigmoid()
-            init_reference_out=reference_points.transpose(0,1).contiguous()
+            n_query_pos=self.query_embed.weight.shape[0]
+            n_query=query_embs.shape[1]
+            tgt=query_embs.unsqueeze(2).repeat(1,1,n_query_pos, 1).flatten(1,2)
+            query_pos=self.query_embed.weight.unsqueeze(1).unsqueeze(0).repeat(n_query,1,b, 1).flatten(0,1)
+            reference_points=self.ref_points(query_pos).sigmoid().transpose(0,1).contiguous()
+            init_reference_out=reference_points
             spatial_shapes=torch.as_tensor([(h,w)], dtype=torch.long, device=vfeatures.device)
             level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
             valid_ratios = torch.stack([get_valid_ratio(vmasks)], 1)
             mask_flatten=vmasks.flatten(1)
-            m_query_out, inter_references = self.grounding_trans(tgt.transpose(0,1).contiguous(), reference_points.transpose(0,1).contiguous(), vfeatures.transpose(0,1).contiguous(),
+            m_query_out, inter_references = self.grounding_trans(tgt, reference_points, vfeatures.transpose(0,1).contiguous(),
                                             spatial_shapes, level_start_index, valid_ratios, query_pos.transpose(0,1).contiguous(), mask_flatten,with_ckpt=True)
             inter_references_out = inter_references
             m_out_conf = self.conf_estimate(m_query_out,tgt)
@@ -684,10 +813,15 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
                     m_out_bbox.append(outputs_coord)
             m_out_bbox= torch.stack(m_out_bbox)
             for bi in range(b):
-                ccwh_box=m_out_bbox[-1][bi]
+                out_conf=m_out_conf[-1][bi].detach().sigmoid()[...,0].reshape(n_query,n_query_pos)
+                out_bbox=m_out_bbox[-1][bi].detach().reshape(n_query,n_query_pos,-1)
+                max_conf_per_id=torch.argmax(out_conf,dim=1)
+                id_indices=torch.arange(n_query)
+
+                ccwh_box=out_bbox[id_indices,max_conf_per_id]
                 pred_boxes=Boxes(ccwh_box,box_mode=BoxMode.CCWH_REL)
                 pred_boxes=pred_boxes.convert_mode(BoxMode.XYXY_ABS,image_list.image_sizes[bi])
-                pred_scores=m_out_conf[-1][bi].sigmoid()[:,0]
+                pred_scores=out_conf[id_indices,max_conf_per_id]
                 infer_boxes[bi].append(pred_boxes.tensor)
                 infer_scores[bi].append(pred_scores)
         infer_boxes=[torch.cat(infer_boxes[i],dim=0) for i in range(b)]
@@ -699,6 +833,55 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
             inst.pred_scores=infer_scores[bi]
             pred_instances.append(inst)
         return pred_instances
+    def query_train(self,text_pids,qimg_pids,text_tokens,query_imgs,qimg_paired_text_tokens):
+        losses={}
+        if self.rand_modal:
+                    select=torch.randint(0,3,(1,)).item()
+                    if select==0:
+                        # text query
+                        text_embs=self.query_embeds(text_tokens,None)
+                        reid_loss_text = self.oim_loss_fuse(text_embs,text_pids )
+                        for k,v in reid_loss_text.items():
+                            losses[k+"_text"]=v
+                        query_embs=text_embs
+                        query_pids=text_pids
+                    elif select==1:
+                        # image query
+                        qimg_embs=self.query_embeds(None,query_imgs)
+                        reid_loss_qimg = self.oim_loss_fuse(qimg_embs,qimg_pids )
+                        for k,v in reid_loss_qimg.items():
+                            losses[k+"_qimg"]=v
+                        query_embs=qimg_embs
+                        query_pids=qimg_pids
+                    else:
+                        # fused query
+                        fuse_pids=qimg_pids
+                        fuse_embs=self.query_embeds(qimg_paired_text_tokens,query_imgs)
+                        reid_loss_fuse = self.oim_loss_fuse(fuse_embs,fuse_pids )
+                        for k,v in reid_loss_fuse.items():
+                            losses[k+"_fuse"]=v
+                        query_embs=fuse_embs
+                        query_pids=fuse_pids
+        else:
+                    # text query
+                    text_embs=self.query_embeds(text_tokens,None)
+                    reid_loss_text = self.oim_loss_fuse(text_embs,text_pids )
+                    for k,v in reid_loss_text.items():
+                        losses[k+"_text"]=v
+                    # image query
+                    qimg_embs=self.query_embeds(None,query_imgs)
+                    reid_loss_qimg = self.oim_loss_fuse(qimg_embs,qimg_pids )
+                    for k,v in reid_loss_qimg.items():
+                        losses[k+"_qimg"]=v
+                    # fused query
+                    fuse_pids=qimg_pids
+                    fuse_embs=self.query_embeds(qimg_paired_text_tokens,query_imgs)
+                    reid_loss_fuse = self.oim_loss_fuse(fuse_embs,fuse_pids )
+                    for k,v in reid_loss_fuse.items():
+                        losses[k+"_fuse"]=v
+                    query_embs=torch.cat([text_embs,qimg_embs,fuse_embs],dim=0)
+                    query_pids=torch.cat([text_pids,qimg_pids,fuse_pids],dim=0)
+        return losses,query_embs,query_pids
     def forward_gallery(self, image_list, gt_instances): # TODO update
         vfeatures = self.backbone(image_list.tensor)
         b,_,h,w=vfeatures.shape
@@ -732,41 +915,16 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
                     losses["loss_giou_{}".format(i)]=torch.tensor(0.,device=self.device)
                 pred_instances=[]
             else:
-                # text query
                 text_pids=torch.stack(text_pids).to(self.device)
-                text_embs=self.query_embeds(torch.stack(text_tokens).to(self.device),None)
-                reid_loss_text = self.oim_loss_text(text_embs,text_pids )
-                for k,v in reid_loss_text.items():
-                    losses[k+"_text"]=v
-                # image query
                 qimg_pids=torch.stack(qimg_pids).to(self.device)
-                qimg_embs=self.query_embeds(None,torch.stack(query_imgs).to(self.device))
-                reid_loss_qimg = self.oim_loss_qimg(qimg_embs,qimg_pids )
-                for k,v in reid_loss_qimg.items():
-                    losses[k+"_qimg"]=v
-                # fused query
-                fuse_pids=qimg_pids
-                fuse_embs=self.query_embeds(torch.stack(qimg_paired_text_tokens).to(self.device),torch.stack(query_imgs).to(self.device))
-                reid_loss_fuse = self.oim_loss_fuse(fuse_embs,fuse_pids )
-                for k,v in reid_loss_fuse.items():
-                    losses[k+"_fuse"]=v
-                query_embs=torch.cat([text_embs,qimg_embs,fuse_embs],dim=0)
-                query_pids=torch.cat([text_pids,qimg_pids,fuse_pids],dim=0)
-                # TODO matching
-                gt_pids=[inst.gt_pids for inst in gt_instances]
-                num_gts=[inst.gt_pids.shape[0] for inst in gt_instances]
-                match_indices=[]
-                for bi in range(b):
-                    bidx_offset=bi*query_pids.shape[0]
-                    gidx_offset=0 if bi==0 else sum(num_gts[:bi])
-                    bi_match_mask=query_pids.unsqueeze(1)==gt_pids[bi].unsqueeze(0)
-                    bi_match_indices=torch.nonzero(bi_match_mask)
-                    bi_indices=bi_match_indices+torch.tensor([[bidx_offset,gidx_offset]],device=bi_match_indices.device)
-                    match_indices.append(bi_indices)
-                match_indices=torch.cat(match_indices)
+                
+                losses,query_embs,query_pids=self.query_train(text_pids,qimg_pids,torch.stack(text_tokens).to(self.device),torch.stack(query_imgs).to(self.device),torch.stack(qimg_paired_text_tokens).to(self.device))
+                
                 # query grounding
-                tgt=query_embs.unsqueeze(1).repeat(1, b, 1)
-                query_pos=self.query_embed.weight.unsqueeze(1).repeat(tgt.shape[0], b, 1)
+                n_query_pos=self.query_embed.weight.shape[0]
+                n_query=query_embs.shape[0]
+                tgt=query_embs.unsqueeze(1).unsqueeze(1).repeat(1,n_query_pos, b, 1).flatten(0,1)
+                query_pos=self.query_embed.weight.unsqueeze(1).unsqueeze(0).repeat(n_query,1,b, 1).flatten(0,1)
                 reference_points=self.ref_points(query_pos).sigmoid()
                 init_reference_out=reference_points.transpose(0,1).contiguous()
                 spatial_shapes=torch.as_tensor([(h,w)], dtype=torch.long, device=vfeatures.device)
@@ -793,16 +951,23 @@ class MQueryGroundingDeform(MQueryGroundingBaseline):
                     outputs_coord = tmp.sigmoid()
                     m_out_bbox.append(outputs_coord)
                 m_out_bbox= torch.stack(m_out_bbox)
-                grounding_losses=self.m_pred_loss(m_out_conf,m_out_bbox,gt_instances,match_indices)
+                tgt_pids=query_pids.unsqueeze(1).unsqueeze(1).expand(-1,n_query_pos, b).flatten(0,1)
+                m_query_pids=tgt_pids.transpose(0,1).contiguous().unsqueeze(0).expand(m_query_out.shape[0],-1,-1)
+                grounding_losses=self.m_pred_loss(m_out_conf,m_out_bbox,m_query_pids,gt_instances)
                 losses.update(grounding_losses)
                 with torch.no_grad():
                     pred_instances=[]
                     for bi in range(b):
                         inst=Instances(image_list.image_sizes[bi])
-                        ccwh_box=m_out_bbox[-1][bi].detach()
+                        out_conf=m_out_conf[-1][bi].detach().sigmoid()[...,0].reshape(n_query,n_query_pos)
+                        out_bbox=m_out_bbox[-1][bi].detach().reshape(n_query,n_query_pos,-1)
+                        max_conf_per_id=torch.argmax(out_conf,dim=1)
+                        id_indices=torch.arange(n_query)
+
+                        ccwh_box=out_bbox[id_indices,max_conf_per_id]
                         pred_boxes=Boxes(ccwh_box,box_mode=BoxMode.CCWH_REL)
                         inst.pred_boxes=pred_boxes.convert_mode(BoxMode.XYXY_ABS,image_list.image_sizes[bi])
-                        inst.pred_scores=m_out_conf[-1][bi].detach().sigmoid()[:,0]
+                        inst.pred_scores=out_conf[id_indices,max_conf_per_id]
                         inst.pred_classes=query_pids
                         inst.assign_ids=query_pids
                         pred_instances.append(inst)
@@ -843,17 +1008,61 @@ class MQueryGrounding8Deform(MQueryGroundingDeform):
 
 
 @META_ARCH_REGISTRY.register()
-class MQueryGrounding8DeformShareoim(MQueryGrounding8Deform):
-    @configurable
-    def __init__(
-        self,
-        *args,
-        **kws,
-    ) -> None:
-        super().__init__(*args, **kws)
-        self.oim_loss_qimg=self.oim_loss_text
-        self.oim_loss_fuse=self.oim_loss_text
+class MQueryGrounding8DeformText(MQueryGrounding8Deform):
+    def query_train(self,text_pids,qimg_pids,text_tokens,query_imgs,qimg_paired_text_tokens):
+        losses={}
+        text_embs=self.query_embeds(text_tokens,None)
+        reid_loss_text = self.oim_loss_fuse(text_embs,text_pids )
+        for k,v in reid_loss_text.items():
+            losses[k+"_text"]=v
 
+        query_embs=text_embs
+        query_pids=text_pids
+        return losses,query_embs,query_pids
+    def forward_query(self, image_list, gt_instances):
+        # one sentece for each query
+        text_tokens=[]
+        for inst in gt_instances:
+            if hasattr(inst,"descriptions"):
+                text_tokens.append(inst.descriptions[0][0][0])
+        if len(text_tokens)==0:
+            text_tokens=None
+        else:
+            text_tokens=torch.stack(text_tokens).to(self.device)
+        qimgs=None
+        query_embs=self.query_embeds(text_tokens,qimgs)
+        query_embs = torch.split(query_embs, 1)
+        return [
+            Instances(gt_instances[i].image_size, reid_feats=query_embs[i])
+            for i in range(len(query_embs))
+        ]
+
+@META_ARCH_REGISTRY.register()
+class MQueryGrounding8DeformImage(MQueryGrounding8Deform):
+    def query_train(self,text_pids,qimg_pids,text_tokens,query_imgs,qimg_paired_text_tokens):
+        losses={}
+        # image query
+        qimg_embs=self.query_embeds(None,query_imgs)
+        reid_loss_qimg = self.oim_loss_fuse(qimg_embs,qimg_pids )
+        for k,v in reid_loss_qimg.items():
+            losses[k+"_qimg"]=v
+        query_embs=qimg_embs
+        query_pids=qimg_pids
+        return losses,query_embs,query_pids
+    def forward_query(self, image_list, gt_instances):
+        # one sentece for each query
+        qimgs=[]
+        for inst in gt_instances:
+            if hasattr(inst,"queries"):
+                qimgs.append(inst.queries[0][0])
+        text_tokens=None
+        qimgs=torch.stack(qimgs).to(self.device)
+        query_embs=self.query_embeds(text_tokens,qimgs)
+        query_embs = torch.split(query_embs, 1)
+        return [
+            Instances(gt_instances[i].image_size, reid_feats=query_embs[i])
+            for i in range(len(query_embs))
+        ]
 
 @META_ARCH_REGISTRY.register()
 class MQueryGrounding8DeformSplitCLS(MQueryGrounding8Deform):
@@ -1197,7 +1406,7 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
-    return loss.mean(1).sum() / num_boxes
+    return loss.sum() / num_boxes
 
 def get_valid_ratio(mask):
         _, H, W = mask.shape

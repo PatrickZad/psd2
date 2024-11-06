@@ -1,6 +1,10 @@
 _BASE_: "clip_detr_baseline.yaml"
 MODEL:
   META_ARCHITECTURE: "MQueryGrounding8Deform"
+PERSON_SEARCH:
+  REID:
+    MODEL:
+      RAND_MODAL: True
 SOLVER:
   BASE_LR: 0.0001
   MAX_ITER: 42780 # 713 * 60
@@ -16,5 +20,5 @@ DATASETS:
   TEST: ("PRW_Mmq_Query","PRW_Mmq_Grounding",) # 
 TEST:
   EVAL_PERIOD: 2852
-OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_prw_llr_1st"
+OUTPUT_DIR: "outputs/mquery_gd/clip_8deform_rmodal_prw_llr_1st_db"
 # SEED: 58216138
