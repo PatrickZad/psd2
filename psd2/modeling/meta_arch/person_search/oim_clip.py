@@ -2881,6 +2881,66 @@ class OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2MIML2DFullyPred
             return pred_instances, [feat.detach() for feat in features.values()], losses
         else:
             return super().forward_gallery(image_list, gt_instances)
+
+from psd2.modeling.extend.clip_model import Transformer
+@META_ARCH_REGISTRY.register()
+class OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2MIMIL2PredVe(OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2MIML2DFullyPredVe):
+    @configurable
+    def __init__(
+        self,
+        *args,
+        **kws,
+    ) -> None:
+        super().__init__(*args, **kws)
+        embed_dim=self.clip_model.text_projection.shape[1]
+        self.cross_modal_transformer = Transformer(width=embed_dim,
+                                                    layers=4,
+                                                    heads=embed_dim //
+                                                    64)
+        scale = self.cross_modal_transformer.width**-0.5
+
+        proj_std = scale * ((2 * self.cross_modal_transformer.layers)**-0.5)
+        attn_std = scale
+        fc_std = (2 * self.cross_modal_transformer.width)**-0.5
+        for block in self.cross_modal_transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+    def cross_former(self, x,with_ckpt=False):
+        # inputs are NLD
+        # NLD -> LND
+        x=x.permute(1, 0, 2)
+        x = self.cross_modal_transformer(x,ckpt=with_ckpt)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x = self.ln_post(x)
+        return x
+    def mlm_loss(self,i_features,tokens):
+        masked_i_features,masked_org_features=self.random_masked_tokens_and_labels(i_features)
+        # text_feats =self.clip_model.encode_text(torch.stack(tokens).to(self.device),ckpt=True)
+        rec_i_features =self.cross_former(masked_i_features,with_ckpt=True)
+        rec_i_features =self.mim_head(self.mim_norm(rec_i_features))
+        tgt_i_features=i_features.detach()
+        l2_dist=F.mse_loss(rec_i_features,tgt_i_features,reduction="mean")
+        storage = get_event_storage()
+        if storage.iter % self.vis_period == 0:
+            h,w=8,4
+            th,tw= 16,8
+            B=i_features.shape[0]
+            with torch.no_grad():
+                org_feats=i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                masked_feats=masked_org_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                rec_feats=rec_i_features.reshape(B,h,w,-1).permute(0,3,1,2)
+                pca_feats=mlvl_pca_feat([org_feats,masked_feats,rec_feats])
+                # vis_pca_feats=[F.interpolate(feats/255,(th,tw),mode="bilinear") for feats in pca_feats]
+                vis_pca_feats=[feats/255 for feats in pca_feats]
+                for i in range(B):
+                    storage.put_image("mim/feat_{}_org".format(i), vis_pca_feats[0][i])
+                    storage.put_image("mim/feat_{}_mask".format(i), vis_pca_feats[1][i])
+                    storage.put_image("mim/feat_{}_rec".format(i), vis_pca_feats[2][i])
+        return {"loss_mim":l2_dist}
+
 @META_ARCH_REGISTRY.register()
 class OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2AuxMIML2DFullyPredVe(OimClipSimpleDetboxaugCoAttoptxidmixdetachOimshareSdmDense2MIML2DFullyPredVe):
     @configurable

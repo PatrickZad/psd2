@@ -348,6 +348,28 @@ class Trainer(DefaultTrainer):
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 
+        module_params={}
+
+        for mn,md in model.named_children():
+            if mn == "clip_model":
+                for mmn,mmd in md.named_children():
+                    if mmn=="visual":
+                        for mmmn,mmmd in mmd.named_children():
+                            n_params=0
+                            for param in mmmd.parameters():
+                                n_params+=param.numel()
+                            module_params["clip_model.visual."+mmmn]=n_params
+                    else:
+                        n_params=0
+                        for param in mmd.parameters():
+                            n_params+=param.numel()
+                        module_params["clip_model."+mmn]=n_params
+            else:
+                n_params=0
+                for param in md.parameters():
+                    n_params+=param.numel()
+                module_params[mn]=n_params
+
         def _find_match(pkey, prob_regs):
             match_idx = -1
             for mi, mreg in enumerate(prob_regs):
@@ -379,6 +401,7 @@ class Trainer(DefaultTrainer):
         param_groups=[groups for groups in param_groups if len(groups["params"])>0]+bias_param_groups
         logger.info("Frozen parameters:\n{}".format("\n".join(frozen_params)))
         logger.info("Training parameters:\n{}".format("\n".join(learn_param_keys)))
+        logger.info("Total parameters:{}".format(module_params))
         optim = cfg.SOLVER.OPTIM
         if optim == "SGD":
             return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(
@@ -402,6 +425,7 @@ class Trainer(DefaultTrainer):
             )
         else:
             raise ValueError("Unsupported optimizer {}".format(optim))
+        
 
 
 def setup(args):
