@@ -12,7 +12,7 @@ from psd2.layers import batched_nms
 
 from ...proposal_generator import build_proposal_generator
 from .. import META_ARCH_REGISTRY
-from psd2.modeling.extend.solider import (
+from psd2.modeling.extend.solider_swin import (
     SidePromptedSwinTransformer,
     SidePrefixPromptedSwinTransformer,
     SwinTransformer,
@@ -3198,7 +3198,7 @@ class PromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedMsSwinSimFPNLiteRCNNPSBoxAug):
             backbone_features
         )
 
-from psd2.modeling.extend.solider import SidePrefixPromptedSwinTransformer
+from psd2.modeling.extend.solider_swin import SidePrefixPromptedSwinTransformer
 @META_ARCH_REGISTRY.register()
 class PrefixPromptedSwinSimFPNLiteRCNNPSBoxAug(PromptedSwinSimFPNLiteRCNNPSBoxAug):
     @classmethod

@@ -1,5 +1,0 @@
-_BASE_: "prompt_small_prw.yaml"
-PERSON_SEARCH:
-  PROMPT:
-    NUM_PROMPTS: 16
-OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-prompt16_prw"

@@ -12,7 +12,7 @@ from .base import SearchBase
 
 from ...proposal_generator import build_proposal_generator
 from .. import META_ARCH_REGISTRY
-from psd2.modeling.extend.solider import SideSwinTransformer, PatchMerging
+from psd2.modeling.extend.solider_swin import SideSwinTransformer, PatchMerging
 from psd2.modeling.id_assign import build_id_assigner
 import copy
 from psd2.modeling.extend.swin import SideSwinTransformer as OrgSideSwinTransformer

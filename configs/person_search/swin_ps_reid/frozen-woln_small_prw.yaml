@@ -1,7 +1,0 @@
-_BASE_: "base.yaml"
-MODEL:
-  META_ARCHITECTURE: "SwinF4PSReidFrozenWoLn"
-DATASETS:
-  TRAIN: ("PRW_Train",) 
-  TEST: ("PRW_Gallery","PRW_Query") #
-OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-frozen-woln_prw"

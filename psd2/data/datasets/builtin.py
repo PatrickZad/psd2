@@ -6,18 +6,13 @@ from .. import mappers
 from ..catalog import DatasetCatalog, MapperCatalog, MetadataCatalog
 
 from .cuhk_sysu import load_cuhk_sysu
-from .cuhk_sysu_tbps import load_cuhk_sysu_tbps
 from .prw import load_prw
-from .prw_tbps import load_prw_tbps
 from .movie_net import load_movie_net
 from .ptk21 import load_ptk21
 from .coco_ch import load_coco_ch, load_coco_p, load_cocofkp_ch,load_coco_ch_50,load_coco_ch_75,load_coco_ch_25
-from .samacoco_ch import load_samacoco_ch,load_samacoco_p
 from .cpm import load_cpm
 from .g2aps import load_g2a
-from .prw_mmq import load_prw_mmq
-from .cuhk_sysu_mmq import load_cuhk_sysu_mmq
-from .prw_mmq_sim import load_prw_mmq_sim
+
 
 # TODO change evaluator type to "query"
 def register_cuhk_sysu_all(datadir):
@@ -77,88 +72,6 @@ def register_g2a_all(datadir):
     DatasetCatalog.register(name, lambda: load_g2a(datadir, "TestG50"))
     MapperCatalog.register(name, mappers.CuhksysuMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
-
-def register_cuhk_sysu_tbps_all(datadir):
-    name = "CUHK-SYSU_TBPS_" + "Train"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Train"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    name = "CUHK-SYSU_TBPS_" + "Gallery"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="det")
-    name = "CUHK-SYSU_TBPS_" + "GalleryGT"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="det")
-    name = "CUHK-SYSU_TBPS_" + "TestG50"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG50"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG50GT"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG50"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG100"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG100"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG100GT"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG100"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG500"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG500"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG1000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG1000"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG2000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG2000"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG4000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG4000"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "CUHK-SYSU_TBPS_" + "TestG4000GT"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_tbps(datadir, "TestG4000"))
-    MapperCatalog.register(name, mappers.CuhksysuTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-
-def register_cuhk_sysu_mmq_all(datadir):
-    name = "CUHK-SYSU_Mmq_" + "Train"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "Train"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    name = "CUHK-SYSU_Mmq_" + "Grounding"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="grounding")
-    name = "CUHK-SYSU_Mmq_" + "TestG50"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG50"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "CUHK-SYSU_Mmq_" + "TestG100"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG100"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "CUHK-SYSU_Mmq_" + "TestG500"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG500"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "CUHK-SYSU_Mmq_" + "TestG1000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG1000"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "CUHK-SYSU_Mmq_" + "TestG2000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG2000"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "CUHK-SYSU_Mmq_" + "TestG4000"
-    DatasetCatalog.register(name, lambda: load_cuhk_sysu_mmq(datadir, "TestG4000"))
-    MapperCatalog.register(name, mappers.CuhksysuMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
 
 def register_movie_net_all(datadir):
     name = "MovieNet_" + "Train_app10"
@@ -247,56 +160,6 @@ def register_prw_all(datadir):
     MapperCatalog.register(name, mappers.PrwMapper)
     MetadataCatalog.get(name).set(evaluator_type="det")
 
-def register_prw_tbps_all(datadir):
-    name = "PRW_TBPS_Train"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Train"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    name = "PRW_TBPS_TrainXi"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "TrainXi"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    name = "PRW_TBPS_Query"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Query"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "PRW_TBPS_QueryGT"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Query"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    name = "PRW_TBPS_Gallery"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="det")
-    name = "PRW_TBPS_GalleryGT"
-    DatasetCatalog.register(name, lambda: load_prw_tbps(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.PrwTBPSMapper)
-    MetadataCatalog.get(name).set(evaluator_type="det")
-
-def register_prw_mmq_all(datadir):
-    name = "PRW_Mmq_Train"
-    DatasetCatalog.register(name, lambda: load_prw_mmq(datadir, "Train"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    name = "PRW_Mmq_Query"
-    DatasetCatalog.register(name, lambda: load_prw_mmq(datadir, "Query"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "PRW_Mmq_Grounding"
-    DatasetCatalog.register(name, lambda: load_prw_mmq(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="grounding")
-
-def register_prw_mmq_sim_all(datadir):
-    name = "PRW_Mmq_Sim_Train"
-    DatasetCatalog.register(name, lambda: load_prw_mmq_sim(datadir, "Train"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    name = "PRW_Mmq_Sim_Query"
-    DatasetCatalog.register(name, lambda: load_prw_mmq_sim(datadir, "Query"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="qinfer")
-    name = "PRW_Mmq_Sim_Grounding"
-    DatasetCatalog.register(name, lambda: load_prw_mmq_sim(datadir, "Gallery"))
-    MapperCatalog.register(name, mappers.PrwMmqMapper)
-    MetadataCatalog.get(name).set(evaluator_type="grounding")
-
 def register_ptk21_all(datadir):
     name = "PoseTrack21_Train"
     DatasetCatalog.register(name, lambda: load_ptk21(datadir, "Train"))
@@ -325,12 +188,7 @@ def register_cdps_all(datadir):
     DatasetCatalog.register(name, lambda: load_cdps(datadir, "Query"))
     MapperCatalog.register(name, mappers.CdpsMapper)
     MetadataCatalog.get(name).set(evaluator_type="query")
-    """
-    name = "CDPS_InfQ"
-    DatasetCatalog.register(name, lambda: load_cdps(datadir, "Query"))
-    MapperCatalog.register(name, mappers.CdpsSearchMapperInfQuery)
-    MetadataCatalog.get(name).set(evaluator_type="query")
-    """
+
     name = "CDPS_Gallery"
     DatasetCatalog.register(name, lambda: load_cdps(datadir, "Gallery"))
     MapperCatalog.register(name, mappers.CdpsMapper)
@@ -363,21 +221,11 @@ def register_cococh_all(datadir):
         name, lambda: load_cocofkp_ch(datadir, "train", allow_crowd=False)
     )
     MapperCatalog.register(name, mappers.COCOCHMapper)
-    name = "SAMA_COCO-CH"
-    DatasetCatalog.register(
-        name, lambda: load_samacoco_ch(datadir, "train", allow_crowd=False)
-    )
-    MapperCatalog.register(name, mappers.COCOCHMapper)
+
     name = "COCO-CH-ML"
     DatasetCatalog.register(
         name,
         lambda: load_coco_ch(datadir, "train", allow_crowd=False, filter_esmall=True),
-    )
-    MapperCatalog.register(name, mappers.COCOCHMapper)
-    name = "SAMA_COCO-CH_ML"
-    DatasetCatalog.register(
-        name,
-        lambda: load_samacoco_ch(datadir, "train", allow_crowd=False, filter_esmall=True),
     )
     MapperCatalog.register(name, mappers.COCOCHMapper)
     name = "COCO-P"
@@ -421,10 +269,6 @@ register_cpm(
         os.path.join(_root, "movienet"),
     ]
 )
-register_cuhk_sysu_tbps_all(os.path.join(_root, "cuhk_sysu"))
-register_prw_tbps_all(os.path.join(_root, "PRW"))
-register_cuhk_sysu_mmq_all(os.path.join(_root, "cuhk_sysu"))
-register_prw_mmq_all(os.path.join(_root, "PRW"))
-register_prw_mmq_sim_all(os.path.join(_root, "PRW"))
+
 _root_det = "Data/DetData"
 register_cococh_all(_root_det)

@@ -2,7 +2,7 @@
 
 # TODO figure out _C error
 
-from .deform_conv import DeformConv, ModulatedDeformConv, DeformConvPack
+from .deform_conv import DeformConv, ModulatedDeformConv
 from .mask_ops import paste_masks_in_image
 from .nms import batched_nms, batched_nms_rotated, nms, nms_rotated
 from .roi_align import ROIAlign, roi_align
@@ -29,7 +29,6 @@ from .wrappers import (
     move_device_like,
 )
 from .shape_spec import ShapeSpec
-from .pos_encoding import PositionEmbeddingSine, PositionEmbeddingLearned
 from .drop import DropPath, DropBlock2d
 import torch.nn as nn
 import copy

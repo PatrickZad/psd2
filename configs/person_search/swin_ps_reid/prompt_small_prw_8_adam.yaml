@@ -1,8 +1,0 @@
-_BASE_: "prompt_small_prw.yaml"
-PERSON_SEARCH:
-  PROMPT:
-    NUM_PROMPTS: 8
-SOLVER:
-  OPTIM: "Adam"
-  BASE_LR: 0.0003
-OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-prompt8_prw_adam"

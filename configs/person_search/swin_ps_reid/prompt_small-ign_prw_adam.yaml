@@ -1,5 +1,0 @@
-_BASE_: "prompt_small-ign_prw.yaml"
-SOLVER:
-  OPTIM: "Adam"
-  BASE_LR: 0.0003
-OUTPUT_DIR: "outputs/swin_ps_reid/swin-small-ign-prompt32_prw_adam"
