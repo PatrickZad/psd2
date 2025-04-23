@@ -18,7 +18,6 @@ You may want to write your own script with your datasets and other customization
 import sys
 
 sys.path.append("./")
-sys.path.append("./assign_cost_cuda")
 import logging
 import os
 from collections import OrderedDict
@@ -48,9 +47,6 @@ from psd2.evaluation import (
     Ptk21QueryEvaluator,
     MovieNetQueryEvaluator,
     MovieNetQueryEvaluatorP,
-    QueryInferencer,
-    PrwGroundingEvaluator,
-    CuhkGroundingEvaluator
 )
 import re
 from psd2.modeling import GeneralizedRCNNWithTTA
@@ -65,13 +61,10 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
     """
     if output_folder is None:
         output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-    vis_eval = cfg.TEST.VIS
-    if vis_eval:
-        output_folder = os.path.join(output_folder, "visualize_eval")
     single_gpu = comm.get_world_size() == 1
     evaluator_list = []
     evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
-    if evaluator_type is "det":
+    if evaluator_type == "det":
         evaluator_list.append(
             InfDetEvaluator(
                 dataset_name,
@@ -79,10 +72,9 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                 output_dir=output_folder,
                 s_threds=cfg.TEST.DETECTION_SCORE_TS,
                 topk=cfg.TEST.DETECTIONS_PER_IMAGE,
-                vis=vis_eval,
             )
         )
-    elif evaluator_type is "query":
+    elif evaluator_type == "query":
         if "CUHK-SYSU" in dataset_name:
             evaluator_list.append(
                 CuhkQueryEvaluatorP(
@@ -97,8 +89,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "G2APS" in dataset_name:
@@ -115,8 +105,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "PRW" in dataset_name:
@@ -133,8 +121,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "CDPS" in dataset_name:
@@ -144,8 +130,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=not single_gpu,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "Ptk21" in dataset_name:
@@ -155,8 +139,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=not single_gpu,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "MovieNet" in dataset_name:
@@ -173,37 +155,8 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
-    elif evaluator_type is "qinfer":
-        evaluator_list.append(
-                QueryInferencer(
-                    dataset_name,
-                    distributed=not single_gpu,
-                    output_dir=output_folder,
-                )
-            )
-    elif evaluator_type is "grounding":
-        if "CUHK-SYSU" in dataset_name:
-                evaluator_list.append(
-                    CuhkGroundingEvaluator(
-                        dataset_name,
-                        distributed=False,
-                        output_dir=output_folder,
-                    )
-                )
-        elif "PRW" in dataset_name:
-            evaluator_list.append(
-                PrwGroundingEvaluator(
-                    dataset_name,
-                    distributed=False,
-                    output_dir=output_folder,
-                )
-            )
-        else:
-            raise ValueError("Unknown dataset {}".format(dataset_name))
     if len(evaluator_list) == 0:
         raise NotImplementedError(
             "no Evaluator for the dataset {} with the type {}".format(
@@ -249,50 +202,9 @@ class Trainer(DefaultTrainer):
     def build_train_loader(cls, cfg):
         from psd2.data.catalog import MapperCatalog
         from psd2.data.build import build_detection_train_loader
-        from psd2.data.build import build_batch_data_loader, get_detection_dataset_dicts
-        from psd2.data.samplers.apk_sampler_cuda import APKSampler
-        from psd2.utils.logger import _log_api_usage
-        from psd2.data.common import DatasetFromList, MapDataset
 
         mapper = MapperCatalog.get(cfg.DATASETS.TRAIN[0])(cfg, is_train=True)
-        if cfg.DATALOADER.SAMPLER_TRAIN == "APKSampler":
-            assert torch.cuda.is_available(), "cuda is required"
-            dataset = get_detection_dataset_dicts(
-                cfg.DATASETS.TRAIN,
-                filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
-                min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
-                if cfg.MODEL.KEYPOINT_ON
-                else 0,
-                proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN
-                if cfg.MODEL.LOAD_PROPOSALS
-                else None,
-            )
-            _log_api_usage("dataset." + cfg.DATASETS.TRAIN[0])
-            ap = cfg.DATALOADER.APK_SAMPLER.AP
-            ak = cfg.DATALOADER.APK_SAMPLER.AK
-            drop_last = cfg.DATALOADER.APK_SAMPLER.DROP_LAST
-            logger = logging.getLogger(__name__)
-            logger.info("Using training sampler APKSampler")
-            sampler = APKSampler(
-                cfg.SOLVER.IMS_PER_BATCH,
-                dataset,
-                ap,
-                ak,
-                shuffle=True,
-                drop_last=drop_last,
-            )
-            if isinstance(dataset, list):
-                dataset = DatasetFromList(dataset, copy=False)
-            dataset = MapDataset(dataset, mapper)
-            return build_batch_data_loader(
-                dataset,
-                sampler,
-                cfg.SOLVER.IMS_PER_BATCH,
-                aspect_ratio_grouping=cfg.DATALOADER.ASPECT_RATIO_GROUPING,
-                num_workers=cfg.DATALOADER.NUM_WORKERS,
-            )
-        else:
-            return build_detection_train_loader(cfg, mapper=mapper)
+        return build_detection_train_loader(cfg, mapper=mapper)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
@@ -348,28 +260,6 @@ class Trainer(DefaultTrainer):
         freeze_regex = [re.compile(reg) for reg in cfg.SOLVER.FREEZE_PARAM_REGEX]
         lr_group_regex = [re.compile(reg) for reg in cfg.SOLVER.LR_GROUP_REGEX]
 
-        module_params={}
-
-        for mn,md in model.named_children():
-            if mn == "clip_model":
-                for mmn,mmd in md.named_children():
-                    if mmn=="visual":
-                        for mmmn,mmmd in mmd.named_children():
-                            n_params=0
-                            for param in mmmd.parameters():
-                                n_params+=param.numel()
-                            module_params["clip_model.visual."+mmmn]=n_params
-                    else:
-                        n_params=0
-                        for param in mmd.parameters():
-                            n_params+=param.numel()
-                        module_params["clip_model."+mmn]=n_params
-            else:
-                n_params=0
-                for param in md.parameters():
-                    n_params+=param.numel()
-                module_params[mn]=n_params
-
         def _find_match(pkey, prob_regs):
             match_idx = -1
             for mi, mreg in enumerate(prob_regs):
@@ -401,7 +291,6 @@ class Trainer(DefaultTrainer):
         param_groups=[groups for groups in param_groups if len(groups["params"])>0]+bias_param_groups
         logger.info("Frozen parameters:\n{}".format("\n".join(frozen_params)))
         logger.info("Training parameters:\n{}".format("\n".join(learn_param_keys)))
-        logger.info("Total parameters:{}".format(module_params))
         optim = cfg.SOLVER.OPTIM
         if optim == "SGD":
             return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(
@@ -472,23 +361,7 @@ def main(args):
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
-    if args.auto_relaunch:
-        re_launch = True
-        while re_launch:
-            try:
-                launch(
-                    main,
-                    args.num_gpus,
-                    num_machines=args.num_machines,
-                    machine_rank=args.machine_rank,
-                    dist_url=args.dist_url,
-                    args=(args,),
-                )
-                re_launch = False
-            except Exception as e:
-                print(e)
-    else:
-        launch(
+    launch(
             main,
             args.num_gpus,
             num_machines=args.num_machines,

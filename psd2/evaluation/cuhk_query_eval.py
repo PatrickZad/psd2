@@ -1,20 +1,10 @@
-from copy import copy
-import enum
-from math import inf
-from typing import Dict, OrderedDict
-import psd2.utils.comm as comm
-
 import torch
 import logging
-from .evaluator import DatasetEvaluator
-import itertools
-import os
+
 import numpy as np
 from torchvision.ops.boxes import box_iou
 from sklearn.metrics import average_precision_score
-import copy
-import torch.nn.functional as F
-import random
+
 import logging
 from .query_evaluator import QueryEvaluator
 from psd2.structures import Boxes, BoxMode, pairwise_iou
@@ -105,8 +95,6 @@ class CuhkQueryEvaluator(QueryEvaluator):
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm
                 name2sim = {}
-                # save for vis
-                g_img_ids = []
 
                 # 1. Go through the gallery samples defined by the protocol
                 for item in g_instances_list:
@@ -132,8 +120,6 @@ class CuhkQueryEvaluator(QueryEvaluator):
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
-                    # save for vis
-                    g_img_ids.append(gallery_imname)
 
                     label = torch.zeros(sim.shape[0], dtype=torch.int)
                     if len(gt_boxes) > 0:
@@ -176,6 +162,4 @@ class CuhkQueryEvaluator(QueryEvaluator):
                 y_true_o = y_true[inds]
                 self.accs[dst].append([min(1, sum(y_true_o[:k])) for k in self.topks])
 
-                # 3. Save vis
-                self._vis_search(q_imgid, q_box, q_pid, g_img_ids, name2sim, dst)
 

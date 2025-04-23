@@ -106,18 +106,6 @@ def load_prw(dataset_dir, subset=subsets[0]):
 
 def get_resort_id(labeled_id):
     global id_remap_dict
-    """global id_remap_dict
-    global id_next
-    if labeled_id < 0:
-        return -1
-    elif labeled_id in id_remap_dict.keys():
-
-        return id_remap_dict[labeled_id]
-    else:
-        resort_id = id_next
-        id_remap_dict[labeled_id] = resort_id
-        id_next += 1
-        return resort_id"""
     return id_remap_dict[labeled_id]
 
 

@@ -4,7 +4,6 @@ from .evaluator import (
     DatasetEvaluators,
     inference_context,
     inference_on_dataset,
-    inference_vis_on_dataset,
 )
 
 from .testing import print_csv_format, verify_results
@@ -18,10 +17,5 @@ from .ptk21_query_eval import Ptk21QueryEvaluator
 from .prw_query_eval_p import PrwQueryEvaluatorP
 from .cuhk_query_eval_p import CuhkQueryEvaluatorP
 from .mvn_query_eval_p import MovieNetQueryEvaluatorP
-from .vis_evaluator import DetVisEvaluator, SearchVisEvaluator
-from .domain_id_eval import DomainIdEvaluator
-from .query_inferencer import QueryInferencer
-from .prw_grounding_evaluator import PrwGroundingEvaluator
-from .cuhk_grounding_evaluator import CuhkGroundingEvaluator
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]

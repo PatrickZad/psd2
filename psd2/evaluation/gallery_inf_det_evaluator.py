@@ -4,7 +4,6 @@ import psd2.utils.comm as comm
 import torch
 import logging
 
-from psd2.utils.visualizer import Visualizer
 from .evaluator import DatasetEvaluator
 import itertools
 import os
@@ -14,15 +13,8 @@ from sklearn.metrics import average_precision_score
 import copy
 from collections import OrderedDict
 
-from os.path import join as opj
-from torchvision.ops import box_iou
-import shutil
-from psd2.utils.visualizer import domain_hist_img
-import time
-from psd2.structures import Boxes, pairwise_iou
-import pandas
-import seaborn
-import matplotlib.pyplot as mplot
+from psd2.structures import pairwise_iou
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +28,6 @@ class InfDetEvaluator(DatasetEvaluator):
         output_dir,
         topk=100,
         s_threds=[0.05, 0.1, 0.2],
-        vis=False,
     ) -> None:
         self._distributed = distributed
         self._output_dir = output_dir
@@ -64,40 +55,13 @@ class InfDetEvaluator(DatasetEvaluator):
         self.count_tp_ulb = 0
         self.count_false = 0
         self.tp_ious = []
-        # det score vis to tb, for incmt spps
-        self.det_scores_per_domain = []
-        # make vis dirs
-        vis_dir = opj(self._output_dir, dataset_name, "vis", "det")
-        self.svis_dirs = {iou_t: {} for iou_t in self.iou_threshs}
-        for iou_t in self.iou_threshs:
-            for scr in s_threds:
-                svis_dir = opj(vis_dir, str(iou_t), str(scr))
-                self.svis_dirs[iou_t][scr] = svis_dir
-        if not vis:
-            self._vis_samp = _trivial_vis
-            return
 
-        lrk = comm.get_local_rank()
-        if lrk == 0:
-            if os.path.exists(vis_dir):
-                try:
-                    shutil.rmtree(os.path.realpath(vis_dir))
-                except Exception as e:
-                    logger.info(str(e) + " occures when deleting files !")
-        for iou_t in self.iou_threshs:
-            for scr in s_threds:
-                svis_dir = opj(vis_dir, str(iou_t), str(scr))
-                svis_dir_score = opj(svis_dir, "scores")
-                if lrk == 0:
-                    if not os.path.exists(svis_dir):
-                        os.makedirs(svis_dir)
-                        os.makedirs(svis_dir_score)
+
 
     def reset(self):
         self.inf_results = {}
         self.gallery_gts = {}
         self.granks_of_local_0s = []
-        self.gallery_fnames = {}  # add for vis
         # det statistic
         self.y_trues = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
         self.y_scores = {iou: {k: [] for k in self.threshs} for iou in self.iou_threshs}
@@ -156,7 +120,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 [org_gt_boxes.tensor, gt_pids.view(-1, 1)], dim=-1
             )
             self.gallery_gts[gt_img_name] = org_gt_label_t
-            self.gallery_fnames[gt_img_name] = gt_instances.file_name
             # save inf results
             scores_t = pred_instances.pred_scores.view(-1)
             if scores_t.shape[0] > self.topk:
@@ -201,15 +164,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 for iou_t in self.iou_threshs:
                     self.count_gt[iou_t][sthred] += num_gts
                     self.count_gt_lb[iou_t][sthred] += num_lb_gts
-                    self._vis_samp(
-                        gt_instances.file_name,
-                        gt_boxes.tensor,
-                        gt_pids_t,
-                        pred_instances.pred_boxes.tensor,
-                        pred_instances.pred_scores.view(-1),
-                        iou_t,
-                        sthred,
-                    )
                 continue
 
             ious = pairwise_iou(gt_boxes, det_boxes)
@@ -250,18 +204,6 @@ class InfDetEvaluator(DatasetEvaluator):
                 )
                 tp_ious = ious[tfmat].cpu().numpy().tolist()
                 self.tp_ious[iou_t][sthred].extend(tp_ious)
-                s_recall = tfmat.sum().item() / num_gts
-                s_precision = tfmat.sum().item() / num_dets
-                if s_recall < 1 or s_precision < 1:
-                    self._vis_samp(
-                        gt_instances.file_name,
-                        gt_boxes.tensor,
-                        gt_pids_t,
-                        pred_instances.pred_boxes.tensor,
-                        pred_instances.pred_scores.view(-1),
-                        iou_t,
-                        sthred,
-                    )
 
     def evaluate(self):
         if self._distributed:
@@ -272,20 +214,15 @@ class InfDetEvaluator(DatasetEvaluator):
             save_ranks = list(set(itertools.chain(*save_ranks)))
             save_rts = {}
             save_gts = {}
-            save_gtfs = {}
             for rk in save_ranks:
                 g_gts = comm.gather(self.gallery_gts, dst=rk)
                 inf_rts = comm.gather(self.inf_results, dst=rk)
-                f_gts = comm.gather(self.gallery_fnames, dst=rk)
                 if len(inf_rts) > 0:
                     for rts in inf_rts:
                         save_rts.update(rts)
                 if len(g_gts) > 0:
                     for gts in g_gts:
                         save_gts.update(gts)
-                if len(f_gts) > 0:
-                    for fs in f_gts:
-                        save_gtfs.update(fs)
             y_true_rs = comm.gather(self.y_trues, dst=0)
             y_score_rs = comm.gather(self.y_scores, dst=0)
             count_gt_rs = comm.gather(self.count_gt, dst=0)
@@ -337,14 +274,13 @@ class InfDetEvaluator(DatasetEvaluator):
                     tp_ious[iou_t][st] = list(
                         itertools.chain(*[ti[iou_t][st] for ti in tp_ious_rs])
                     )
-            if len(save_rts) == 0 or len(save_gts) == 0 or len(save_gtfs) == 0:
+            if len(save_rts) == 0 or len(save_gts) == 0:
                 comm.synchronize()
                 return {}
 
         else:
             save_rts = self.inf_results
             save_gts = self.gallery_gts
-            save_gtfs = self.gallery_fnames
             y_trues = self.y_trues
             y_scores = self.y_scores
             count_gts = self.count_gt
@@ -354,7 +290,7 @@ class InfDetEvaluator(DatasetEvaluator):
             count_tps_ulb = self.count_tp_ulb
             count_false = self.count_false
             tp_ious = self.tp_ious
-        save_dict = {"gts": save_gts, "infs": save_rts, "gt_fnames": save_gtfs}
+        save_dict = {"gts": save_gts, "infs": save_rts}
         save_path = os.path.join(
             self._output_dir,
             "_gallery_gt_inf.pt"
@@ -400,147 +336,5 @@ class InfDetEvaluator(DatasetEvaluator):
                         "Num_Neg_iou{}_score{}".format(iou_t, st): count_neg,
                     }
                 )
-        self._vis_tp_iou(tp_ious)
-        self._vis_det_scores(y_scores, y_trues)
         return copy.deepcopy(det_result)
 
-    def _vis_samp(
-        self, org_path, tgt_boxes, tgt_ids, all_det_boxes, all_det_scores, iou_t, sthred
-    ):
-        COLORS = ["r", "g", "b", "y", "c", "m"]
-        T_COLORS_BG = {
-            "r": "white",
-            "g": "white",
-            "b": "white",
-            "y": "black",
-            "c": "black",
-            "m": "white",
-        }
-
-        from psd2.utils.visualizer import VisImage
-
-        if all_det_boxes.shape[0] > self.topk:
-            topk_scores, topk_idxs = torch.topk(all_det_scores, self.topk)
-            topk_det_boxes = all_det_boxes[topk_idxs]
-            det_scores = topk_scores[topk_scores >= sthred]
-            det_boxes = topk_det_boxes[topk_scores >= sthred]
-        else:
-            det_scores_mask = all_det_scores >= sthred
-            det_boxes = all_det_boxes[det_scores_mask]
-            det_scores = all_det_scores[all_det_scores >= sthred]
-
-        fname = os.path.split(org_path)[-1]
-        img = Image.open(org_path)
-        vis_org = Visualizer(img.copy())
-        vis_det = Visualizer(img.copy())
-        det_boxes = det_boxes.cpu().numpy()
-        det_scores = det_scores.cpu().numpy().tolist()
-        tgt_boxes = tgt_boxes.cpu().numpy()
-        tgt_ids = tgt_ids.cpu().numpy().tolist()
-        for bi, box in enumerate(tgt_boxes):
-            vis_org.draw_box(box)
-            id_pos = box[:2]
-            vis_org.draw_text(
-                str(tgt_ids[bi]), id_pos, horizontal_alignment="left", color="w"
-            )
-        for i, score in enumerate(det_scores):
-            b_clr = COLORS[i % len(COLORS)]
-            t_clr = T_COLORS_BG[b_clr]
-            vis_det.draw_box(det_boxes[i], edge_color=b_clr)
-            vis_det.draw_text(
-                "%.2f" % score,
-                (det_boxes[i][2], det_boxes[i][1]),
-                horizontal_alignment="right",
-                color=t_clr,
-                bg_color=b_clr,
-            )
-        ious = box_iou(torch.tensor(tgt_boxes), all_det_boxes)
-        # select vis box
-        select_scores = torch.zeros_like(ious)
-        select_scores[ious > 0.5] = 1.0
-        tgt_idxs = torch.arange(0, ious.shape[0], device=ious.device)
-        max_iou_idxs = torch.argmax(ious, dim=1)
-        select_scores[(tgt_idxs, max_iou_idxs)] = 1.0
-        select_scores *= all_det_scores[None]
-        best_matches = torch.argmax(select_scores, dim=1)
-        vis_all = Visualizer(img.copy())
-        for bi, box_idx in enumerate(best_matches):
-            box = all_det_boxes[box_idx].numpy()
-            vis_all.draw_box(box)
-            id_pos = box[:2]
-            vis_all.draw_text(
-                str(tgt_ids[bi]), id_pos, horizontal_alignment="left", color="w"
-            )
-            score = all_det_scores[box_idx].item()
-            vis_all.draw_text(
-                "%.2f" % score,
-                (box[2], box[1]),
-                horizontal_alignment="right",
-                color="w",
-            )
-        img_org = vis_org.get_output().get_image()
-        img_det = vis_det.get_output().get_image()
-        img_all = vis_all.get_output().get_image()
-        img_vis = np.concatenate([img_org, img_all, img_det], axis=1)
-        VisImage(img_vis).save(opj(self.svis_dirs[iou_t][sthred], fname))
-
-    def _vis_tp_iou(self, tp_ious):
-        for iou_t in self.iou_threshs:
-            for st in self.threshs:
-                mplot.clf()
-                ious = tp_ious[iou_t][st]
-                vis_data = pandas.DataFrame(
-                    {
-                        "ious": ious,
-                    },
-                )
-                plt = seaborn.histplot(
-                    data=vis_data, x="ious", binwidth=0.05, stat="count"
-                )
-                fig = plt.get_figure()
-                fig.savefig(
-                    opj(
-                        self._output_dir,
-                        "ious_iou{}_score{}.png".format(iou_t, st),
-                    ),
-                    dpi=400,
-                )
-
-    def _vis_det_scores(self, det_scores, det_labels):
-        for iou_t in self.iou_threshs:
-            for st in self.threshs:
-                mplot.clf()
-                scores = det_scores[iou_t][st]
-                labels = det_labels[iou_t][st]
-                tp_scores = np.array(scores, dtype=np.float32)[
-                    np.array(labels, np.bool8)
-                ].tolist()
-                fp_scores = np.array(scores, dtype=np.float32)[
-                    np.logical_not(np.array(labels, np.bool8))
-                ].tolist()
-                vis_data = pandas.DataFrame(
-                    {
-                        "scores": tp_scores + fp_scores,
-                        "type": ["pos"] * len(tp_scores) + ["neg"] * len(fp_scores),
-                    },
-                )
-                plt = seaborn.histplot(
-                    data=vis_data,
-                    x="scores",
-                    hue="type",
-                    binwidth=0.05,
-                    multiple="dodge",
-                    stat="count",
-                )
-                fig = plt.get_figure()
-                fig.savefig(
-                    opj(
-                        self._output_dir,
-                        "scores_iou{}_score{}.png".format(iou_t, st),
-                    ),
-                    dpi=400,
-                )
-
-
-def _trivial_vis(*args, **kw):
-    pass

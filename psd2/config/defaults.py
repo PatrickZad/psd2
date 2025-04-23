@@ -74,9 +74,6 @@ _C.INPUT.CROP.TYPE = "relative_range"
 # Size of crop in range (0, 1] if CROP.TYPE is "relative" or "relative_range" and in number of
 # pixels if CROP.TYPE is "absolute"
 _C.INPUT.CROP.SIZE = [0.9, 0.9]
-_C.INPUT.QUERY_SIZE = [256,128]
-_C.INPUT.MAX_QUERY_NUM = 4
-_C.INPUT.BERT_TOKENIZER = False
 
 
 # Whether the model needs RGB, YUV, HSV etc.
@@ -552,10 +549,6 @@ _C.PERSON_SEARCH.REID.LOSS.WEIGHTS = CN(new_allowed=True)
 _C.INPUT.REA = CN({"ENABLED": False})
 _C.INPUT.REA.PROB = 0.5
 _C.INPUT.REA.VALUE = [0.485 * 255, 0.456 * 255, 0.406 * 255]
-_C.DATALOADER.APK_SAMPLER = CN()
-_C.DATALOADER.APK_SAMPLER.AP = 4
-_C.DATALOADER.APK_SAMPLER.AK = 6
-_C.DATALOADER.APK_SAMPLER.DROP_LAST = True
 # ---------------------------------------------------------------------------- #
 # Solver
 # ---------------------------------------------------------------------------- #
@@ -668,8 +661,6 @@ _C.TEST.AUG.FLIP = True
 
 _C.TEST.PRECISE_BN = CN({"ENABLED": False})
 _C.TEST.PRECISE_BN.NUM_ITER = 200
-_C.TEST.VIS = False
-_C.TEST.VIS_SIM_ONLY = False
 # speed up evaluation
 _C.TEST.IMS_PER_PROC = 4
 # ---------------------------------------------------------------------------- #

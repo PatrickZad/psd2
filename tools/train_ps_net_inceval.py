@@ -61,9 +61,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
     """
     if output_folder is None:
         output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-    vis_eval = cfg.TEST.VIS
-    if vis_eval:
-        output_folder = os.path.join(output_folder, "visualize_eval")
     single_gpu = comm.get_world_size() == 1
     evaluator_list = []
     evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
@@ -75,7 +72,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                 output_dir=output_folder,
                 s_threds=cfg.TEST.DETECTION_SCORE_TS,
                 topk=cfg.TEST.DETECTIONS_PER_IMAGE,
-                # vis=vis_eval,
             )
         )
     elif evaluator_type is "query":
@@ -93,8 +89,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "PRW" in dataset_name:
@@ -111,8 +105,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "CDPS" in dataset_name:
@@ -122,8 +114,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=not single_gpu,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "Ptk21" in dataset_name:
@@ -133,8 +123,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=not single_gpu,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         elif "MovieNet" in dataset_name:
@@ -151,8 +139,6 @@ def build_evaluator(cfg, dataset_name, output_folder=None):
                     distributed=True,
                     output_dir=output_folder,
                     s_threds=cfg.TEST.DETECTION_SCORE_TS,
-                    vis=vis_eval,
-                    hist_only=cfg.TEST.VIS_SIM_ONLY,
                 )
             )
         else:
@@ -202,50 +188,9 @@ class Trainer(DefaultTrainer):
     def build_train_loader(cls, cfg):
         from psd2.data.catalog import MapperCatalog
         from psd2.data.build import build_detection_train_loader
-        from psd2.data.build import build_batch_data_loader, get_detection_dataset_dicts
-        from psd2.data.samplers.apk_sampler_cuda import APKSampler
-        from psd2.utils.logger import _log_api_usage
-        from psd2.data.common import DatasetFromList, MapDataset
 
         mapper = MapperCatalog.get(cfg.DATASETS.TRAIN[0])(cfg, is_train=True)
-        if cfg.DATALOADER.SAMPLER_TRAIN == "APKSampler":
-            assert torch.cuda.is_available(), "cuda is required"
-            dataset = get_detection_dataset_dicts(
-                cfg.DATASETS.TRAIN,
-                filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
-                min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
-                if cfg.MODEL.KEYPOINT_ON
-                else 0,
-                proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN
-                if cfg.MODEL.LOAD_PROPOSALS
-                else None,
-            )
-            _log_api_usage("dataset." + cfg.DATASETS.TRAIN[0])
-            ap = cfg.DATALOADER.APK_SAMPLER.AP
-            ak = cfg.DATALOADER.APK_SAMPLER.AK
-            drop_last = cfg.DATALOADER.APK_SAMPLER.DROP_LAST
-            logger = logging.getLogger(__name__)
-            logger.info("Using training sampler APKSampler")
-            sampler = APKSampler(
-                cfg.SOLVER.IMS_PER_BATCH,
-                dataset,
-                ap,
-                ak,
-                shuffle=True,
-                drop_last=drop_last,
-            )
-            if isinstance(dataset, list):
-                dataset = DatasetFromList(dataset, copy=False)
-            dataset = MapDataset(dataset, mapper)
-            return build_batch_data_loader(
-                dataset,
-                sampler,
-                cfg.SOLVER.IMS_PER_BATCH,
-                aspect_ratio_grouping=cfg.DATALOADER.ASPECT_RATIO_GROUPING,
-                num_workers=cfg.DATALOADER.NUM_WORKERS,
-            )
-        else:
-            return build_detection_train_loader(cfg, mapper=mapper)
+        return build_detection_train_loader(cfg, mapper=mapper)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
@@ -396,23 +341,7 @@ def main(args):
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
-    if args.auto_relaunch:
-        re_launch = True
-        while re_launch:
-            try:
-                launch(
-                    main,
-                    args.num_gpus,
-                    num_machines=args.num_machines,
-                    machine_rank=args.machine_rank,
-                    dist_url=args.dist_url,
-                    args=(args,),
-                )
-                re_launch = False
-            except Exception as e:
-                print(e)
-    else:
-        launch(
+    launch(
             main,
             args.num_gpus,
             num_machines=args.num_machines,

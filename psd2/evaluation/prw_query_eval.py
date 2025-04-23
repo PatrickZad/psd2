@@ -27,11 +27,9 @@ class PrwQueryEvaluator(QueryEvaluator):
         distributed,
         output_dir,
         s_threds=[0.05, 0.2, 0.5, 0.7],
-        vis=False,
-        hist_only=False,
     ):
         super().__init__(
-            dataset_name, distributed, output_dir, s_threds, vis, hist_only
+            dataset_name, distributed, output_dir, s_threds
         )
         self.aps_mlv = {st: [] for st in self.det_score_thresh}
         self.accs_mlv = {st: [] for st in self.det_score_thresh}
@@ -133,8 +131,6 @@ class PrwQueryEvaluator(QueryEvaluator):
 
                 # feat_q = F.normalize(feat_q[None]).squeeze(0)  # NOTE keep post norm
                 name2sim = {}
-                # save for vis
-                g_img_ids = []
                 # 1. Go through the gallery samples defined by the protocol
                 for item in gallery_imgs:
                     gallery_imname = item["image_id"]
@@ -162,8 +158,6 @@ class PrwQueryEvaluator(QueryEvaluator):
                     if gallery_imname in name2sim:
                         continue
                     name2sim[gallery_imname] = sim
-                    # save for vis
-                    g_img_ids.append(gallery_imname)
 
                     label = torch.zeros(sim.shape[0], dtype=torch.int)
                     if gallery_imname in query_gts:
@@ -226,16 +220,6 @@ class PrwQueryEvaluator(QueryEvaluator):
                 y_true_mlv = y_true_mlv[inds_mlv]
                 self.accs_mlv[dst].append(
                     [min(1, sum(y_true_mlv[:k])) for k in self.topks]
-                )
-                # 3. Save vis
-                self._vis_search(
-                    q_imgid,
-                    q_box,
-                    q_pid,
-                    g_img_ids,
-                    name2sim,
-                    dst,
-                    list(query_gts.keys()),
                 )
 
     def evaluate(self):

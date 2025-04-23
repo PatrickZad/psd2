@@ -1497,47 +1497,6 @@ class PromptedSwinTransformer(BaseModule):
         self.num_prompts = num_prompts
 
     def forward(self, x, semantic_weight=None):
-        """
-        if self.semantic_weight >= 0 and semantic_weight == None:
-            w = torch.ones(x.shape[0],1) * self.semantic_weight
-            w = torch.cat([w, 1-w], axis=-1)
-            semantic_weight = w.cuda()
-        hw_shape=x.shape[2:]
-        x=x.flatten(2).transpose(1, 2)
-
-        if self.use_abs_pos_embed:
-            x = x + self.absolute_pos_embed
-        x = self.drop_after_pos(x)
-        if self.promt_start_stage==0:
-            x=self.incorporate_prompt(x)
-
-        outs = []
-        for i, (stage,deep_prompt_embd) in enumerate(zip(self.stages, [
-                    self.deep_prompt_embeddings_0,
-                    self.deep_prompt_embeddings_1,
-                    self.deep_prompt_embeddings_2,
-                    self.deep_prompt_embeddings_3
-                ])):
-            deep_prompt_embd = self.prompt_dropout(deep_prompt_embd)
-            if i<self.promt_start_stage-1:
-                x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
-            else:
-                x, hw_shape, out, out_hw_shape = stage(x, hw_shape,deep_prompt_embd)
-            if self.semantic_weight >= 0:
-                sw = self.semantic_embed_w[i](semantic_weight).unsqueeze(1)
-                sb = self.semantic_embed_b[i](semantic_weight).unsqueeze(1)
-                x = x * self.softplus(sw) + sb
-            if i in self.out_indices:
-                norm_layer = getattr(self, f'norm{i}')
-                out = norm_layer(out)
-                out = out.view(-1, *out_hw_shape,
-                               self.num_features[i]).permute(0, 3, 1,
-                                                             2).contiguous()
-                outs.append(out)
-        x = self.avgpool(outs[-1])
-        x = torch.flatten(x, 1)
-        return x, outs
-        """
         raise NotImplementedError
 
 

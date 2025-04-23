@@ -19,10 +19,7 @@ import collections
 import warnings
 from itertools import repeat
 
-try:
-    from torch._six import container_abcs
-except:
-    import collections.abc as container_abcs
+import collections.abc as container_abcs
 from .backbone import Backbone
 from .build import BACKBONE_REGISTRY
 from psd2.layers import Conv2d, ShapeSpec

@@ -13,8 +13,6 @@ from psd2.layers import batched_nms
 from ...proposal_generator import build_proposal_generator
 from .. import META_ARCH_REGISTRY
 from psd2.modeling.extend.solider_swin import (
-    SidePromptedSwinTransformer,
-    SidePrefixPromptedSwinTransformer,
     SwinTransformer,
     PatchMerging
 )
@@ -24,7 +22,7 @@ from psd2.modeling.prompts import build_stage_prompt_pool
 from torch.nn import init
 from psd2.layers.mem_matching_losses import OIMLoss, IncOIMLoss
 from torch.nn.functional import normalize
-from .swin_rcnn_pd import (
+from .pops_det import (
     SwinF4RCNN,
     SwinF4RCNNSeq,
     SwinROIHeads2,
@@ -32,8 +30,6 @@ from .swin_rcnn_pd import (
     SwinSimFPNRCNN,
     SimpleFeaturePyramid,
     AlteredStandaredROIHeads,
-    AlteredStandaredROIHeadsTi,
-    PromptedSeqSwinROIHeads,
 )
 from psd2.modeling import ShapeSpec
 from psd2.modeling.poolers import ROIPooler
@@ -3618,7 +3614,7 @@ class PrefixPromptedSwinF4RCNNPS(PromptedSwinF4RCNNPS):
         return ret
 
 
-from psd2.modeling.meta_arch.person_search.swin_rcnn_pd import PromptedAttnFeaturePyramid, PlainFeaturePyramid
+from psd2.modeling.meta_arch.person_search.pops_det import PromptedAttnFeaturePyramid, PlainFeaturePyramid
 from psd2.modeling.extend.swin import SidePromptedSwinTransformer as SidePromptedOrgSwinTransformer
 @META_ARCH_REGISTRY.register()
 class PromptedOrgSwinF4AttnFPNPSBoxAug(PromptedSwinSimFPNRCNNPS):

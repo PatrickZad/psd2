@@ -1,0 +1,18 @@
+_BASE_: "../base_det.yaml"
+MODEL:
+  WEIGHTS: "Data/model_zoo/swin_base_solider_d2.pkl"
+PERSON_SEARCH:
+  DET:
+    MODEL:
+      TRANSFORMER:
+        SEMANTIC_WEIGHT: 0.6
+SOLVER:
+  WARMUP_ITERS: 1000
+  STEPS: (65940,131880)
+  MAX_ITER: 164850 # 3297 * 50
+  CHECKPOINT_PERIOD: 6594
+  IMS_PER_BATCH: 24
+TEST:
+  IMS_PER_PROC: 8
+  EVAL_PERIOD: 6594
+OUTPUT_DIR: "outputs/pops2/det/swinb_solider06"
